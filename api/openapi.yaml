@@ -1,0 +1,18 @@
+openapi: 3.0.4
+info:
+  title: Descendence API
+  description: Basic api provided by the descedence api server
+  version: 0.0.1
+paths:
+  /:
+    get:
+      responses:
+        "200":
+          description: Returns general information about the api server
+      deprecated: false
+  /health:
+    get:
+      responses: 
+        "200":
+          description: Returns health status of the api server
+      deprecated: false
