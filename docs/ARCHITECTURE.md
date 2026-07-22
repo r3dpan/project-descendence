@@ -1,0 +1,385 @@
+# Architecture
+
+**Project:** Script automation platform (working name: TBD)
+**Status:** Design agreed, not yet implemented
+**Last updated:** 2026-07-22
+
+---
+
+## 1. What this is
+
+A self-hosted platform for running scripts on demand or on a schedule. Scripts live
+in git, execute inside containers spun up by Podman, and are triggered through an
+HTTP API (and later a web UI). Logs and run history land in Postgres.
+
+Conceptually similar to the commercial product ScriptRunner, but language-agnostic
+and Linux-first.
+
+**Primary goal:** a tool the author actually uses, built to learn Go, Postgres,
+container orchestration and API design. Public adoption is explicitly *not* a goal.
+
+### Prior art (checked, deliberately not used)
+
+These already exist and do most of what this project plans. Worth knowing about, so
+that "why not just use X" has an answer, and worth stealing ideas from:
+
+| Project | License | Notes |
+|---|---|---|
+| [Windmill](https://www.windmill.dev/) | AGPL-3.0 | Closest match. Scripts → auto-generated UIs, cron, any Docker image as runtime, RBAC, Postgres, git sync. |
+| [Rundeck](https://github.com/rundeck/rundeck) | Apache-2.0 | Job scheduler + runbook automation, self-service delegation, RBAC. JVM. |
+| StackStorm | Apache-2.0 | Event-driven automation. |
+
+The genuinely thin niche is PowerShell-centric self-service automation — the main
+commercial options there (ScriptRunner, Devolutions PowerShell Universal, au2mator)
+are all proprietary. That's not this project's target either, but it's the direction
+with the most open space if that ever changes.
+
+---
+
+## 2. Design principles
+
+These are the rules that decisions were made against. When a future decision is
+unclear, check it against these.
+
+1. **Delegate to native tooling.** If Podman, git or systemd already solves a
+   problem, use theirs rather than writing our own. Fewer moving parts, better
+   documented, someone else maintains it.
+2. **Postgres is the single source of truth.** Anything derived (systemd units,
+   built images, log files) must be regenerable from the database. Never have two
+   places that both claim to know the truth.
+3. **API-first.** Every capability is an HTTP endpoint. The CLI and the future web
+   UI are both just clients. This also makes the platform callable from other
+   automation, which for an automation platform is close to the whole point.
+4. **Reproducibility via content addressing.** A run records the exact git commit
+   SHA and the exact image digest it used. Any past run can be explained and repeated.
+5. **Build the smallest thing that proves the design, then extend.** Vertical slices,
+   not horizontal layers.
+
+---
+
+## 3. System overview
+
+```
+                     ┌──────────────┐
+                     │   CLI (Go)   │   ← primary client for now
+                     └──────┬───────┘
+                            │ HTTP + Bearer token
+                            ▼
+   ┌────────────────────────────────────────────┐
+   │  cmd/api  — HTTP server                    │
+   │  · auth middleware (principal resolution)  │
+   │  · CRUD on jobs / runs / runtimes          │
+   │  · SSE log streaming                       │
+   │  · serves embedded SPA (much later)        │
+   └───────────────────┬────────────────────────┘
+                       │ SQL only
+                       ▼
+              ┌─────────────────┐
+              │   PostgreSQL    │  ← queue, state, history, coordination
+              └─────────────────┘
+                       ▲
+                       │ SQL only  (api and supervisor never talk to each other)
+   ┌───────────────────┴────────────────────────┐
+   │  cmd/supervisor — single instance          │
+   │  · claims queued runs                      │
+   │  · scheduler (cron)                        │
+   │  · container lifecycle                     │
+   │  · log capture + fan-out                   │
+   │  · crash reconciliation                    │
+   └───────┬─────────────────────┬──────────────┘
+           │ REST over UDS       │ shell out
+           ▼                     ▼
+   ┌───────────────┐      ┌─────────────┐
+   │ Podman socket │      │ git (bare   │
+   │ (rootless)    │      │ repos)      │
+   └───────┬───────┘      └─────────────┘
+           │ creates
+           ▼
+   ┌────────────────────────────────┐
+   │ ephemeral job containers       │
+   │ (python / powershell / bash…)  │
+   └────────────────────────────────┘
+```
+
+**Why api and supervisor are separate processes:** the API must stay stateless and
+restartable without disturbing running jobs. Only one supervisor may run at a time
+(it owns scheduling); the API can be restarted, crash, or eventually run multiple
+copies without duplicating job execution.
+
+---
+
+## 4. Components
+
+### 4.1 Postgres
+
+Serves four roles:
+
+- **State store** — jobs, runs, runtimes, principals, audit.
+- **Work queue** — the supervisor claims runs with
+  `SELECT ... FOR UPDATE SKIP LOCKED`, which lets exactly one worker grab a row
+  without blocking others.
+- **Coordination** — a Postgres *advisory lock* elects the single active scheduler
+  if a second supervisor ever starts.
+- **Log index** — sequence numbers and metadata; the log *bodies* go to files.
+
+No Redis, no Celery, no separate broker. At this scale Postgres is more than enough
+and it's one less thing to run.
+
+### 4.2 Supervisor
+
+The only component that touches Podman. Responsibilities:
+
+- Poll for queued runs, claim them, execute them.
+- Evaluate schedules and enqueue runs when due.
+- Attach to container output **once per run** and fan out to N subscribers
+  (multiple browsers/CLIs may tail the same run). Slow consumers get dropped or
+  bounded — never allowed to block the writer.
+- On startup: list containers by their `run_id` label and reconcile against runs in
+  a non-terminal state. Without this, every crash leaves orphaned containers.
+
+### 4.3 Podman integration
+
+- **Rootless**, under a dedicated service user. The Podman API "grants full access to
+  all Podman functionality"
+  ([docs](https://docs.podman.io/en/latest/markdown/podman-system-service.1.html)),
+  so a rootful socket reachable from the app would make the app root-equivalent on
+  the host — with user-supplied scripts as input.
+- **Socket-activated** system service, so it starts on demand and stops when idle.
+- **Access method:** plain HTTP over the Unix domain socket, via Go's `net/http`
+  with a custom `DialContext`.
+  - Official Go bindings exist (`github.com/containers/podman/v5/pkg/bindings`,
+    [README](https://github.com/containers/podman/tree/main/pkg/bindings)) and are
+    first-class, but importing them pulls in the whole Podman module and needs
+    native headers (gpgme, btrfs, devmapper) at build time. We use maybe 15
+    endpoints; direct HTTP avoids that weight.
+  - Reconsider the bindings if hand-rolling the client becomes a burden.
+- **Every container is labelled** with `run_id`. This is what makes reconciliation
+  possible.
+- **Runs pin image digests, not tags.** Otherwise rebuilding an image silently
+  changes what old schedules execute.
+
+### 4.4 Runtimes (container images)
+
+A *runtime* = curated base image + system packages + language packages.
+
+The platform renders a templated Containerfile and tags the result with a hash of
+those inputs, so identical definitions dedupe and reuse the build cache:
+
+```dockerfile
+FROM <curated-base>@sha256:...
+ARG SYS_PKGS
+RUN apk add --no-cache $SYS_PKGS      # or apt/dnf depending on base
+COPY manifest /tmp/manifest
+RUN <per-language install step>
+```
+
+Per-language declarative manifests use each ecosystem's own native format:
+
+| Language | Manifest | Install step |
+|---|---|---|
+| Python | `requirements.txt` | `pip install -r` |
+| PowerShell 7 | `.psd1` / JSON | `Install-PSResource -RequiredResourceFile` ([docs](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.psresourceget/install-psresource)) — supports version ranges and repositories; ships in PowerShell 7.4+ |
+| Node | `package.json` | `npm ci` |
+
+Order layers so package installation comes before anything that changes frequently,
+or the build cache is useless.
+
+Uploading a fully custom Containerfile is a *later* feature and uses the same build
+path with the templating step skipped — not a parallel implementation.
+
+**Operational note:** one-off builds accumulate layers. A retention/prune policy is
+required, not optional.
+
+### 4.5 Git
+
+Scripts live in bare git repositories on disk. We **shell out to `git`** rather than
+using an in-process implementation — principle 1.
+
+The important design consequence is not versioning but **content addressing**: a run
+record stores `(repo, commit_sha, image_digest, params)`, which makes any historical
+run fully explainable and repeatable.
+
+**Sidecar manifest.** Each script has a `<name>.job.yaml` beside it in the repo,
+declaring runtime, packages, parameter contract and (later) form layout. Consequences:
+
+- Git is the source of truth for job definitions; the API/UI are editors for those files.
+- "Pull from an external repo" becomes the same code path as the local library —
+  external repos simply bring their own manifests.
+- Script bodies never need to be stored in Postgres.
+
+### 4.6 Secrets
+
+Use Podman's native secret mechanism
+([docs](https://docs.podman.io/en/latest/markdown/podman-secret-create.1.html)).
+
+- Prefer `type=mount` (secret appears as a file, default `/run/secrets/<name>`) over
+  `type=env` — env vars leak into `podman inspect` and child process environments.
+- Secrets are not committed by `podman commit` and not included in `podman export`.
+- **The default `file` driver is unencrypted.** Acceptable for a single-user homelab;
+  know that it is not a vault.
+- Flat global namespace, ~500 KB cap → use a naming convention such as
+  `<jobid>__<name>`.
+- A `shell` driver exists that delegates store/lookup/delete to external scripts —
+  that's the migration path to `pass` or `systemd-creds` later without app changes.
+
+### 4.7 Parameters
+
+Four separate concerns, deliberately not merged:
+
+1. **Parameter contract** — declared in the sidecar manifest. Authoritative.
+2. **Introspection** — best-effort auto-detection when creating a job. Never a
+   runtime dependency, because quality varies wildly: PowerShell has a real AST
+   parser; Python `argparse` effectively requires *executing* the script; Bash has
+   nothing.
+3. **Form definition** — widgets, labels, validation. (Later.)
+4. **Binding map** — form field → parameter name. (Later.)
+
+**Language-agnostic passing convention:** the platform writes parameters as JSON to a
+known path (`/run/job/params.json`). Each runtime image ships a small shim that
+translates that into a native invocation — splatting a hashtable for PowerShell,
+`argparse` for Python, positional args for Bash. Adding a language is then "write a
+20-line shim", and the core orchestrator stays language-neutral.
+
+**Security:** container argv is always built as an **array**, never a shell string.
+Form values interpolated into `sh -c` is the injection hole this class of tool is
+famous for.
+
+### 4.8 Scheduling
+
+Two viable approaches; whichever is chosen, **the database is authoritative**:
+
+- **In-process scheduler** (e.g. `robfig/cron` in the supervisor). Simpler, one
+  source of truth by construction.
+- **Generated systemd timers.** More "native", but units must be treated as
+  regenerable derived state — full regenerate-and-reload on change, never hand-edited.
+
+Decision deferred to Phase 5. Quadlet is the right tool for the *platform's own*
+services either way ([docs](https://docs.podman.io/en/latest/markdown/podman-systemd.unit.5.html));
+note it requires cgroup v2.
+
+### 4.9 API
+
+- Path-versioned: `/api/v1` from the first commit.
+- **OpenAPI spec is the source of truth**, kept even though Swagger UI is deferred.
+  Go server stubs generated with
+  [`oapi-codegen`](https://github.com/oapi-codegen/oapi-codegen)
+  (`-generate types,chi-server`); the CLI's client generated from the same file. The
+  spec cannot rot because it is the input, not documentation.
+- **Runs are async.** `POST /api/v1/jobs/{id}/runs` returns `202 Accepted` with a run
+  ID and `Location` header. Never block an HTTP request on a script finishing.
+- **`Idempotency-Key` header** on run creation, deduplicated server-side. A retrying
+  pipeline that times out mid-request must not double-execute a job.
+- **Cursor (keyset) pagination** on runs — that table grows forever and offset
+  pagination both degrades and skips rows under concurrent inserts.
+- **Errors:** RFC 9457 `application/problem+json`.
+
+### 4.10 Authentication
+
+Two credential types, resolved by one middleware into a common `principal`:
+
+| Caller | Credential | Storage |
+|---|---|---|
+| Machines / CLI | Opaque token, prefixed (`sra_live_<random>`) | Only a hash in Postgres; plaintext shown once |
+| Browsers (later) | Server-set session cookie after OIDC Authorization Code + PKCE | `HttpOnly`, `Secure`, `SameSite=Lax` |
+
+**Never store JWTs in `localStorage`.** Any XSS becomes total account compromise and
+they can't be revoked.
+
+Scopes from day one, even before full RBAC: `read` / `run` / `admin`.
+
+### 4.11 Web UI (deferred, Phase 7+)
+
+Decision: a JavaScript SPA consuming the same API, **served from the same origin** as
+the API (built with Vite, embedded into the Go binary with `//go:embed`).
+
+The same-origin choice is not cosmetic. **`EventSource` cannot set custom headers** —
+it issues GET only, with no way to attach `Authorization`
+([whatwg/html#2177](https://github.com/whatwg/html/issues/2177)). A bearer-token SPA
+on a different origin therefore cannot use the native SSE API for live logs; the
+workarounds are tokens in query strings (logged, cached, in browser history), a
+polyfill, or hand-rolling `fetch` + `ReadableStream` with a custom SSE parser.
+Same-origin + cookie session means `new EventSource('/api/v1/runs/42/logs')` simply
+works. External clients still use bearer tokens against the same endpoints.
+
+Server-rendered HTML + htmx was considered and rejected: the form builder is a
+genuine client-side application, and a single API with one client type is simpler
+than two rendering strategies.
+
+---
+
+## 5. Data model sketch
+
+Not final — refine during Phase 1–3. Included so the shape is visible.
+
+```
+principals    id, kind(user|token), name, token_hash, scopes[], created_at
+repos         id, name, path, kind(local|external), remote_url
+jobs          id, repo_id, manifest_path, name, runtime_id, enabled
+runtimes      id, name, base_image, sys_packages, lang_manifest,
+              image_digest, build_status, built_at
+runs          id, job_id, principal_id, state, idempotency_key,
+              commit_sha, image_digest, params_json,
+              container_id, exit_code,
+              queued_at, started_at, finished_at
+run_logs      run_id, seq, stream(stdout|stderr), ts, text
+schedules     id, job_id, cron_expr, timezone, next_due_at, enabled
+audit         id, principal_id, action, target, ts, detail_json
+```
+
+**Run states:** `queued` → `running` → one of `succeeded` / `failed` / `cancelled` /
+`lost`.
+
+`lost` matters and is easy to forget: a run whose container vanished is not the same
+as one that failed, and the reconciler needs somewhere to put it.
+
+---
+
+## 6. Decision log
+
+Recording *why*, because in three months the reasoning will be gone.
+
+| # | Decision | Rationale | Revisit if |
+|---|---|---|---|
+| 1 | Build it despite Windmill/Rundeck existing | Personal tool + learning project; adoption not a goal | Never — but steal their ideas |
+| 2 | Go, not Python | Long-lived daemon (compiler catches scheduler bugs), streaming/concurrency fits goroutines, single static binary, first-class Podman ecosystem. Performance was *not* the reason — the workload is I/O-bound | Momentum stalls badly |
+| 3 | Podman REST over UDS, not Go bindings | Bindings pull the whole Podman module + native build deps for ~15 endpoints | Client maintenance becomes painful |
+| 4 | Rootless Podman | API grants full Podman access; rootful + user scripts = root-equivalent | Never |
+| 5 | Postgres as queue and lock | Already required; avoids Redis/broker | Scale far beyond a homelab |
+| 6 | api and supervisor as separate processes | API restartable without disturbing jobs; exactly one scheduler | Never |
+| 7 | Sidecar manifest in git | Git as source of truth; unifies local and external repos | Never |
+| 8 | Shell out to git | Native tooling principle | Need fine-grained in-process control |
+| 9 | Podman native secrets | Native tooling; `shell` driver is the upgrade path | Need real encryption at rest sooner |
+| 10 | JSON params file + per-runtime shim | Keeps core language-agnostic | Never |
+| 11 | OpenAPI spec-first | Retrofitting a spec onto handwritten handlers is unpleasant; free CLI client | Never |
+| 12 | SPA over server-rendered HTML | Form builder is genuinely client-side; API is reusable externally | Never — but note beauty is CSS, not framework |
+| 13 | SPA same-origin, cookie session | `EventSource` can't set `Authorization` headers | Never |
+| 14 | Swagger UI deferred, spec kept | UI is a static asset behind a flag; spec is codegen input | Whenever convenient |
+
+---
+
+## 7. Deliberately deferred
+
+Not forgotten — sequenced. See PLAN.md for when.
+
+- Web UI / SPA
+- Form builder
+- OIDC / Authentik integration
+- Full RBAC
+- External git repo sync + webhooks
+- Custom Containerfile upload
+- Swagger UI
+- Multi-node execution
+
+---
+
+## 8. Open questions
+
+Unresolved. Resolve at the phase indicated.
+
+| Question | Resolve at |
+|---|---|
+| In-process cron vs. generated systemd timers | Phase 5 |
+| Log retention: how long, and prune where (files vs Postgres)? | Phase 2 |
+| Image prune policy — time-based, count-based, or reference-based? | Phase 4 |
+| Does PowerShell's AST parser give usable parameter introspection? Prototype needed | Phase 6 |
+| Base image family — Alpine (small) vs Debian (compatible, esp. for PowerShell)? | Phase 4 |
