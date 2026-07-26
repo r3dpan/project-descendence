@@ -1,14 +1,16 @@
 package main
 
 import (
-	"fmt"
 	"log"
 	"net/http"
+
+	"github.com/r3dpan/project-descendence/internal/api"
 )
 
 // Product variables
-var product = "Go Descendence API-Server"
-var version = "v0.0.1"
+var productName = "Go Descendence API-Server"
+var productVersion = "v0.0.1"
+var apiVersion = "v0.0.1"
 
 // Configuration variables
 // -- API-Server
@@ -18,27 +20,19 @@ var port = ":8080"
 
 // -- Postgres
 
-// Handles requests to the root directory
-func rootHandler(w http.ResponseWriter, r *http.Request) {
-	fmt.Fprintln(w, product)
-	fmt.Fprintln(w, version)
-}
-
-// Handles healthcheck requests
-func healthHandler(w http.ResponseWriter, r *http.Request) {
-	fmt.Fprintln(w, "Healthy")
-}
-
 func main() {
 	// Create custom mux
 	// Needed for preventing usage of global mux
-	descendenceAPIMux := http.NewServeMux()
+	descendenceMux := http.NewServeMux()
+
+	// Create new API server
+	descendenceAPI := api.NewAPIServer(productName, productVersion, apiVersion)
 
 	// Create api handlers
-	descendenceAPIMux.HandleFunc("/", rootHandler)
-	descendenceAPIMux.HandleFunc("/healthz", healthHandler)
+	descendenceMux.HandleFunc("/", descendenceAPI.RootHandler)
+	descendenceMux.HandleFunc("/healthz", descendenceAPI.HealthHandler)
 
 	// Startup server
-	// As server always retuns error, when returning -> log it
-	log.Fatal(http.ListenAndServe(port, descendenceAPIMux))
+	// As server always returns error, when returning -> log it
+	log.Fatal(http.ListenAndServe(port, descendenceMux))
 }
