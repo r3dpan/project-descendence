@@ -93,7 +93,7 @@ easier to get right before five features sit on top of them.
       api/openapi.yaml  migrations/         README.md
       ARCHITECTURE.md   PLAN.md
       ```
-- [ ] **0.6** `go mod init`, then a `cmd/api` that serves `GET /healthz` → `200 OK`.
+- [x] **0.6** `go mod init`, then a `cmd/api` that serves `GET /healthz` → `200 OK`.
 - [ ] **0.7** Pick and set up a migration tool (`goose` or `golang-migrate`). Write
       migration 001 creating a single throwaway table; confirm up and down both work.
 
@@ -118,10 +118,13 @@ the run appears in Postgres with correct timestamps and state.
       ARCHITECTURE.md §5, trimmed to what Phase 1 needs.
 - [ ] **1.2** Set up `pgx` (Postgres driver) and `sqlc` (generates typed Go from your
       SQL). Write one query, generate, call it.
-- [ ] **1.3** Write `api/openapi.yaml` with exactly three operations:
+- [~] **1.3** Write `api/openapi.yaml` with exactly three operations:
       `POST /api/v1/runs`, `GET /api/v1/runs/{id}`, `GET /api/v1/runs`.
-- [ ] **1.4** Generate server stubs: `oapi-codegen -generate types,chi-server`.
-      Wire them to chi. Handlers can return "not implemented" for now.
+      Not started — spec currently only covers `/` and `/healthz`. Those two are
+      done but were never part of 1.3's three operations
+- [!] **1.4** Write routing and handlers directly in `internal/api`, no chi, no codegen, for
+      learning value. `internal/api` with `apiServer` struct + constructor +
+      handler methods exists and serves `/` and `/healthz`
 - [ ] **1.5** Auth middleware: read `Authorization: Bearer`, hash it, look up the
       principal, reject with 401 if unknown. One bootstrap token, inserted by a
       migration or a `make seed` target.
@@ -367,3 +370,19 @@ Broken / unresolved: nothing yet.
 Next action: Phase 0, task 0.1.
 Notes to future me: the whole design rests on the rootless Podman socket working
 (task 0.2). Verify that before writing any Go.
+
+### 2026-07-26
+Worked on: `openapi.yaml` for `/` and `/healthz` (JSON responses, versioned info);
+`internal/api` package — `apiServer` struct, `NewAPIServer` constructor, response
+types `serverInfo`/`serverHealth`, handler methods; `cmd/api/main.go` wired to use it.
+Completed: 0.6 (health endpoint, now via `internal/api`, not inline in `main.go`).
+Decided: hand-write all routing/handlers, no chi, no oapi-codegen — reverses the
+codegen half of decision #11. Needs a decision-log entry in ARCHITECTURE.md.
+Broken / unresolved: run endpoints (1.3's three operations) not yet in the spec.
+Postgres (0.4) and Podman socket (0.2) still not started — nothing past route
+skeletons is unblockable until then.
+Next action: write `Run`/`RunCreate`/`Problem` schemas and the three run
+operations into `openapi.yaml`, verify in Bruno, then stub the Go handlers as 501s.
+Notes to future me: 0.2/0.4/0.7 are the real next Phase-0 blockers — everything in
+1.5–1.8 needs Postgres. Don't let the API skeleton progress create the illusion
+that Phase 0 is done.
