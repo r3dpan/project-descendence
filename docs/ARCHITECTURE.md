@@ -261,10 +261,6 @@ note it requires cgroup v2.
 
 - Path-versioned: `/api/v1` from the first commit.
 - **OpenAPI spec is the source of truth**, kept even though Swagger UI is deferred.
-  Go server stubs generated with
-  [`oapi-codegen`](https://github.com/oapi-codegen/oapi-codegen)
-  (`-generate types,chi-server`); the CLI's client generated from the same file. The
-  spec cannot rot because it is the input, not documentation.
 - **Runs are async.** `POST /api/v1/jobs/{id}/runs` returns `202 Accepted` with a run
   ID and `Location` header. Never block an HTTP request on a script finishing.
 - **`Idempotency-Key` header** on run creation, deduplicated server-side. A retrying
