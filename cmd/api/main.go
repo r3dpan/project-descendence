@@ -36,7 +36,7 @@ func main() {
 
 	// Create api handlers
 	descendenceAPIMux.HandleFunc("/", rootHandler)
-	descendenceAPIMux.HandleFunc("/health", healthHandler)
+	descendenceAPIMux.HandleFunc("/healthz", healthHandler)
 
 	// Startup server
 	// As server always retuns error, when returning -> log it
