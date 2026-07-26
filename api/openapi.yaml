@@ -1,18 +1,45 @@
-openapi: 3.0.4
+openapi: 3.1.2
 info:
   title: Descendence API
-  description: Basic api provided by the descedence api server
-  version: 0.0.1
+  description: Basic api provided by the descendence api server
+  version: v0.0.1
+servers:
+- url: http://127.0.0.1:8080
+  description: Local development server for testing
 paths:
   /:
     get:
+      operationId: getAPIServerInfo
       responses:
         "200":
           description: Returns general information about the api server
-      deprecated: false
-  /health:
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  productName:
+                    type: string
+                  productBuild:
+                    type: string
+                  apiVersion:
+                    type: string
+                required:
+                  - productName
+                  - productBuild
+                  - apiVersion
+  /healthz:
     get:
-      responses: 
+      operationId: getAPIServerHealth
+      responses:
         "200":
           description: Returns health status of the api server
-      deprecated: false
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  healthStatus:
+                    type: string
+                required:
+                  - healthStatus
