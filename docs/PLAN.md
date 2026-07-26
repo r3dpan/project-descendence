@@ -93,7 +93,7 @@ easier to get right before five features sit on top of them.
       api/openapi.yaml  migrations/         README.md
       ARCHITECTURE.md   PLAN.md
       ```
-- [ ] **0.6** `go mod init`, then a `cmd/api` that serves `GET /healthz` → `200 OK`.
+- [ ] **0.6** `go mod init`, then a `cmd/api` that serves `GET /health` → `200 OK`.
 - [ ] **0.7** Pick and set up a migration tool (`goose` or `golang-migrate`). Write
       migration 001 creating a single throwaway table; confirm up and down both work.
 
