@@ -74,24 +74,24 @@ easier to get right before five features sit on top of them.
 ## Phase 0 — Foundations
 
 **Goal:** every tool installed and verified, an empty-but-running skeleton.
-**Done when:** `go run ./cmd/api` serves a health endpoint, and `psql` connects.
+**Done when:** `go run ./cmd/api` serves a health endpoint, and `DBeaver` connects.
 
 - [x] **0.1** Install Go (latest stable). Verify: `go version`.
-- [ ] **0.2** Install Podman. Enable the rootless socket:
+- [x] **0.2** Install Podman. Enable the rootless socket:
       `systemctl --user enable --now podman.socket`.
       Verify: `curl --unix-socket $XDG_RUNTIME_DIR/podman/podman.sock http://d/v5.0.0/libpod/info`
       returns JSON. *If this fails, stop and fix it — everything depends on it.*
-- [ ] **0.3** Enable lingering so the user service survives logout:
+- [x] **0.3** Enable lingering so the user service survives logout:
       `loginctl enable-linger $USER`.
-- [ ] **0.4** Run Postgres in a container via a Quadlet unit (`.container` file in
+- [x] **0.4** Run Postgres in a container via a Quadlet unit (`.container` file in
       `~/.config/containers/systemd/`). This is both the database and your first
-      hands-on Quadlet exercise. Verify: connect with `psql`.
-- [ ] **0.5** Create the git repo. Minimum layout:
+      hands-on Quadlet exercise. Verify: connect with `DBeaver`.
+- [x] **0.5** Create the git repo. Minimum layout:
       ```
       cmd/api/          cmd/supervisor/     cmd/cli/
       internal/store/   internal/podman/    internal/api/
       api/openapi.yaml  migrations/         README.md
-      ARCHITECTURE.md   PLAN.md
+      docs/ARCHITECTURE.md   docs/PLAN.md
       ```
 - [x] **0.6** `go mod init`, then a `cmd/api` that serves `GET /healthz` → `200 OK`.
 - [ ] **0.7** Pick and set up a migration tool (`goose` or `golang-migrate`). Write
@@ -386,3 +386,33 @@ operations into `openapi.yaml`, verify in Bruno, then stub the Go handlers as 50
 Notes to future me: 0.2/0.4/0.7 are the real next Phase-0 blockers — everything in
 1.5–1.8 needs Postgres. Don't let the API skeleton progress create the illusion
 that Phase 0 is done.
+
+### 2026-07-27
+Worked on: 0.2 (rootless Podman socket), 0.3 (lingering), 0.4 (Postgres via Quadlet).
+Completed:
+  - 0.3: `loginctl enable-linger` confirmed (`Linger=yes`).
+  - 0.4: `postgres.container` + `postgres-data.volume` Quadlet units running from
+    `~/.config/containers/systemd/` (symlinked to a custom directory for easier
+    editing). Postgres 18.4 on `127.0.0.1:5432`, connection verified via DBeaver
+    (no psql installed in this WSL2 instance — updated task wording to match).
+  - 0.2: rootless `podman.socket` enabled and verified via
+    `curl --unix-socket $XDG_RUNTIME_DIR/podman/podman.sock http://d/v5.0.0/libpod/info`.
+  - 0.5 — created the remaining git repo skeleton.
+Broken / unresolved: nothing currently open.
+Next action: 0.7 - Pick and set up a migration tool
+Notes to future me:
+  - Postgres 18+ images changed the expected mount point from
+    `/var/lib/postgresql/data` to `/var/lib/postgresql` (version-specific subdir
+    underneath, for `pg_upgrade --link` support). The Quadlet `Volume=` line
+    reflects this now — don't revert it if you see the old convention elsewhere.
+  - `~/.config/containers/systemd/` is a symlink to a custom directory. If Quadlet
+    ever "loses" units again, check that the symlink still resolves before
+    debugging anything else.
+  - WSL2 quirk: lingering keeps the systemd user manager alive across logout, but
+    doesn't stop the whole WSL2 instance from shutting down on its own idle timer.
+    Deliberately left `.wslconfig` idle-timeout settings alone since I'm always
+    attached via terminal or VS Code during dev sessions and don't mind it shutting
+    down otherwise. Revisit this if the supervisor ever needs to run unattended
+    (Phase 5, scheduling).
+  - `sudo systemctl --user ...` fails with a DBus/XDG_RUNTIME_DIR error — always use
+    plain `systemctl --user`, no sudo, for anything user-scoped.
