@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 )
 
@@ -38,12 +39,25 @@ type serverHealth struct {
 	HealthStatus string `json:"healthStatus"`
 }
 
+// --- Helper functions ---
+// Handle JSON
+func writeJSON(w http.ResponseWriter, status int, data any) {
+	// Set response headers
+	w.Header().Set("Content-Type", "application/json")
+
+	// Set response status line
+	w.WriteHeader(status)
+
+	// Set response body - Encoded to JSON
+	// Error handling needed as answer is already sent when status is checked -> client already received it
+	if err := json.NewEncoder(w).Encode(data); err != nil {
+		log.Printf("Failed encoding JSON: %v", err)
+	}
+}
+
 // --- Response handlers ---
 // Handles root directory calls
 func (s *APIServer) RootHandler(w http.ResponseWriter, r *http.Request) {
-	// Set response type
-	w.Header().Set("Content-Type", "application/json")
-
 	// Serialize response data
 	serverInfoData := serverInfo{
 		ProductName:  s.productName,
@@ -51,20 +65,15 @@ func (s *APIServer) RootHandler(w http.ResponseWriter, r *http.Request) {
 		APIVersion:   s.apiVersion,
 	}
 
-	// Encode response data to json
-	json.NewEncoder(w).Encode(serverInfoData)
+	writeJSON(w, http.StatusOK, serverInfoData)
 }
 
 // Handles healthcheck calls
 func (s *APIServer) HealthHandler(w http.ResponseWriter, r *http.Request) {
-	// Set response type
-	w.Header().Set("Content-Type", "application/json")
-
 	// Serialize response data
 	serverHealthData := serverHealth{
 		HealthStatus: s.healthStatus,
 	}
 
-	// Encode response data to json
-	json.NewEncoder(w).Encode(serverHealthData)
+	writeJSON(w, http.StatusOK, serverHealthData)
 }
