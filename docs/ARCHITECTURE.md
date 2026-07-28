@@ -346,7 +346,7 @@ Recording *why*, because in three months the reasoning will be gone.
 | 8 | Shell out to git | Native tooling principle | Need fine-grained in-process control |
 | 9 | Podman native secrets | Native tooling; `shell` driver is the upgrade path | Need real encryption at rest sooner |
 | 10 | JSON params file + per-runtime shim | Keeps core language-agnostic | Never |
-| 11 | OpenAPI spec-first | Retrofitting a spec onto handwritten handlers is unpleasant; free CLI client | Never |
+| 11 | OpenAPI spec-first | Handwritten handlers are preferred; free CLI client | Never |
 | 12 | SPA over server-rendered HTML | Form builder is genuinely client-side; API is reusable externally | Never — but note beauty is CSS, not framework |
 | 13 | SPA same-origin, cookie session | `EventSource` can't set `Authorization` headers | Never |
 | 14 | Swagger UI deferred, spec kept | UI is a static asset behind a flag; spec is codegen input | Whenever convenient |
