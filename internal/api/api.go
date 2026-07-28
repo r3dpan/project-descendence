@@ -45,9 +45,13 @@ func (s *APIServer) RootHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
 	// Serialize response data
-	serverInfoData := serverInfo{s.productName, s.productBuild, s.apiVersion}
+	serverInfoData := serverInfo{
+		ProductName:  s.productName,
+		ProductBuild: s.productBuild,
+		APIVersion:   s.apiVersion,
+	}
 
-	// Encode reposne data to json
+	// Encode response data to json
 	json.NewEncoder(w).Encode(serverInfoData)
 }
 
@@ -57,8 +61,10 @@ func (s *APIServer) HealthHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
 	// Serialize response data
-	serverHealthData := serverHealth{s.healthStatus}
+	serverHealthData := serverHealth{
+		HealthStatus: s.healthStatus,
+	}
 
-	// Encode reposne data to json
+	// Encode response data to json
 	json.NewEncoder(w).Encode(serverHealthData)
 }
