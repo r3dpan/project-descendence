@@ -37,11 +37,11 @@ Update the marker on each task as it moves:
 
 > **Update this block every session.**
 
-- **Phase:** 0 — Foundations (not started)
-- **Task:** —
-- **Next action:** Install Go and Podman, confirm the rootless Podman socket responds
-- **Blocked on:** nothing
-- **Notes:** Architecture agreed. Nothing built yet.
+- **Phase:** 0 — Foundations
+- **Task:** 0.7
+- **Next action:** -
+- **Blocked on:** -
+- **Notes:** -
 
 ---
 
@@ -122,7 +122,7 @@ the run appears in Postgres with correct timestamps and state.
       `POST /api/v1/runs`, `GET /api/v1/runs/{id}`, `GET /api/v1/runs`.
       Not started — spec currently only covers `/` and `/healthz`. Those two are
       done but were never part of 1.3's three operations
-- [!] **1.4** Write routing and handlers directly in `internal/api`, no chi, no codegen, for
+- [~] **1.4** Write routing and handlers directly in `internal/api`, no chi, no codegen, for
       learning value. `internal/api` with `apiServer` struct + constructor +
       handler methods exists and serves `/` and `/healthz`
 - [ ] **1.5** Auth middleware: read `Authorization: Bearer`, hash it, look up the
@@ -200,6 +200,12 @@ resumes without gaps.
 - [ ] **2.5** Same endpoint with `Accept: text/event-stream` → SSE. Emit `id:`,
       `event:`, `data:` with a blank line between messages; one `data:` line per
       output line. Call `Flush()` after every message.
+      **Constrained by `WriteTimeout`.** `cmd/api/main.go` sets a server-wide
+      `WriteTimeout` (30s). A streaming response is cut off at that deadline, so
+      SSE will not work without an override. Use `http.NewResponseController(w)`
+      and `SetWriteDeadline(time.Time{})` inside this handler only — a zero
+      `time.Time` disables the deadline for that one response. Do not solve this
+      by removing the server-wide timeout.
 - [ ] **2.6** Honour `Last-Event-ID` on reconnect: replay from that sequence number.
 - [ ] **2.7** Exit the stream goroutine on `r.Context().Done()` — otherwise every
       closed client leaks a goroutine.
