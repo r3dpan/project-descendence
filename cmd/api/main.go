@@ -3,6 +3,7 @@ package main
 import (
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/r3dpan/project-descendence/internal/api"
 )
@@ -15,6 +16,10 @@ var apiVersion = "v0.0.1"
 // Configuration variables
 // -- API-Server
 var port = ":8080"
+var readHeaderTimeout = 5 * time.Second
+var readTimeout = 15 * time.Second
+var writeTimeout = 30 * time.Second
+var idleTimeout = 120 * time.Second
 
 // -- Podman
 
@@ -34,7 +39,17 @@ func main() {
 	descendenceMux.HandleFunc("GET /{$}", descendenceAPI.RootHandler)
 	descendenceMux.HandleFunc("GET /healthz", descendenceAPI.HealthHandler)
 
+	// Create descedence server
+	descendenceServer := &http.Server{
+		Addr:              port,
+		Handler:           descendenceMux,
+		ReadHeaderTimeout: readHeaderTimeout,
+		ReadTimeout:       readTimeout,
+		WriteTimeout:      writeTimeout,
+		IdleTimeout:       idleTimeout,
+	}
+
 	// Startup server
 	// As server always returns error, when returning -> log it
-	log.Fatal(http.ListenAndServe(port, descendenceMux))
+	log.Fatal(descendenceServer.ListenAndServe())
 }
