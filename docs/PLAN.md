@@ -37,11 +37,12 @@ Update the marker on each task as it moves:
 
 > **Update this block every session.**
 
-- **Phase:** 0 — Foundations
-- **Task:** 0.7
-- **Next action:** -
-- **Blocked on:** -
-- **Notes:** -
+- **Phase:** 1 — Vertical slice
+- **Task:** 1.1 (next), 1.3/1.4 partially done
+- **Next action:** Migration 002 — `principals` and `runs` tables per ARCHITECTURE.md §5
+- **Blocked on:** nothing
+- **Notes:** Phase 0 complete. goose installed, `.env`-configured, up/down verified,
+  destroy-recreate-migrate exit check passed.
 
 ---
 
@@ -94,7 +95,7 @@ easier to get right before five features sit on top of them.
       docs/ARCHITECTURE.md   docs/PLAN.md
       ```
 - [x] **0.6** `go mod init`, then a `cmd/api` that serves `GET /healthz` → `200 OK`.
-- [ ] **0.7** Pick and set up a migration tool (`goose` or `golang-migrate`). Write
+- [x] **0.7** Pick and set up a migration tool (`goose` or `golang-migrate`). Write
       migration 001 creating a single throwaway table; confirm up and down both work.
 
 > **Beginner note.** Migrations are versioned SQL files that build the schema step by
@@ -165,7 +166,7 @@ the run appears in Postgres with correct timestamps and state.
 
 ### 1d. CLI
 
-- [ ] **1.18** Generate the API client from the same `openapi.yaml`.
+- [ ] **1.18** Hand write the API client from the same `openapi.yaml`.
 - [ ] **1.19** `cli run` — creates a run and polls until terminal, printing state.
 - [ ] **1.20** `cli runs list`, `cli runs get <id>`.
 - [ ] **1.21** Config: server URL and token from env vars or `~/.config/<name>/config`.
@@ -422,3 +423,28 @@ Notes to future me:
     (Phase 5, scheduling).
   - `sudo systemctl --user ...` fails with a DBus/XDG_RUNTIME_DIR error — always use
     plain `systemctl --user`, no sudo, for anything user-scoped.
+
+### 2026-07-29
+Worked on: API server hardening; migration tooling (0.7).
+Completed:
+  - Routing: `GET /{$}` and `GET /healthz` — Go 1.22+ patterns. Unmatched paths now
+    404, wrong methods 405 with `Allow`, instead of the old `/` catch-all answering
+    everything with server info.
+  - Explicit `http.Server` with ReadHeaderTimeout 5s / ReadTimeout 15s /
+    WriteTimeout 30s / IdleTimeout 120s, replacing `http.ListenAndServe`.
+  - `internal/api`: keyed composite literals; `writeJSON` helper holding the single
+    `Encode` error check; both handlers reduced to build-value-and-call.
+  - 0.7: goose chosen and installed, `.env` config, migration 001 (throwaway
+    `testing` table), up and down both verified.
+  - Phase 0 exit check passed — container + volume destroyed, recreated, migrated.
+Broken / unresolved: nothing open.
+Next action: 1.1 — migration 002 for `principals` and `runs`.
+Notes to future me:
+  - goose keys on the numeric prefix, not the filename. Renaming an applied
+    migration is safe; editing its SQL is not — goose skips it as done.
+  - `goose down` unwinds in reverse version order. You cannot remove a lower
+    migration without rolling back everything above it.
+  - Migrations run in a transaction by default, so a syntax error leaves nothing
+    behind. `-- +goose NO TRANSACTION` gives that up (needed for
+    CREATE INDEX CONCURRENTLY).
+  - `identity ALWAYS` vs `BY DEFAULT` — decide per table in 1.1.

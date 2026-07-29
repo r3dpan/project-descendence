@@ -346,11 +346,12 @@ Recording *why*, because in three months the reasoning will be gone.
 | 8 | Shell out to git | Native tooling principle | Need fine-grained in-process control |
 | 9 | Podman native secrets | Native tooling; `shell` driver is the upgrade path | Need real encryption at rest sooner |
 | 10 | JSON params file + per-runtime shim | Keeps core language-agnostic | Never |
-| 11 | OpenAPI spec-first | Handwritten handlers are preferred; free CLI client | Never |
+| 11 | Handwritten OpenAPI spec as contract | Handwritten handlers; free CLI client | Never |
 | 12 | SPA over server-rendered HTML | Form builder is genuinely client-side; API is reusable externally | Never — but note beauty is CSS, not framework |
 | 13 | SPA same-origin, cookie session | `EventSource` can't set `Authorization` headers | Never |
 | 14 | Swagger UI deferred, spec kept | UI is a static asset behind a flag; spec is codegen input | Whenever convenient |
-
+| 15 | Hand-write routing and handlers; no chi, no oapi-codegen | Learning value is the point of the project; stdlib `net/http` + Go 1.22 patterns are sufficient. Reverses the codegen half of #11 — the spec remains the contract | Handler boilerplate becomes genuinely unmanageable |
+| 16 | goose for migrations, not golang-migrate | Go-based migrations available for the Phase-1 bootstrap token (crypto/rand + SHA-256, not expressible in SQL); no dirty-flag state to force-clear after a failed migration; Postgres-only project makes golang-migrate's driver breadth irrelevant | Migrations ever need running by something that isn't Go |
 ---
 
 ## 7. Deliberately deferred
