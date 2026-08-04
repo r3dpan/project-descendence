@@ -131,6 +131,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/RunList"
+        "400":
+          description: Malformed cursor, or limit outside 1-200
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
         "401":
           description: Missing, malformed, unknown, expired or revoked token
           content:

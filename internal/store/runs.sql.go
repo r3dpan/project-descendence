@@ -143,3 +143,65 @@ func (q *Queries) GetRunByIdempotencyKey(ctx context.Context, arg GetRunByIdempo
 	)
 	return i, err
 }
+
+const listRuns = `-- name: ListRuns :many
+SELECT id, principal_id, state, idempotency_key, image_ref, argv,
+       timeout_seconds, container_id, exit_code, failure_reason,
+       cancel_requested_at, queued_at, started_at, finished_at, job_id,
+       commit_sha, runtime_id, image_digest, params_json
+FROM runs
+WHERE $1::timestamptz IS NULL
+   OR (queued_at, id) < ($1::timestamptz, $2::bigint)
+ORDER BY queued_at DESC, id DESC
+LIMIT $3
+`
+
+type ListRunsParams struct {
+	CursorQueuedAt pgtype.Timestamptz `json:"cursor_queued_at"`
+	CursorID       pgtype.Int8        `json:"cursor_id"`
+	RowLimit       int32              `json:"row_limit"`
+}
+
+// Keyset (seek) pagination on (queued_at DESC, id DESC), matching
+// runs_queued_at_id_desc_idx. A NULL cursor means "first page"; otherwise
+// the row-wise comparison below is exactly the "strictly after the cursor,
+// in this DESC order" condition.
+func (q *Queries) ListRuns(ctx context.Context, arg ListRunsParams) ([]Run, error) {
+	rows, err := q.db.Query(ctx, listRuns, arg.CursorQueuedAt, arg.CursorID, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Run
+	for rows.Next() {
+		var i Run
+		if err := rows.Scan(
+			&i.ID,
+			&i.PrincipalID,
+			&i.State,
+			&i.IdempotencyKey,
+			&i.ImageRef,
+			&i.Argv,
+			&i.TimeoutSeconds,
+			&i.ContainerID,
+			&i.ExitCode,
+			&i.FailureReason,
+			&i.CancelRequestedAt,
+			&i.QueuedAt,
+			&i.StartedAt,
+			&i.FinishedAt,
+			&i.JobID,
+			&i.CommitSha,
+			&i.RuntimeID,
+			&i.ImageDigest,
+			&i.ParamsJson,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}

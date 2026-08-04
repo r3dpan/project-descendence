@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -13,7 +14,11 @@ import (
 	"github.com/r3dpan/project-descendence/internal/store"
 )
 
-const defaultRunTimeoutSeconds = 3600
+const (
+	defaultRunTimeoutSeconds = 3600
+	defaultRunListLimit      = 50
+	maxRunListLimit          = 200
+)
 
 // --- Request/response objects ---
 
@@ -35,6 +40,44 @@ type runResponse struct {
 	QueuedAt       time.Time  `json:"queuedAt"`
 	StartedAt      *time.Time `json:"startedAt"`
 	FinishedAt     *time.Time `json:"finishedAt"`
+}
+
+type runListResponse struct {
+	Items      []runResponse `json:"items"`
+	NextCursor *string       `json:"nextCursor"`
+}
+
+// encodeCursor and decodeCursor turn a (queuedAt, id) seek position into the
+// opaque string clients pass back as ?cursor=. The internal shape (plain
+// "<RFC3339Nano queuedAt>|<id>", base64'd) is not part of the API contract -
+// clients must treat it as opaque.
+func encodeCursor(queuedAt time.Time, id int64) string {
+	raw := fmt.Sprintf("%s|%d", queuedAt.Format(time.RFC3339Nano), id)
+	return base64.URLEncoding.EncodeToString([]byte(raw))
+}
+
+func decodeCursor(encoded string) (queuedAt time.Time, id int64, err error) {
+	raw, err := base64.URLEncoding.DecodeString(encoded)
+	if err != nil {
+		return time.Time{}, 0, err
+	}
+
+	parts := strings.SplitN(string(raw), "|", 2)
+	if len(parts) != 2 {
+		return time.Time{}, 0, fmt.Errorf("malformed cursor")
+	}
+
+	queuedAt, err = time.Parse(time.RFC3339Nano, parts[0])
+	if err != nil {
+		return time.Time{}, 0, err
+	}
+
+	id, err = strconv.ParseInt(parts[1], 10, 64)
+	if err != nil {
+		return time.Time{}, 0, err
+	}
+
+	return queuedAt, id, nil
 }
 
 // toRunResponse converts a sqlc-generated Run (pgtype-heavy) into the
@@ -160,4 +203,54 @@ func (s *APIServer) GetRunHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, toRunResponse(run))
+}
+
+// Handles run listing: keyset (seek) pagination on (queued_at DESC, id DESC),
+// never offset - the table grows forever and offset pagination skips rows
+// under concurrent inserts (ARCHITECTURE.md §4.9). Not scoped to the caller's
+// principal, matching GetRunHandler.
+func (s *APIServer) ListRunsHandler(w http.ResponseWriter, r *http.Request) {
+	limit := int32(defaultRunListLimit)
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		parsed, err := strconv.ParseInt(raw, 10, 32)
+		if err != nil || parsed < 1 || parsed > maxRunListLimit {
+			writeProblem(w, http.StatusBadRequest, fmt.Sprintf("limit must be an integer between 1 and %d", maxRunListLimit))
+			return
+		}
+		limit = int32(parsed)
+	}
+
+	// Fetch one extra row to know whether a next page exists without a
+	// separate count query.
+	params := store.ListRunsParams{RowLimit: limit + 1}
+	if raw := r.URL.Query().Get("cursor"); raw != "" {
+		queuedAt, id, err := decodeCursor(raw)
+		if err != nil {
+			writeProblem(w, http.StatusBadRequest, "malformed cursor")
+			return
+		}
+		params.CursorQueuedAt = pgtype.Timestamptz{Time: queuedAt, Valid: true}
+		params.CursorID = pgtype.Int8{Int64: id, Valid: true}
+	}
+
+	runs, err := s.queries.ListRuns(r.Context(), params)
+	if err != nil {
+		writeProblem(w, http.StatusInternalServerError, "failed listing runs")
+		return
+	}
+
+	var nextCursor *string
+	if int32(len(runs)) > limit {
+		runs = runs[:limit]
+		last := runs[len(runs)-1]
+		c := encodeCursor(last.QueuedAt.Time, last.ID)
+		nextCursor = &c
+	}
+
+	items := make([]runResponse, len(runs))
+	for i, run := range runs {
+		items[i] = toRunResponse(run)
+	}
+
+	writeJSON(w, http.StatusOK, runListResponse{Items: items, NextCursor: nextCursor})
 }

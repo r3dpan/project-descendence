@@ -39,10 +39,10 @@ Update the marker on each task as it moves:
 
 - **Phase:** 1 — Vertical slice
 - **Task:** 1.1 done, 1.2 done, 1.3 done, 1.5 done, 1.6 done, 1.7 done, 1.8 done,
-  1.4 partially done
-- **Next action:** `GET /api/v1/runs` (list, keyset pagination) — the last of
-  1.3's three operations, not separately numbered in the checklist but still
-  open; then Phase 1b (`internal/podman`, task 1.9 onward)
+  `GET /api/v1/runs` (list) done, 1.4 done
+- **Next action:** Phase 1a (data/API skeleton) is done. Next is Phase 1b —
+  task 1.9, `internal/podman` HTTP client over the Unix socket, first call
+  `/libpod/info`
 - **Blocked on:** nothing
 - **Notes:** Phase 0 complete. Migration 00001 applied and committed — all eight
   ARCHITECTURE.md §5 tables exist in `descendent_db`. `pgx/v5` + `sqlc` wired up:
@@ -65,9 +65,12 @@ Update the marker on each task as it moves:
   `GetRunByIdempotencyKey` lookup on conflict), returns `202` + `Location`.
   `GET /api/v1/runs/{id}` (`GetRunHandler`) looks up by id, `404` if missing or
   malformed — not scoped to the caller's principal (RBAC is explicitly
-  deferred, ARCHITECTURE.md §7). `GET /api/v1/runs` (list) still unregistered.
-  `cmd/supervisor`, `cmd/cli`, `internal/podman` still exist only as empty
-  directories.
+  deferred, ARCHITECTURE.md §7). `GET /api/v1/runs` (`ListRunsHandler`) does
+  keyset pagination on `(queued_at DESC, id DESC)` via an opaque base64
+  cursor — fetches `limit+1` rows to detect a next page without a count
+  query. All three run operations from 1.3 are now implemented; Phase 1a is
+  done. `cmd/supervisor`, `cmd/cli`, `internal/podman` still exist only as
+  empty directories — that's Phase 1b, starting at task 1.9.
 
 ---
 
@@ -158,10 +161,12 @@ the run appears in Postgres with correct timestamps and state.
       offset pagination — see ARCHITECTURE.md §4.9), `401`/`404`/`400` via the
       existing `Problem` schema. Spec only — no handlers behind these three yet,
       that's 1.6–1.8.
-- [~] **1.4** Write routing and handlers directly in `internal/api`, no chi, no codegen, for
-      learning value. `internal/api` with `apiServer` struct + constructor +
-      handler methods exists and serves `/`, `/healthz`, and `/api/v1/whoami`.
-      The three run handlers (1.6–1.8) are what's left of this task.
+- [x] **1.4** Write routing and handlers directly in `internal/api`, no chi, no codegen, for
+      learning value. `internal/api` (`api.go`, `auth.go`, `runs.go`) with
+      `APIServer` struct + constructor + handler methods for `/`, `/healthz`,
+      `/api/v1/whoami`, and all three run operations (`POST`/`GET`
+      `/api/v1/runs`, `GET /api/v1/runs/{id}`) — routed in `cmd/api/main.go`
+      via the stdlib Go 1.22+ mux.
 - [x] **1.5** Auth middleware: read `Authorization: Bearer`, hash it, look up the
       principal, reject with 401 if unknown. One bootstrap token, inserted by a
       migration or a `make seed` target.
@@ -522,7 +527,8 @@ Notes to future me:
 Worked on: repo/documentation audit at the start of the session; PLAN.md accuracy;
 1.1 (apply + commit migration); 1.2 (`pgx` + `sqlc`); 1.5 (auth middleware);
 1.3 (openapi spec for the three run operations); 1.6 (`POST /api/v1/runs`);
-1.7 (`GET /api/v1/runs/{id}`); 1.8 (`Idempotency-Key`).
+1.7 (`GET /api/v1/runs/{id}`); 1.8 (`Idempotency-Key`); `GET /api/v1/runs`
+(list) — completing 1.3's three operations and closing out Phase 1a.
 Completed:
   - 1.1: found `migrations/00001_create_database.sql` already written (full
     ARCHITECTURE.md §5 schema, all eight tables) but untracked and unapplied.
@@ -592,13 +598,26 @@ Completed:
     no key, both create genuinely new rows. Confirmed the id sequence still
     skips a value on a conflict-skipped insert (expected Postgres behavior,
     not a bug — `nextval()` isn't transactional with `DO NOTHING`).
+  - `GET /api/v1/runs`: `internal/store/queries/runs.sql` (`ListRuns`, using
+    `sqlc.narg`/`sqlc.arg` for the nullable cursor columns + row limit) +
+    `ListRunsHandler`. Cursor is `base64(RFC3339Nano(queuedAt) + "|" + id)` -
+    opaque to clients, encodes the exact seek position. Fetches `limit+1` rows
+    to detect a next page without a separate `COUNT`; `nextCursor` is `null`
+    once fewer than `limit+1` rows come back. Added an undocumented-until-now
+    `400` to the spec for malformed cursor / out-of-range limit (`GetRun`
+    chose to fold malformed input into `404` instead — different call here
+    since a bad cursor silently returning page 1 would be more confusing than
+    an honest error). Verified live: created 5 runs, paged through with
+    `limit=2` across 3 pages in correct newest-first order with no gaps or
+    repeats, `nextCursor: null` on the last page; default (no params) returned
+    all 5 in one page; `limit=0`/`limit=abc` → `400`; malformed cursor → `400`;
+    no token → `401`. This closes out Phase 1a - all three 1.3 operations and
+    1.4's handlers are now implemented.
 Broken / unresolved: nothing.
-Next action: `GET /api/v1/runs` (list) — the third of 1.3's operations, not
-separately numbered in the Phase 1a checklist but still unimplemented: keyset
-pagination on `(queued_at DESC, id DESC)` per the existing index, `cursor`/
-`limit` query params already in the spec. After that, Phase 1a's data/API
-skeleton is essentially done and 1b (`internal/podman`, task 1.9 onward) is
-next.
+Next action: Phase 1b — task 1.9, `internal/podman`: an HTTP client over the
+rootless Unix socket (custom `http.Client` `DialContext`), first call
+`/libpod/info`. This is the first task touching Podman at all in this
+codebase.
 Notes to future me:
   - 1.1 went wider than planned (all eight tables, not just `principals`/`runs`)
     — future-phase tables are pre-created but commented as skeletons, so this
