@@ -38,9 +38,9 @@ Update the marker on each task as it moves:
 > **Update this block every session.**
 
 - **Phase:** 1 — Vertical slice
-- **Task:** 1.1 done, 1.2 done, 1.5 done, 1.3/1.4 partially done
-- **Next action:** 1.6 — `POST /api/v1/runs` (needs 1.3's spec/schemas finished
-  first: `Run`/`RunCreate`/`Problem` and the three run operations)
+- **Task:** 1.1 done, 1.2 done, 1.3 done, 1.5 done, 1.4 partially done
+- **Next action:** 1.6 — implement `POST /api/v1/runs` for real (insert a
+  `queued` row, return `202` + `Location`); spec is written, handler isn't
 - **Blocked on:** nothing
 - **Notes:** Phase 0 complete. Migration 00001 applied and committed — all eight
   ARCHITECTURE.md §5 tables exist in `descendent_db`. `pgx/v5` + `sqlc` wired up:
@@ -54,8 +54,10 @@ Update the marker on each task as it moves:
   bootstrap token (`sra_live_...`, scopes `read`/`run`/`admin`), and
   `GET /api/v1/whoami` (behind `RequireAuth`) proves the whole path — verified
   live: no token / bad token → 401, real token → 200 with the principal.
-  `cmd/supervisor`, `cmd/cli`, `internal/podman` still exist only as empty
-  directories.
+  `api/openapi.yaml` now also has the three run operations
+  (`POST`/`GET /api/v1/runs`, `GET /api/v1/runs/{id}`) fully specced — schemas
+  only, no handlers behind them yet (that's 1.6–1.8). `cmd/supervisor`,
+  `cmd/cli`, `internal/podman` still exist only as empty directories.
 
 ---
 
@@ -138,13 +140,18 @@ the run appears in Postgres with correct timestamps and state.
       `sqlc.yaml` + `internal/store/queries/health.sql` (`Ping`) generate into
       `internal/store/`. Wired into `cmd/api/main.go` via `pgxpool`, called from
       `HealthHandler` — `/healthz` now reports real `databaseUp` status.
-- [~] **1.3** Write `api/openapi.yaml` with exactly three operations:
+- [x] **1.3** Write `api/openapi.yaml` with exactly three operations:
       `POST /api/v1/runs`, `GET /api/v1/runs/{id}`, `GET /api/v1/runs`.
-      Not started — spec currently covers `/`, `/healthz`, and (as of 1.5)
-      `GET /api/v1/whoami`, but none of 1.3's three run operations yet.
+      All three specced: `RunCreate`/`Run`/`RunList` schemas, `Idempotency-Key`
+      request header (component parameter, enforcement is 1.8), `202` +
+      `Location` on create, keyset `cursor`/`limit` query params on list (no
+      offset pagination — see ARCHITECTURE.md §4.9), `401`/`404`/`400` via the
+      existing `Problem` schema. Spec only — no handlers behind these three yet,
+      that's 1.6–1.8.
 - [~] **1.4** Write routing and handlers directly in `internal/api`, no chi, no codegen, for
       learning value. `internal/api` with `apiServer` struct + constructor +
       handler methods exists and serves `/`, `/healthz`, and `/api/v1/whoami`.
+      The three run handlers (1.6–1.8) are what's left of this task.
 - [x] **1.5** Auth middleware: read `Authorization: Bearer`, hash it, look up the
       principal, reject with 401 if unknown. One bootstrap token, inserted by a
       migration or a `make seed` target.
@@ -476,7 +483,8 @@ Notes to future me:
 
 ### 2026-08-04
 Worked on: repo/documentation audit at the start of the session; PLAN.md accuracy;
-1.1 (apply + commit migration); 1.2 (`pgx` + `sqlc`); 1.5 (auth middleware).
+1.1 (apply + commit migration); 1.2 (`pgx` + `sqlc`); 1.5 (auth middleware);
+1.3 (openapi spec for the three run operations).
 Completed:
   - 1.1: found `migrations/00001_create_database.sql` already written (full
     ARCHITECTURE.md §5 schema, all eight tables) but untracked and unapplied.
@@ -507,11 +515,22 @@ Completed:
     wrong token → 401, real bootstrap token → 200 with the principal's
     id/name/kind/scopes. `openapi.yaml` gained a `bearerAuth` security scheme,
     `Principal`/`Problem` schemas, and the `/api/v1/whoami` path.
+  - 1.3: added `RunCreate` (`imageRef`, `argv` min 1 item, `timeoutSeconds`
+    default 3600), `Run` (mirrors the `runs` table, nullable fields as
+    `type: [x, "null"]` per OpenAPI 3.1 / JSON Schema 2020-12 — no `nullable:`
+    keyword, that's a 3.0-ism), and `RunList` (`items` + `nextCursor`).
+    `POST /api/v1/runs`: `Idempotency-Key` header (new reusable
+    `components.parameters.IdempotencyKey`), `202` + `Location`, `400`/`401`.
+    `GET /api/v1/runs`: `cursor`/`limit` query params, keyset not offset (table
+    grows forever, ARCHITECTURE.md §4.9). `GET /api/v1/runs/{id}`: `200`/`404`.
+    Spec-only — verified the YAML parses and every `$ref` resolves (ad hoc
+    Python check, no linter installed); no handlers behind any of these three
+    yet.
 Broken / unresolved: nothing.
-Next action: 1.3 — finish `api/openapi.yaml`'s `Run`/`RunCreate`/`Problem`
-schemas and the three run operations (`POST /api/v1/runs`,
-`GET /api/v1/runs/{id}`, `GET /api/v1/runs`), then 1.6 implements the first of
-them for real.
+Next action: 1.6 — implement `POST /api/v1/runs` for real: validate the body
+against what's now in the spec, insert a `queued` row, return `202` +
+`Location`. 1.7 (`GET /api/v1/runs/{id}`) and 1.8 (`Idempotency-Key`
+enforcement) follow naturally once 1.6's insert path exists.
 Notes to future me:
   - 1.1 went wider than planned (all eight tables, not just `principals`/`runs`)
     — future-phase tables are pre-created but commented as skeletons, so this

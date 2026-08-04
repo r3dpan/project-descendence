@@ -62,11 +62,125 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/Problem"
+  /api/v1/runs:
+    post:
+      operationId: createRun
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RunCreate"
+      responses:
+        "202":
+          description: >
+            Run accepted and queued. Never blocks on the container finishing -
+            poll GET /api/v1/runs/{id} for the outcome. A repeated
+            Idempotency-Key for the same principal returns the original run
+            rather than creating a second one.
+          headers:
+            Location:
+              description: "/api/v1/runs/{id} of the created (or original, if replayed) run"
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Run"
+        "400":
+          description: Validation failed (e.g. empty argv, non-positive timeout)
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "401":
+          description: Missing, malformed, unknown, expired or revoked token
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+    get:
+      operationId: listRuns
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: cursor
+          in: query
+          description: Opaque cursor from a previous response's nextCursor. Omit for the first page.
+          schema:
+            type: string
+        - name: limit
+          in: query
+          description: Maximum runs to return.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+      responses:
+        "200":
+          description: >
+            Runs in descending queued_at order (newest first), keyset-paginated -
+            never offset-based, since the table grows forever and offset
+            pagination skips rows under concurrent inserts.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunList"
+        "401":
+          description: Missing, malformed, unknown, expired or revoked token
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+  /api/v1/runs/{id}:
+    get:
+      operationId: getRun
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: The run
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Run"
+        "401":
+          description: Missing, malformed, unknown, expired or revoked token
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "404":
+          description: No run with this id
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
 components:
   securitySchemes:
     bearerAuth:
       type: http
       scheme: bearer
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      description: >
+        Scoped per principal. A retried request with the same key returns the
+        original run instead of creating a second one.
+      schema:
+        type: string
   schemas:
     ServerHealth:
       type: object
@@ -114,3 +228,74 @@ components:
         - type
         - title
         - status
+    RunCreate:
+      type: object
+      properties:
+        imageRef:
+          type: string
+          description: OCI image reference, e.g. "docker.io/library/alpine:latest"
+        argv:
+          type: array
+          items:
+            type: string
+          minItems: 1
+          description: >
+            Executed as-is, never interpolated into a shell string - a value
+            like "; rm -rf /" is passed through literally and harmlessly.
+        timeoutSeconds:
+          type: integer
+          minimum: 1
+          default: 3600
+      required:
+        - imageRef
+        - argv
+    Run:
+      type: object
+      properties:
+        id:
+          type: integer
+        state:
+          type: string
+          enum: [queued, running, succeeded, failed, cancelled, lost]
+        imageRef:
+          type: string
+        argv:
+          type: array
+          items:
+            type: string
+        timeoutSeconds:
+          type: integer
+        containerId:
+          type: [string, "null"]
+        exitCode:
+          type: [integer, "null"]
+        failureReason:
+          type: [string, "null"]
+        queuedAt:
+          type: string
+          format: date-time
+        startedAt:
+          type: [string, "null"]
+          format: date-time
+        finishedAt:
+          type: [string, "null"]
+          format: date-time
+      required:
+        - id
+        - state
+        - imageRef
+        - argv
+        - timeoutSeconds
+        - queuedAt
+    RunList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Run"
+        nextCursor:
+          description: Opaque cursor for the next page. Absent (or null) on the last page.
+          type: [string, "null"]
+      required:
+        - items
