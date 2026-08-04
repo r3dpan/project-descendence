@@ -42,3 +42,28 @@ WHERE sqlc.narg(cursor_queued_at)::timestamptz IS NULL
    OR (queued_at, id) < (sqlc.narg(cursor_queued_at)::timestamptz, sqlc.narg(cursor_id)::bigint)
 ORDER BY queued_at DESC, id DESC
 LIMIT sqlc.arg(row_limit);
+
+-- name: ClaimNextQueuedRun :one
+-- The supervisor's claim loop (task 1.12). The CTE's FOR UPDATE SKIP LOCKED
+-- picks the oldest queued run not already locked by another supervisor (or
+-- another iteration of this same loop, if ever run concurrently), and the
+-- outer UPDATE atomically transitions it to running in the same statement -
+-- no separate SELECT-then-UPDATE race window. Zero rows back (pgx.ErrNoRows)
+-- just means the queue is empty right now, not an error.
+WITH claimed AS (
+    SELECT id FROM runs
+    WHERE state = 'queued'
+    ORDER BY queued_at ASC
+    FOR UPDATE SKIP LOCKED
+    LIMIT 1
+)
+UPDATE runs
+SET state = 'running', started_at = now()
+FROM claimed
+WHERE runs.id = claimed.id
+RETURNING runs.id, runs.principal_id, runs.state, runs.idempotency_key,
+          runs.image_ref, runs.argv, runs.timeout_seconds, runs.container_id,
+          runs.exit_code, runs.failure_reason, runs.cancel_requested_at,
+          runs.queued_at, runs.started_at, runs.finished_at, runs.job_id,
+          runs.commit_sha, runs.runtime_id, runs.image_digest,
+          runs.params_json;

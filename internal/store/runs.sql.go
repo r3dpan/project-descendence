@@ -11,6 +11,59 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const claimNextQueuedRun = `-- name: ClaimNextQueuedRun :one
+WITH claimed AS (
+    SELECT id FROM runs
+    WHERE state = 'queued'
+    ORDER BY queued_at ASC
+    FOR UPDATE SKIP LOCKED
+    LIMIT 1
+)
+UPDATE runs
+SET state = 'running', started_at = now()
+FROM claimed
+WHERE runs.id = claimed.id
+RETURNING runs.id, runs.principal_id, runs.state, runs.idempotency_key,
+          runs.image_ref, runs.argv, runs.timeout_seconds, runs.container_id,
+          runs.exit_code, runs.failure_reason, runs.cancel_requested_at,
+          runs.queued_at, runs.started_at, runs.finished_at, runs.job_id,
+          runs.commit_sha, runs.runtime_id, runs.image_digest,
+          runs.params_json
+`
+
+// The supervisor's claim loop (task 1.12). The CTE's FOR UPDATE SKIP LOCKED
+// picks the oldest queued run not already locked by another supervisor (or
+// another iteration of this same loop, if ever run concurrently), and the
+// outer UPDATE atomically transitions it to running in the same statement -
+// no separate SELECT-then-UPDATE race window. Zero rows back (pgx.ErrNoRows)
+// just means the queue is empty right now, not an error.
+func (q *Queries) ClaimNextQueuedRun(ctx context.Context) (Run, error) {
+	row := q.db.QueryRow(ctx, claimNextQueuedRun)
+	var i Run
+	err := row.Scan(
+		&i.ID,
+		&i.PrincipalID,
+		&i.State,
+		&i.IdempotencyKey,
+		&i.ImageRef,
+		&i.Argv,
+		&i.TimeoutSeconds,
+		&i.ContainerID,
+		&i.ExitCode,
+		&i.FailureReason,
+		&i.CancelRequestedAt,
+		&i.QueuedAt,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.JobID,
+		&i.CommitSha,
+		&i.RuntimeID,
+		&i.ImageDigest,
+		&i.ParamsJson,
+	)
+	return i, err
+}
+
 const createRun = `-- name: CreateRun :one
 INSERT INTO runs (principal_id, image_ref, argv, timeout_seconds, idempotency_key)
 VALUES ($1, $2, $3, $4, $5)

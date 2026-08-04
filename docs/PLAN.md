@@ -38,24 +38,24 @@ Update the marker on each task as it moves:
 > **Update this block every session.**
 
 - **Phase:** 1 — Vertical slice
-- **Task:** Phase 1a done. 1.9 done. 1.10 done. 1.11 done - Phase 1b's
-  `internal/podman` client work is now done. 1.12 next.
-- **Next action:** 1.12 — supervisor claim loop: poll `queued` runs with
-  `SELECT ... FOR UPDATE SKIP LOCKED`, mark `running`, record `started_at`.
-  First code in `cmd/supervisor`, currently empty.
+- **Task:** Phase 1a and `internal/podman` (1.9–1.11) done. 1.12 done. 1.13
+  next.
+- **Next action:** 1.13 — execute: create the container, start it, wait,
+  record `exit_code`, set the terminal state, `finished_at`, remove the
+  container. Wire `internal/podman` into `cmd/supervisor`'s claim loop.
 - **Blocked on:** nothing
-- **Notes:** Phase 0, 1a done (see prior entries / commits for detail). Phase
-  1b's client side is done too: `internal/podman` —
-  `Client`/`Info`/`CreateContainer`/`StartContainer`/`WaitContainer`/
-  `RemoveContainer`, every container unconditionally `run_id`-labelled
-  (`CreateContainerParams.RunID` required, not optional). Two integration
-  tests in `containers_test.go` (`go test ./internal/podman/...`, skip
-  cleanly without `PODMAN_SOCKET`): full lifecycle with a real exit code, and
-  1.11's argv-injection test — a single argv element `"; rm -rf /"` makes the
-  OCI runtime fail to exec a file literally named that, proving the string
-  was never shell-split. `go vet ./...` clean, no leaked containers after
-  either test. `cmd/supervisor` and `cmd/cli` are still empty — 1.12 onward is
-  what actually makes a `queued` row turn into a running container.
+- **Notes:** Phase 0, 1a, and `internal/podman`'s client side all done (see
+  prior entries / commits). Phase 1c started: `cmd/supervisor/main.go` — a
+  polling claim loop (`ClaimNextQueuedRun`, 1s ticker, drains all queued runs
+  each tick, exits cleanly on SIGINT/SIGTERM). The claim itself is one
+  atomic SQL statement (CTE with `FOR UPDATE SKIP LOCKED` + `UPDATE ...
+  RETURNING`), so there's no separate select-then-update race window.
+  Verified live with two supervisor processes running concurrently against 6
+  queued runs: all 6 reached `running` with `started_at` set, and the two
+  supervisors split the work with zero overlap (5 runs to one, 1 to the
+  other) - `SKIP LOCKED` holds up under real concurrency, not just in theory.
+  Execution (1.13) isn't wired in yet, so a claimed run currently just sits
+  in `running` forever - that's the very next task.
 
 ---
 
@@ -239,8 +239,16 @@ the run appears in Postgres with correct timestamps and state.
 
 ### 1c. Supervisor
 
-- [ ] **1.12** Claim loop: poll for `queued` runs using
+- [x] **1.12** Claim loop: poll for `queued` runs using
       `SELECT ... FOR UPDATE SKIP LOCKED`, mark `running`, record `started_at`.
+      `ClaimNextQueuedRun` (`internal/store/queries/runs.sql`) is a single
+      statement: a `FOR UPDATE SKIP LOCKED` CTE feeding a data-modifying
+      `UPDATE ... RETURNING`, so claim-and-transition is atomic - no
+      select-then-update gap. `cmd/supervisor/main.go`: 1s-tick polling loop,
+      drains every queued run per tick, `signal.NotifyContext` for clean
+      SIGINT/SIGTERM shutdown. Verified live with two supervisor processes
+      running concurrently against 6 queued runs - all 6 claimed exactly
+      once between them (5/1 split), zero duplicates, zero left behind.
 - [ ] **1.13** Execute: create the container, start it, wait, record `exit_code`,
       set the terminal state, `finished_at`. Remove the container.
 - [ ] **1.14** Implement all six states: `queued`, `running`, `succeeded`, `failed`,
@@ -544,7 +552,8 @@ Worked on: repo/documentation audit at the start of the session; PLAN.md accurac
 1.7 (`GET /api/v1/runs/{id}`); 1.8 (`Idempotency-Key`); `GET /api/v1/runs`
 (list) — completing 1.3's three operations and closing out Phase 1a; 1.9
 (`internal/podman` client, opening Phase 1b); 1.10 (container lifecycle);
-1.11 (argv injection test) — closing out `internal/podman`'s client side.
+1.11 (argv injection test) — closing out `internal/podman`'s client side;
+1.12 (supervisor claim loop, opening Phase 1c).
 Completed:
   - 1.1: found `migrations/00001_create_database.sql` already written (full
     ARCHITECTURE.md §5 schema, all eight tables) but untracked and unapplied.
@@ -680,12 +689,30 @@ Completed:
     leaked containers afterward) - this closes out `internal/podman`'s
     client-side work; nothing execution-related is left to build before the
     supervisor.
+  - 1.12: `ClaimNextQueuedRun` — a `FOR UPDATE SKIP LOCKED` CTE feeding a
+    data-modifying `UPDATE ... RETURNING` in one statement, so the "pick a
+    row" and "mark it running" steps are atomic; zero rows back is just an
+    empty queue (`pgx.ErrNoRows`), not an error. `cmd/supervisor/main.go`:
+    `runClaimLoop` ticks every second, `claimAllQueued` drains the queue each
+    tick by calling the claim query until it errors, `signal.NotifyContext`
+    on SIGINT/SIGTERM for clean shutdown. Verified live: created 6 queued
+    runs via the API, ran two `cmd/supervisor` processes at once for a few
+    seconds - all 6 runs ended up `running` with `started_at` set, split 5/1
+    between the two processes with no run claimed twice and none left
+    `queued`. This is the concurrency property the whole design leans on
+    (ARCHITECTURE.md §4.1, "exactly one worker grab a row without blocking
+    others") actually holding under two real OS processes, not just reasoned
+    about. Execution isn't wired in yet - a claimed run currently stays
+    `running` forever with no container behind it; that's 1.13.
 Broken / unresolved: nothing.
-Next action: 1.12 — supervisor claim loop: poll for `queued` runs using
-`SELECT ... FOR UPDATE SKIP LOCKED`, mark `running`, record `started_at`.
-First code in `cmd/supervisor`, which is currently an empty directory. 1.13
-(execute: create/start/wait/record exit_code/remove) follows immediately -
-`internal/podman` already has every primitive 1.13 needs.
+Next action: 1.13 — execute: create the container, start it, wait, record
+`exit_code`, set the terminal state (`succeeded`/`failed` depending on the
+exit code), `finished_at`, then remove the container. This is where
+`cmd/supervisor` and `internal/podman` actually meet - `internal/podman`
+already has every primitive this needs (`CreateContainer`/`StartContainer`/
+`WaitContainer`/`RemoveContainer`), so 1.13 is wiring, not new Podman work.
+Needs a new sqlc query to write the terminal state back (something like
+`FinishRun(id, state, exit_code, container_id, finished_at)`).
 Notes to future me:
   - 1.1 went wider than planned (all eight tables, not just `principals`/`runs`)
     — future-phase tables are pre-created but commented as skeletons, so this
