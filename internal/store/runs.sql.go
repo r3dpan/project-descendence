@@ -56,3 +56,39 @@ func (q *Queries) CreateRun(ctx context.Context, arg CreateRunParams) (Run, erro
 	)
 	return i, err
 }
+
+const getRun = `-- name: GetRun :one
+SELECT id, principal_id, state, idempotency_key, image_ref, argv,
+       timeout_seconds, container_id, exit_code, failure_reason,
+       cancel_requested_at, queued_at, started_at, finished_at, job_id,
+       commit_sha, runtime_id, image_digest, params_json
+FROM runs
+WHERE id = $1
+`
+
+func (q *Queries) GetRun(ctx context.Context, id int64) (Run, error) {
+	row := q.db.QueryRow(ctx, getRun, id)
+	var i Run
+	err := row.Scan(
+		&i.ID,
+		&i.PrincipalID,
+		&i.State,
+		&i.IdempotencyKey,
+		&i.ImageRef,
+		&i.Argv,
+		&i.TimeoutSeconds,
+		&i.ContainerID,
+		&i.ExitCode,
+		&i.FailureReason,
+		&i.CancelRequestedAt,
+		&i.QueuedAt,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.JobID,
+		&i.CommitSha,
+		&i.RuntimeID,
+		&i.ImageDigest,
+		&i.ParamsJson,
+	)
+	return i, err
+}

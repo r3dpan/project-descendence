@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/r3dpan/project-descendence/internal/store"
 )
 
@@ -114,4 +116,27 @@ func (s *APIServer) CreateRunHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Location", fmt.Sprintf("/api/v1/runs/%d", run.ID))
 	writeJSON(w, http.StatusAccepted, toRunResponse(run))
+}
+
+// Handles run lookup by id. Not scoped to the caller's principal - full RBAC
+// is explicitly deferred (ARCHITECTURE.md §7), and this is a single-user tool
+// for now.
+func (s *APIServer) GetRunHandler(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeProblem(w, http.StatusNotFound, "no run with this id")
+		return
+	}
+
+	run, err := s.queries.GetRun(r.Context(), id)
+	if err != nil {
+		if err != pgx.ErrNoRows {
+			writeProblem(w, http.StatusInternalServerError, "failed fetching run")
+			return
+		}
+		writeProblem(w, http.StatusNotFound, "no run with this id")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, toRunResponse(run))
 }

@@ -38,8 +38,10 @@ Update the marker on each task as it moves:
 > **Update this block every session.**
 
 - **Phase:** 1 — Vertical slice
-- **Task:** 1.1 done, 1.2 done, 1.3 done, 1.5 done, 1.6 done, 1.4 partially done
-- **Next action:** 1.7 — implement `GET /api/v1/runs/{id}`
+- **Task:** 1.1 done, 1.2 done, 1.3 done, 1.5 done, 1.6 done, 1.7 done, 1.4
+  partially done
+- **Next action:** 1.8 — honour `Idempotency-Key` on `POST /api/v1/runs`
+  (unique index on `(principal_id, idempotency_key)` already exists)
 - **Blocked on:** nothing
 - **Notes:** Phase 0 complete. Migration 00001 applied and committed — all eight
   ARCHITECTURE.md §5 tables exist in `descendent_db`. `pgx/v5` + `sqlc` wired up:
@@ -57,8 +59,10 @@ Update the marker on each task as it moves:
   (`POST`/`GET /api/v1/runs`, `GET /api/v1/runs/{id}`) fully specced.
   `POST /api/v1/runs` (`internal/api/runs.go`, `CreateRunHandler`) is
   implemented and stamps `principal_id` from the auth middleware's context —
-  validates, inserts a `queued` row, returns `202` + `Location`. `GET`
-  `/api/v1/runs/{id}` and `GET /api/v1/runs` still return 404 (unregistered).
+  validates, inserts a `queued` row, returns `202` + `Location`.
+  `GET /api/v1/runs/{id}` (`GetRunHandler`) looks up by id, `404` if missing or
+  malformed — not scoped to the caller's principal (RBAC is explicitly
+  deferred, ARCHITECTURE.md §7). `GET /api/v1/runs` (list) still unregistered.
   `cmd/supervisor`, `cmd/cli`, `internal/podman` still exist only as empty
   directories.
 
@@ -180,7 +184,14 @@ the run appears in Postgres with correct timestamps and state.
       `queued` row in Postgres; empty `argv` → `400`; no token → `401`;
       an `argv` value shaped like a shell injection (`"; rm -rf /"`) stored
       as one literal array element, never interpreted.
-- [ ] **1.7** Implement `GET /api/v1/runs/{id}`.
+- [x] **1.7** Implement `GET /api/v1/runs/{id}`.
+      `internal/store/queries/runs.sql` (`GetRun`) + `GetRunHandler`. Malformed
+      or unknown id both return `404` (spec only documents `200`/`401`/`404`
+      for this route, so a `400` for malformed ids was left out on purpose).
+      Not principal-scoped — any authenticated caller can read any run; full
+      RBAC is deferred (ARCHITECTURE.md §7) and this is a single-user tool for
+      now. Verified live: existing id → `200`, unknown id → `404`, non-numeric
+      id → `404`, no token → `401`.
 - [ ] **1.8** Honour `Idempotency-Key`: unique index on it; a repeat returns the
       original run rather than creating a second.
 
@@ -496,7 +507,8 @@ Notes to future me:
 ### 2026-08-04
 Worked on: repo/documentation audit at the start of the session; PLAN.md accuracy;
 1.1 (apply + commit migration); 1.2 (`pgx` + `sqlc`); 1.5 (auth middleware);
-1.3 (openapi spec for the three run operations); 1.6 (`POST /api/v1/runs`).
+1.3 (openapi spec for the three run operations); 1.6 (`POST /api/v1/runs`);
+1.7 (`GET /api/v1/runs/{id}`).
 Completed:
   - 1.1: found `migrations/00001_create_database.sql` already written (full
     ARCHITECTURE.md §5 schema, all eight tables) but untracked and unapplied.
@@ -550,11 +562,18 @@ Completed:
     in Postgres with `state='queued'`; empty `argv` → `400`; no token → `401`;
     an `argv` element of `"; rm -rf /"` round-tripped as one literal array
     element in the DB, never interpreted as shell.
+  - 1.7: `internal/store/queries/runs.sql` (`GetRun`) + `GetRunHandler`.
+    Malformed and unknown ids both map to `404` (spec doesn't document a `400`
+    for this route). Deliberately not scoped to the caller's principal — full
+    RBAC is deferred (ARCHITECTURE.md §7), this is a single-user tool for now.
+    Verified live: real id → `200` with the full run body; unknown id → `404`;
+    non-numeric id (`not-a-number`) → `404`; no token → `401`.
 Broken / unresolved: nothing.
-Next action: 1.7 — implement `GET /api/v1/runs/{id}` (straightforward lookup +
-404 if missing). 1.8 (`Idempotency-Key` enforcement) is the next natural step
-after that, then 1c (supervisor claim loop) is what actually makes queued
-runs execute.
+Next action: 1.8 — honour `Idempotency-Key` on `POST /api/v1/runs`: a repeat
+with the same key (scoped per principal, per the existing unique index) should
+return the original run, not create or error. Then `GET /api/v1/runs` (list,
+keyset pagination) is the last of the three 1.3 operations, and 1c (supervisor
+claim loop) is what actually makes queued runs execute.
 Notes to future me:
   - 1.1 went wider than planned (all eight tables, not just `principals`/`runs`)
     — future-phase tables are pre-created but commented as skeletons, so this
