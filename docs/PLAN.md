@@ -38,9 +38,8 @@ Update the marker on each task as it moves:
 > **Update this block every session.**
 
 - **Phase:** 1 — Vertical slice
-- **Task:** 1.1 done, 1.2 done, 1.3 done, 1.5 done, 1.4 partially done
-- **Next action:** 1.6 — implement `POST /api/v1/runs` for real (insert a
-  `queued` row, return `202` + `Location`); spec is written, handler isn't
+- **Task:** 1.1 done, 1.2 done, 1.3 done, 1.5 done, 1.6 done, 1.4 partially done
+- **Next action:** 1.7 — implement `GET /api/v1/runs/{id}`
 - **Blocked on:** nothing
 - **Notes:** Phase 0 complete. Migration 00001 applied and committed — all eight
   ARCHITECTURE.md §5 tables exist in `descendent_db`. `pgx/v5` + `sqlc` wired up:
@@ -55,9 +54,13 @@ Update the marker on each task as it moves:
   `GET /api/v1/whoami` (behind `RequireAuth`) proves the whole path — verified
   live: no token / bad token → 401, real token → 200 with the principal.
   `api/openapi.yaml` now also has the three run operations
-  (`POST`/`GET /api/v1/runs`, `GET /api/v1/runs/{id}`) fully specced — schemas
-  only, no handlers behind them yet (that's 1.6–1.8). `cmd/supervisor`,
-  `cmd/cli`, `internal/podman` still exist only as empty directories.
+  (`POST`/`GET /api/v1/runs`, `GET /api/v1/runs/{id}`) fully specced.
+  `POST /api/v1/runs` (`internal/api/runs.go`, `CreateRunHandler`) is
+  implemented and stamps `principal_id` from the auth middleware's context —
+  validates, inserts a `queued` row, returns `202` + `Location`. `GET`
+  `/api/v1/runs/{id}` and `GET /api/v1/runs` still return 404 (unregistered).
+  `cmd/supervisor`, `cmd/cli`, `internal/podman` still exist only as empty
+  directories.
 
 ---
 
@@ -166,8 +169,17 @@ the run appears in Postgres with correct timestamps and state.
 > `principal_id` to stamp onto records. Adding the concept later means touching every
 > handler and backfilling every table. It's ~30 lines today.
 
-- [ ] **1.6** Implement `POST /api/v1/runs`: validate, insert a row with state
+- [x] **1.6** Implement `POST /api/v1/runs`: validate, insert a row with state
       `queued`, return `202 Accepted` with the ID and a `Location` header.
+      `internal/store/queries/runs.sql` (`CreateRun`) + `internal/api/runs.go`
+      (`CreateRunHandler`, registered behind `RequireAuth`). Validates
+      `imageRef` non-empty, `argv` non-empty, `timeoutSeconds` positive
+      (defaults to 3600); `principal_id` comes from the auth middleware's
+      context, not the body. `Idempotency-Key` not read yet — deliberately
+      deferred to 1.8. Verified live: valid create → `202` + `Location` +
+      `queued` row in Postgres; empty `argv` → `400`; no token → `401`;
+      an `argv` value shaped like a shell injection (`"; rm -rf /"`) stored
+      as one literal array element, never interpreted.
 - [ ] **1.7** Implement `GET /api/v1/runs/{id}`.
 - [ ] **1.8** Honour `Idempotency-Key`: unique index on it; a repeat returns the
       original run rather than creating a second.
@@ -484,7 +496,7 @@ Notes to future me:
 ### 2026-08-04
 Worked on: repo/documentation audit at the start of the session; PLAN.md accuracy;
 1.1 (apply + commit migration); 1.2 (`pgx` + `sqlc`); 1.5 (auth middleware);
-1.3 (openapi spec for the three run operations).
+1.3 (openapi spec for the three run operations); 1.6 (`POST /api/v1/runs`).
 Completed:
   - 1.1: found `migrations/00001_create_database.sql` already written (full
     ARCHITECTURE.md §5 schema, all eight tables) but untracked and unapplied.
@@ -526,11 +538,23 @@ Completed:
     Spec-only — verified the YAML parses and every `$ref` resolves (ad hoc
     Python check, no linter installed); no handlers behind any of these three
     yet.
+  - 1.6: `internal/store/queries/runs.sql` (`CreateRun`) + `internal/api/runs.go`
+    (`CreateRunHandler`, `runCreateRequest`/`runResponse`, `toRunResponse`
+    converting sqlc's `pgtype`-heavy `store.Run` into the wire shape).
+    Registered `POST /api/v1/runs` behind `RequireAuth` — `principal_id` comes
+    from the auth middleware's context, not the request body. Validates
+    `imageRef` non-empty, `argv` non-empty, `timeoutSeconds` positive when
+    given (defaults to 3600 otherwise). `Idempotency-Key` intentionally not
+    read yet - that's 1.8. Verified live end to end (`go run ./cmd/api` +
+    `curl`): valid create → `202`, `Location: /api/v1/runs/{id}`, row visible
+    in Postgres with `state='queued'`; empty `argv` → `400`; no token → `401`;
+    an `argv` element of `"; rm -rf /"` round-tripped as one literal array
+    element in the DB, never interpreted as shell.
 Broken / unresolved: nothing.
-Next action: 1.6 — implement `POST /api/v1/runs` for real: validate the body
-against what's now in the spec, insert a `queued` row, return `202` +
-`Location`. 1.7 (`GET /api/v1/runs/{id}`) and 1.8 (`Idempotency-Key`
-enforcement) follow naturally once 1.6's insert path exists.
+Next action: 1.7 — implement `GET /api/v1/runs/{id}` (straightforward lookup +
+404 if missing). 1.8 (`Idempotency-Key` enforcement) is the next natural step
+after that, then 1c (supervisor claim loop) is what actually makes queued
+runs execute.
 Notes to future me:
   - 1.1 went wider than planned (all eight tables, not just `principals`/`runs`)
     — future-phase tables are pre-created but commented as skeletons, so this
