@@ -1,11 +1,15 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
+	"os"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/r3dpan/project-descendence/internal/api"
+	"github.com/r3dpan/project-descendence/internal/store"
 )
 
 // Product variables
@@ -26,12 +30,26 @@ var idleTimeout = 120 * time.Second
 // -- Postgres
 
 func main() {
+	// Connect to Postgres
+	databaseURL := os.Getenv("DATABASE_URL")
+	if databaseURL == "" {
+		log.Fatal("DATABASE_URL is not set")
+	}
+
+	pool, err := pgxpool.New(context.Background(), databaseURL)
+	if err != nil {
+		log.Fatalf("Failed creating database pool: %v", err)
+	}
+	defer pool.Close()
+
+	queries := store.New(pool)
+
 	// Create custom mux
 	// Needed for preventing usage of global mux
 	descendenceMux := http.NewServeMux()
 
 	// Create new API server
-	descendenceAPI := api.NewAPIServer(productName, productBuild, apiVersion)
+	descendenceAPI := api.NewAPIServer(productName, productBuild, apiVersion, queries)
 
 	// Create api handlers
 	// Rule: the most specific pattern always wins

@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+
+	"github.com/r3dpan/project-descendence/internal/store"
 )
 
 // --- API server object ---
@@ -12,17 +14,17 @@ type APIServer struct {
 	productBuild string
 	apiVersion   string
 
-	healthStatus string
+	queries *store.Queries
 }
 
 // --- API server constructor ---
-func NewAPIServer(productName string, productBuild string, apiVersion string) *APIServer {
+func NewAPIServer(productName string, productBuild string, apiVersion string, queries *store.Queries) *APIServer {
 	return &APIServer{
 		productName:  productName,
 		productBuild: productBuild,
 		apiVersion:   apiVersion,
 
-		healthStatus: "Healthy",
+		queries: queries,
 	}
 }
 
@@ -37,6 +39,7 @@ type serverInfo struct {
 // Server health
 type serverHealth struct {
 	HealthStatus string `json:"healthStatus"`
+	DatabaseUp   bool   `json:"databaseUp"`
 }
 
 // --- Helper functions ---
@@ -70,10 +73,25 @@ func (s *APIServer) RootHandler(w http.ResponseWriter, r *http.Request) {
 
 // Handles healthcheck calls
 func (s *APIServer) HealthHandler(w http.ResponseWriter, r *http.Request) {
-	// Serialize response data
-	serverHealthData := serverHealth{
-		HealthStatus: s.healthStatus,
+	// Ping the database to prove the pool is actually reachable, not just configured
+	_, err := s.queries.Ping(r.Context())
+	databaseUp := err == nil
+	if err != nil {
+		log.Printf("Health check: database ping failed: %v", err)
 	}
 
-	writeJSON(w, http.StatusOK, serverHealthData)
+	healthStatus := "Healthy"
+	status := http.StatusOK
+	if !databaseUp {
+		healthStatus = "Unhealthy"
+		status = http.StatusServiceUnavailable
+	}
+
+	// Serialize response data
+	serverHealthData := serverHealth{
+		HealthStatus: healthStatus,
+		DatabaseUp:   databaseUp,
+	}
+
+	writeJSON(w, status, serverHealthData)
 }

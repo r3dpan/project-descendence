@@ -33,13 +33,26 @@ paths:
       operationId: getAPIServerHealth
       responses:
         "200":
-          description: Returns health status of the api server
+          description: Api server and database are both reachable
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  healthStatus:
-                    type: string
-                required:
-                  - healthStatus
+                $ref: "#/components/schemas/ServerHealth"
+        "503":
+          description: Api server is up but the database is not reachable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServerHealth"
+components:
+  schemas:
+    ServerHealth:
+      type: object
+      properties:
+        healthStatus:
+          type: string
+        databaseUp:
+          type: boolean
+      required:
+        - healthStatus
+        - databaseUp
