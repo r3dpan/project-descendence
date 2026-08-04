@@ -38,13 +38,13 @@ Update the marker on each task as it moves:
 > **Update this block every session.**
 
 - **Phase:** 1 — Vertical slice
-- **Task:** Phase 1a, `internal/podman` (1.9–1.11), 1.12, 1.13, 1.15, 1.16
-  done. 1.14 and 1.17 left open in Phase 1c.
+- **Task:** Phase 1a, `internal/podman` (1.9–1.11), 1.12, 1.13, 1.15, 1.16,
+  1.17 done. Phase 1c is now done except 1.14.
 - **Next action:** 1.14 — implement all six run states. Deliberately skipped
-  twice now (once for 1.15, once for 1.16); still open, and likely mostly a
+  three times now (1.15, 1.16, 1.17); still open, and likely mostly a
   verification pass - `queued`/`running`/`succeeded`/`failed`/`lost` all
   already happen, only `cancelled` has no producer (needs Phase 2's cancel
-  endpoint). 1.17 (per-run timeout) is the other open Phase 1c item.
+  endpoint). After 1.14, Phase 1d (hand-written CLI, tasks 1.18-1.21) is next.
 - **Blocked on:** nothing
 - **Notes:** Phase 0, 1a, `internal/podman`, and the claim loop (1.12) all
   done (see prior entries / commits). 1.13 closes the vertical slice's core
@@ -76,6 +76,23 @@ Update the marker on each task as it moves:
   would need two goroutines calling `ClaimNextQueuedRun` concurrently within
   one process, or a deliberate lock bypass for the test, rather than two
   separate `cmd/supervisor` processes.
+  1.17's timeout enforcement wraps `waitFinishAndRemove`'s `WaitContainer`
+  call in a `context.WithDeadline` computed from `run.StartedAt +
+  run.TimeoutSeconds` - not from when the wait starts, so an adopted run
+  (1.15) only gets whatever budget it had left, not a fresh clock. On
+  expiry: `KillContainer` (new, `POST .../kill`, libpod's default signal is
+  SIGKILL) then a fresh `WaitContainer` to confirm it actually stopped,
+  `state=failed`/`exit_code=NULL`/`failure_reason="exceeded timeout of Ns"`,
+  then remove. Distinguishes three cases via `errors.Is(waitCtx.Err(),
+  context.DeadlineExceeded)` vs `waitCtx.Err() != nil` (parent cancelled -
+  i.e. supervisor shutdown, not a timeout: leaves the run running for the
+  reconciler, touches nothing) vs neither (a genuine `WaitContainer` error,
+  handled as before). Verified live: a `sleep 30` with `timeoutSeconds: 3`
+  was killed and marked `failed` within ~3s, not 30s, no leaked container,
+  while a normal run with a generous timeout still succeeded normally in the
+  same session; separately, adopting a run whose `started_at` was set an
+  hour in the past with a 10s timeout killed it immediately on reconcile,
+  proving the deadline survives a restart rather than resetting.
   Runs within one supervisor process still execute strictly one at a time -
   no concurrency within a process yet, not asked for by 1.13.
 
@@ -321,8 +338,15 @@ the run appears in Postgres with correct timestamps and state.
       queries would break it). Verified live: second supervisor refuses
       immediately while the first runs; lock is free again immediately after
       graceful shutdown.
-- [ ] **1.17** Timeouts: a per-run maximum duration, enforced with `context.Context`;
+- [x] **1.17** Timeouts: a per-run maximum duration, enforced with `context.Context`;
       on expiry, kill the container and record `failed` with a reason.
+      Deadline computed from `run.StartedAt + run.TimeoutSeconds` (survives
+      a supervisor restart correctly for adopted runs - no fresh clock).
+      New `podman.KillContainer`. Distinguishes "timed out" from "supervisor
+      is shutting down" via `errors.Is(waitCtx.Err(), context.DeadlineExceeded)`
+      - shutdown leaves the run `running` for the reconciler instead of
+      marking it failed. Verified live both from a fresh claim and from
+      reconciler adoption of an already-expired run.
 
 ### 1d. CLI
 
@@ -621,7 +645,8 @@ Worked on: repo/documentation audit at the start of the session; PLAN.md accurac
 the CLI-less end of the vertical slice: submit a run over HTTP, it actually
 executes in a container and lands on a real terminal state; 1.15 (reconciler)
 — skipped ahead of 1.14 deliberately, at the user's direction; 1.16 (advisory
-lock) — also skipped ahead of 1.14, at the user's direction.
+lock) — also skipped ahead of 1.14, at the user's direction; 1.17 (timeouts)
+— closes out Phase 1c except for 1.14.
 Completed:
   - 1.1: found `migrations/00001_create_database.sql` already written (full
     ARCHITECTURE.md §5 schema, all eight tables) but untracked and unapplied.
@@ -844,14 +869,41 @@ Completed:
     property would now need two goroutines calling `ClaimNextQueuedRun`
     within one process (or a deliberate lock bypass for the test) to
     re-verify, not two OS processes.
+  - 1.17: deadline computed once, in `waitFinishAndRemove`, as
+    `run.StartedAt.Time.Add(time.Duration(run.TimeoutSeconds) * time.Second)`
+    - deliberately from `StartedAt`, not `time.Now()` at the point of
+    calling `WaitContainer`, so a reconciler-adopted run (1.15) is bounded by
+    what's actually left of its original budget, not a fresh full timeout.
+    `context.WithDeadline(ctx, deadline)` wraps just the `WaitContainer`
+    call. On error, three-way branch on `waitCtx.Err()`:
+    `errors.Is(..., context.DeadlineExceeded)` → genuine timeout →
+    `handleTimeout` (new `podman.KillContainer` via `POST .../kill`,
+    confirmed via `curl` first that libpod's default signal is SIGKILL and
+    the endpoint returns `204`; then a fresh `WaitContainer` just to confirm
+    it actually stopped before removing, ignoring that exit code since it's
+    meaningless - the run didn't finish on its own); `waitCtx.Err() != nil`
+    but not that specific error → the *parent* context was cancelled first,
+    i.e. supervisor shutdown, not a timeout → deliberately touch nothing and
+    leave the run `running` for the reconciler; neither → the pre-existing
+    generic `WaitContainer` failure path, unchanged. All of `handleTimeout`'s
+    Podman/DB calls use a fresh `context.Background()`, same reasoning as
+    `removeContainer` already established in 1.13 - the context that just
+    expired obviously can't be reused. Verified live twice: a `sleep 30`
+    with `timeoutSeconds: 3` was killed at ~3s (not 30s), `failed`,
+    `exit_code` `NULL`, `failure_reason="exceeded timeout of 3s"`, no leaked
+    container, while an unrelated normal run in the same batch still
+    succeeded on its own generous timeout; separately, hand-editing a run's
+    `started_at` to an hour in the past with a 10s timeout and a live
+    container, then starting the supervisor fresh, killed it immediately on
+    reconcile - the elapsed-time-survives-a-restart property, proven, not
+    just asserted in a comment.
 Broken / unresolved: nothing. 1.14 (all six states) was intentionally
-skipped twice, not forgotten - see "Current position".
+skipped three times, not forgotten - see "Current position".
 Next action: 1.14 - implement all six run states. Likely mostly a
 verification pass given `queued`/`running`/`succeeded`/`failed`/`lost` all
 already exist and are exercised live; `cancelled` genuinely can't be reached
-until Phase 2's cancel endpoint exists. 1.17 (per-run timeout via
-`context.Context`, kill + `failed` on expiry) is still open too and is the
-last item in Phase 1c before 1d (hand-written CLI client, tasks 1.18-1.21).
+until Phase 2's cancel endpoint exists. After 1.14, Phase 1c is fully done and
+1d (hand-written CLI client, tasks 1.18-1.21) is next.
 Notes to future me:
   - 1.1 went wider than planned (all eight tables, not just `principals`/`runs`)
     — future-phase tables are pre-created but commented as skeletons, so this

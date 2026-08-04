@@ -112,6 +112,19 @@ func (c *Client) RemoveContainer(ctx context.Context, id string) error {
 	return checkStatus(resp, "remove container", http.StatusOK, http.StatusNoContent)
 }
 
+// KillContainer calls POST /libpod/containers/{id}/kill, sending SIGKILL
+// (libpod's default when no signal is specified) - used for timeouts (task
+// 1.17), where the container has already had its chance to exit on its own.
+func (c *Client) KillContainer(ctx context.Context, id string) error {
+	resp, err := c.do(ctx, http.MethodPost, "/libpod/containers/"+id+"/kill", nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	return checkStatus(resp, "kill container", http.StatusNoContent, http.StatusOK)
+}
+
 // ContainerSummary is the subset of a GET /libpod/containers/json entry the
 // reconciler (task 1.15) needs.
 type ContainerSummary struct {

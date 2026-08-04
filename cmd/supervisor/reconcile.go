@@ -69,7 +69,7 @@ func reconcile(ctx context.Context, queries *store.Queries, podmanClient *podman
 
 		default:
 			log.Printf("reconcile: adopting run %d (container %s, state %s)", run.ID, container.ID, container.State)
-			waitFinishAndRemove(ctx, queries, podmanClient, run.ID, container.ID)
+			waitFinishAndRemove(ctx, queries, podmanClient, run, container.ID)
 		}
 	}
 }
