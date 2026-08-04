@@ -38,26 +38,24 @@ Update the marker on each task as it moves:
 > **Update this block every session.**
 
 - **Phase:** 1 — Vertical slice
-- **Task:** Phase 1a done. 1.9 done. 1.10 done. 1.11 next.
-- **Next action:** 1.11 — build container argv as a `[]string`, never a shell
-  string; write a test passing `; rm -rf /` as an argument and assert it's
-  treated as literal text
+- **Task:** Phase 1a done. 1.9 done. 1.10 done. 1.11 done - Phase 1b's
+  `internal/podman` client work is now done. 1.12 next.
+- **Next action:** 1.12 — supervisor claim loop: poll `queued` runs with
+  `SELECT ... FOR UPDATE SKIP LOCKED`, mark `running`, record `started_at`.
+  First code in `cmd/supervisor`, currently empty.
 - **Blocked on:** nothing
-- **Notes:** Phase 0 and Phase 1a both complete (see prior entries / commits
-  for detail). Phase 1b in progress: `internal/podman` — `Client` (custom
-  `DialContext` over the rootless Unix socket), `Info()` (proved via
-  `/healthz`'s `podmanUp`), and now `CreateContainer`/`StartContainer`/
-  `WaitContainer`/`RemoveContainer` (`containers.go`). Every created container
-  is unconditionally labelled `run_id` — `CreateContainerParams.RunID` is a
-  required field, not a caller-supplied label, specifically so this can't be
-  forgotten (it's what the reconciler, 1.15, will depend on). Proved with a
-  real integration test (`containers_test.go`,
-  `go test ./internal/podman/...`, skips cleanly if `PODMAN_SOCKET` unset or
-  unreachable): create → start → wait → exit code `42` → remove, confirmed no
-  leaked container afterward. `Command` is passed through as `[]string` end
-  to end already (1.11 is about proving that explicitly, not building it).
-  `cmd/supervisor` and `cmd/cli` still empty — that's 1.12 onward (claim loop,
-  execute, states, reconciler, CLI).
+- **Notes:** Phase 0, 1a done (see prior entries / commits for detail). Phase
+  1b's client side is done too: `internal/podman` —
+  `Client`/`Info`/`CreateContainer`/`StartContainer`/`WaitContainer`/
+  `RemoveContainer`, every container unconditionally `run_id`-labelled
+  (`CreateContainerParams.RunID` required, not optional). Two integration
+  tests in `containers_test.go` (`go test ./internal/podman/...`, skip
+  cleanly without `PODMAN_SOCKET`): full lifecycle with a real exit code, and
+  1.11's argv-injection test — a single argv element `"; rm -rf /"` makes the
+  OCI runtime fail to exec a file literally named that, proving the string
+  was never shell-split. `go vet ./...` clean, no leaked containers after
+  either test. `cmd/supervisor` and `cmd/cli` are still empty — 1.12 onward is
+  what actually makes a `queued` row turn into a running container.
 
 ---
 
@@ -226,8 +224,18 @@ the run appears in Postgres with correct timestamps and state.
       against real Alpine, exit code round-tripped correctly, label confirmed
       present via a manual `curl` inspect, no container left behind
       afterward (`podman ps -a`).
-- [ ] **1.11** Build argv as a **`[]string`, never a shell string.** Write a test that
+- [x] **1.11** Build argv as a **`[]string`, never a shell string.** Write a test that
       passes `; rm -rf /` as an argument and asserts it is treated as literal text.
+      Already true end to end since 1.6/1.10 (`runs.argv` is `text[]`,
+      `CreateContainerParams.Command`/libpod's `command` field are both
+      `[]string`) - this task added the explicit proof.
+      `TestCreateContainerArgvNeverShellInterpreted` in `containers_test.go`:
+      a container whose sole argv element is `"; rm -rf /"` fails to start
+      with an OCI "exec: not found" error naming that exact literal string,
+      proving it was looked up as one atomic token rather than shell-split on
+      `;`. Confirmed by probing the real socket with `curl` first (both the
+      failure shape and that a plain `DELETE` still cleans up a
+      never-started container).
 
 ### 1c. Supervisor
 
@@ -535,7 +543,8 @@ Worked on: repo/documentation audit at the start of the session; PLAN.md accurac
 1.3 (openapi spec for the three run operations); 1.6 (`POST /api/v1/runs`);
 1.7 (`GET /api/v1/runs/{id}`); 1.8 (`Idempotency-Key`); `GET /api/v1/runs`
 (list) — completing 1.3's three operations and closing out Phase 1a; 1.9
-(`internal/podman` client, opening Phase 1b); 1.10 (container lifecycle).
+(`internal/podman` client, opening Phase 1b); 1.10 (container lifecycle);
+1.11 (argv injection test) — closing out `internal/podman`'s client side.
 Completed:
   - 1.1: found `migrations/00001_create_database.sql` already written (full
     ARCHITECTURE.md §5 schema, all eight tables) but untracked and unapplied.
@@ -653,14 +662,30 @@ Completed:
     podman-less environment) — full lifecycle against Alpine, `sh -c "exit
     42"`, confirmed exit code, confirmed the label via a manual `curl`
     inspect, confirmed `podman ps -a` shows nothing left behind.
+  - 1.11: probed the real socket first again - created a container whose
+    entire `command` was `["; rm -rf /"]` and checked what actually happens.
+    `start` returns HTTP `500` immediately (not the `204` a normal start
+    gives) with body `{"cause":"OCI runtime attempted to invoke a command
+    that was not found","message":"...exec: \"; rm -rf /\": stat ; rm -rf /:
+    no such file or directory...","response":500}` - i.e. Podman tried to
+    exec a file literally named `; rm -rf /` and failed, which is exactly the
+    proof needed that the string was one atomic argv token, never shell-split
+    on `;`. Also confirmed a plain (non-force) `DELETE` still removes a
+    container that never successfully started. Wrote
+    `TestCreateContainerArgvNeverShellInterpreted` asserting on both of those:
+    `StartContainer` returns an error, and the error text contains both the
+    literal `"; rm -rf /"` and `"no such file"`. Refactored the "connect or
+    skip" boilerplate shared with 1.10's test into `newTestClient(t)`. Ran
+    `go vet ./...` (clean) and `go test ./...` (both podman tests pass, no
+    leaked containers afterward) - this closes out `internal/podman`'s
+    client-side work; nothing execution-related is left to build before the
+    supervisor.
 Broken / unresolved: nothing.
-Next action: 1.11 — build container argv as a `[]string`, never a shell
-string, and write a test that passes `; rm -rf /` as an argument and asserts
-it's treated as literal text. The `runs.argv` column and `CreateRunHandler`
-already carry argv as an array end to end (proved back in 1.6's session
-notes), and `CreateContainer`'s `Command []string` does too — 1.11 is mostly
-about writing the explicit injection test through the full path (API →
-Postgres → `podman.CreateContainer`) rather than building new plumbing.
+Next action: 1.12 — supervisor claim loop: poll for `queued` runs using
+`SELECT ... FOR UPDATE SKIP LOCKED`, mark `running`, record `started_at`.
+First code in `cmd/supervisor`, which is currently an empty directory. 1.13
+(execute: create/start/wait/record exit_code/remove) follows immediately -
+`internal/podman` already has every primitive 1.13 needs.
 Notes to future me:
   - 1.1 went wider than planned (all eight tables, not just `principals`/`runs`)
     — future-phase tables are pre-created but commented as skeletons, so this
