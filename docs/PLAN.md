@@ -38,13 +38,13 @@ Update the marker on each task as it moves:
 > **Update this block every session.**
 
 - **Phase:** 1 — Vertical slice
-- **Task:** Phase 1a, `internal/podman` (1.9–1.11), 1.12, 1.13 done. 1.15 done
-  (deliberately taken out of order, before 1.14 - see note). 1.14 still open.
-- **Next action:** 1.14 (implement all six run states) was deliberately
-  skipped this session in favor of 1.15; it's still open - `cancelled` still
-  has no producer anywhere (no cancel endpoint yet, that's Phase 2 task 2.8).
-  1.16 (advisory lock so a second supervisor refuses to start) is the other
-  open item in Phase 1c.
+- **Task:** Phase 1a, `internal/podman` (1.9–1.11), 1.12, 1.13, 1.15, 1.16
+  done. 1.14 and 1.17 left open in Phase 1c.
+- **Next action:** 1.14 — implement all six run states. Deliberately skipped
+  twice now (once for 1.15, once for 1.16); still open, and likely mostly a
+  verification pass - `queued`/`running`/`succeeded`/`failed`/`lost` all
+  already happen, only `cancelled` has no producer (needs Phase 2's cancel
+  endpoint). 1.17 (per-run timeout) is the other open Phase 1c item.
 - **Blocked on:** nothing
 - **Notes:** Phase 0, 1a, `internal/podman`, and the claim loop (1.12) all
   done (see prior entries / commits). 1.13 closes the vertical slice's core
@@ -62,6 +62,20 @@ Update the marker on each task as it moves:
   finished, marks the rest `lost` (and removes any stale never-started
   container it finds). Verified live against four simulated crash scenarios -
   see the session log for detail.
+  1.16's advisory lock (`cmd/supervisor/lock.go`, `acquireSingletonLock`) is
+  in place: a dedicated connection acquired from the pool and held for the
+  whole process lifetime, `pg_try_advisory_lock` on a fixed key
+  (`supervisorLockKey = 8817001`, session-level not transaction-scoped).
+  Fails to start (non-zero exit) rather than blocking if another instance
+  already holds it. Verified live: two supervisors at once → the second
+  refuses immediately with a clear message, the first is unaffected; after
+  graceful shutdown, the lock is free again immediately - confirmed by
+  starting a third one right after with no delay. Because of this, the
+  two-real-processes verification approach 1.12/1.15 used to prove
+  `SKIP LOCKED` no longer applies as-is - re-verifying that property later
+  would need two goroutines calling `ClaimNextQueuedRun` concurrently within
+  one process, or a deliberate lock bypass for the test, rather than two
+  separate `cmd/supervisor` processes.
   Runs within one supervisor process still execute strictly one at a time -
   no concurrency within a process yet, not asked for by 1.13.
 
@@ -297,7 +311,16 @@ the run appears in Postgres with correct timestamps and state.
       container removed; an already-exited-but-unrecorded container →
       adopted, correct exit code. `podman ps -a` empty afterward in every
       case.
-- [ ] **1.16** Advisory lock so a second supervisor refuses to start (or waits).
+- [x] **1.16** Advisory lock so a second supervisor refuses to start (or waits).
+      Chose "refuses to start" over "waits" - fails fast with a clear log
+      line and non-zero exit, matching how a systemd restart policy would
+      want to see it, rather than a process silently hanging. `pg_try_advisory_lock`
+      on a fixed key (`8817001`), held on a connection acquired from the pool
+      and never returned to it for the process's lifetime (session-level
+      lock semantics require that - a pooled connection reused by unrelated
+      queries would break it). Verified live: second supervisor refuses
+      immediately while the first runs; lock is free again immediately after
+      graceful shutdown.
 - [ ] **1.17** Timeouts: a per-run maximum duration, enforced with `context.Context`;
       on expiry, kill the container and record `failed` with a reason.
 
@@ -597,7 +620,8 @@ Worked on: repo/documentation audit at the start of the session; PLAN.md accurac
 1.12 (supervisor claim loop, opening Phase 1c); 1.13 (execute) — completes
 the CLI-less end of the vertical slice: submit a run over HTTP, it actually
 executes in a container and lands on a real terminal state; 1.15 (reconciler)
-— skipped ahead of 1.14 deliberately, at the user's direction.
+— skipped ahead of 1.14 deliberately, at the user's direction; 1.16 (advisory
+lock) — also skipped ahead of 1.14, at the user's direction.
 Completed:
   - 1.1: found `migrations/00001_create_database.sql` already written (full
     ARCHITECTURE.md §5 schema, all eight tables) but untracked and unapplied.
@@ -796,20 +820,38 @@ Completed:
     this codebase runs multiple runs concurrently within one supervisor
     process either; flagged as revisitable if a long-running adopted run
     ever needs to not block newly queued ones from being claimed.
+  - 1.16: new `internal/store/queries/supervisor.sql` -
+    `TryAdvisoryLock`/`AdvisoryUnlock`, both `sqlc.arg(lock_key)::bigint` (a
+    bare `$1::bigint` gets sqlc a working but uglily-named `dollar_1`
+    parameter - naming it via `sqlc.arg` is worth doing by default, not just
+    when it happens to break). `cmd/supervisor/lock.go`:
+    `acquireSingletonLock` pulls one dedicated connection via `pool.Acquire`
+    and never releases it back to the pool for the process's lifetime -
+    necessary because `pg_try_advisory_lock` is session-scoped, and a pooled
+    connection could otherwise get silently reused by unrelated queries out
+    from under the lock. Chose fail-fast ("refuses to start") over
+    ("waits") - non-zero exit with a clear message suits a systemd restart
+    policy better than a hung process; `pg_advisory_lock` (the blocking
+    variant) was the road not taken here, not because it's wrong, just a
+    design call in `PLAN.md`'s explicit either/or. Fixed lock key `8817001`
+    - arbitrary, but its exact value is now load-bearing (see the comment
+    above the constant on why it must never casually change). Verified live:
+    two supervisors at once → second refuses immediately, non-zero exit,
+    first unaffected; lock free again immediately after graceful shutdown
+    (confirmed by starting a third right after with zero delay). Note for
+    later: this breaks the "run two `cmd/supervisor` processes at once"
+    verification trick 1.12 and 1.15 both used to prove `SKIP LOCKED` - that
+    property would now need two goroutines calling `ClaimNextQueuedRun`
+    within one process (or a deliberate lock bypass for the test) to
+    re-verify, not two OS processes.
 Broken / unresolved: nothing. 1.14 (all six states) was intentionally
-skipped, not forgotten - see "Current position".
-Next action: user's choice between 1.14 (six states - likely mostly a
+skipped twice, not forgotten - see "Current position".
+Next action: 1.14 - implement all six run states. Likely mostly a
 verification pass given `queued`/`running`/`succeeded`/`failed`/`lost` all
-already exist and are exercised; `cancelled` genuinely can't be reached until
-Phase 2's cancel endpoint) and 1.16 (advisory lock so a second supervisor
-refuses to start or waits - explicitly a Phase 1c task, not deferred to
-Phase 5, even though its stated rationale in ARCHITECTURE.md §4.2 is owning
-the scheduler that doesn't exist until then). Worth noting: this session's
-1.12 and 1.15 verification steps both deliberately ran two supervisor
-processes at once (to prove `SKIP LOCKED` and, implicitly, that nothing
-currently stops a second one from starting) - once 1.16 lands, running a
-second supervisor should be refused or made to wait instead, so that
-verification approach won't reproduce the same way afterward.
+already exist and are exercised live; `cancelled` genuinely can't be reached
+until Phase 2's cancel endpoint exists. 1.17 (per-run timeout via
+`context.Context`, kill + `failed` on expiry) is still open too and is the
+last item in Phase 1c before 1d (hand-written CLI client, tasks 1.18-1.21).
 Notes to future me:
   - 1.1 went wider than planned (all eight tables, not just `principals`/`runs`)
     — future-phase tables are pre-created but commented as skeletons, so this

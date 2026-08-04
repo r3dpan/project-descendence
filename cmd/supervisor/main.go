@@ -33,6 +33,12 @@ func main() {
 	}
 	defer pool.Close()
 
+	releaseLock, err := acquireSingletonLock(ctx, pool)
+	if err != nil {
+		log.Fatalf("Refusing to start: %v", err)
+	}
+	defer releaseLock()
+
 	queries := store.New(pool)
 
 	podmanSocket := os.Getenv("PODMAN_SOCKET")
