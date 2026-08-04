@@ -40,8 +40,13 @@ Update the marker on each task as it moves:
 - **Phase:** 1 — Vertical slice
 - **Task:** Phase 1a, `internal/podman` (1.9–1.11), 1.12, 1.13, 1.15, 1.16,
   1.17 done — Phase 1c is done except 1.14. Now in Phase 1d (CLI): 1.18,
-  1.19 done.
-- **Next action:** 1.20 — `cli runs list` and `cli runs get <id>`.
+  1.19, 1.20 done.
+- **Next action:** 1.21 — config: server URL and token from env vars or
+  `~/.config/descendence/config`. The env-var half already exists
+  (`cmd/cli/config.go`, `DESCENDENCE_URL`/`DESCENDENCE_TOKEN`); this task
+  is the file half plus precedence. After that Phase 1d is done and 1e
+  ("prove it", 1.22-1.25) is next — and 1e is the point of the whole phase,
+  so don't skim it.
   The CLI is built on the Charm stack (bubbletea/bubbles/lipgloss) at the
   user's explicit direction, recorded as ARCHITECTURE.md decision #17;
   dispatch and flags stay stdlib. 1.14 (all six run states) is still open
@@ -380,7 +385,14 @@ the run appears in Postgres with correct timestamps and state.
       to the long-polling `/wait` call, so every run over 10s was marked
       `failed` with an infrastructure error *and leaked its container*.
       Split into `httpClient` / `longPollClient`; regression test added.
-- [ ] **1.20** `cli runs list`, `cli runs get <id>`.
+- [x] **1.20** `cli runs list`, `cli runs get <id>`.
+      `runs get` reuses `renderRunSummary`, so a run looks identical
+      whether you watched it, listed it or fetched it. `runs list` has the
+      same TTY/non-TTY split as 1.19: a browsable `bubbles/table` that
+      loads further pages as the cursor reaches the bottom (so the opaque
+      keyset cursor is never shown to the user) with enter to open a run in
+      full; `tabwriter`-aligned rows plus `-all` to follow every page when
+      piped. Columns flex with terminal width, argv favoured over image ref.
 - [ ] **1.21** Config: server URL and token from env vars or `~/.config/<name>/config`.
 
 ### 1e. Prove it
@@ -954,7 +966,7 @@ Notes to future me:
 ### 2026-08-05
 Worked on: Phase 1d (the CLI). 1.18 (hand-written API client); 1.19
 (`cli run`) — plus a genuine `internal/podman` bug that 1.19's verification
-surfaced, see below.
+surfaced, see below; 1.20 (`cli runs list` / `runs get`).
 Decision up front, at the user's explicit direction: **the CLI is built on
 the Charm stack** — `bubbletea` for anything interactive, with `bubbles` and
 `lipgloss` as needed. That is a real dependency choice for a project that has
@@ -1020,11 +1032,36 @@ Completed:
     `TestWaitContainerOutlivesTheRequestTimeout` sleeps deliberately past
     the boundary; confirmed it fails (and reproduces the leak) when the
     timeout is put back.
+  - 1.20: `cmd/cli/runs.go` (dispatch, `get`, the plain list) and
+    `list.go` (the `bubbles/table` model). `runs get` reuses
+    `renderRunSummary` from 1.19 — a run looks identical whether you
+    watched it, listed it or fetched it, which matters more than it
+    sounds: it means there is one place to change when the Run schema
+    grows. Same TTY/non-TTY split as 1.19. The interactive list does
+    **infinite scroll**: reaching the last row fetches the next page and
+    appends, so the opaque keyset cursor never has to be surfaced to the
+    user, which is the entire point of it being opaque. Enter opens the
+    highlighted run in full and exits; quitting leaves the table in the
+    scrollback rather than wiping it. The piped path uses stdlib
+    `text/tabwriter` and takes `-all` to follow every page, otherwise
+    printing one page and saying so on *stderr* (so `| wc -l` still counts
+    only rows).
+    Deliberately **not** colour-coding the state cell in the table:
+    `bubbles/table` styles cells uniformly and paints the selected row over
+    the top, so per-cell ANSI fights the selection highlight and risks
+    breaking width calculations. Colour carries meaning in the detail view
+    instead, where nothing competes with it.
+    Verified live: `runs get` for a real/missing/non-numeric id, the piped
+    list against the whole session's history, `-limit 5` + `-all` (21 lines
+    = header + 20 runs, matching the unpaged list), a server-side
+    `-limit 9999` rejection surfacing as a problem detail, and the table
+    rendered under a pty at both 80 and 150 columns.
 Broken / unresolved: nothing. 1.14 (all six states) is still open — now
 skipped four times, still not forgotten.
-Next action: 1.20 — `cli runs list` and `cli runs get <id>`. The list wants
-`bubbles/table` or a lipgloss table; `runs get` should reuse
-`renderRunSummary` so a run looks identical however you arrived at it.
+Next action: 1.21 — config from env vars *or* `~/.config/descendence/config`.
+Half of it exists already (`cmd/cli/config.go` reads the two env vars); this
+task adds the file and the precedence rule. Then Phase 1d is done and 1e
+(1.22-1.25, "prove it") is next.
 Notes to future me:
   - `DESCENDENCE_URL` / `DESCENDENCE_TOKEN` are the CLI's env vars, chosen
     here in 1.18 (the client's tests read them) and formalised in 1.21.
@@ -1039,6 +1076,13 @@ Notes to future me:
     lipgloss's `AdaptiveColor` queries the terminal for its background
     colour and nothing answers. Test `Update`/`View` directly instead —
     they're pure functions of (model, msg).
+  - `bubbles/table` trap, cost an hour of confusion in 1.20: `SetHeight(h)`
+    sets the *total* height and subtracts whatever the header currently
+    measures — and `WithHeight` as a constructor option measures it against
+    the **default** styles, before your own `SetStyles` call has run. Our
+    header is two lines (titles + rule) where the default is one, so
+    `New(..., WithHeight(n))` then `SetStyles(...)` leaves a permanent blank
+    row. Call `SetStyles` first, then `SetHeight`.
   - The lesson from the `/wait` timeout bug generalises: **a blanket
     `http.Client.Timeout` is wrong for any long-polling endpoint.** Phase 2
     adds log streaming over the same socket, which will have exactly this

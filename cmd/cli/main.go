@@ -24,6 +24,7 @@ Usage:
 
 Commands:
   run     Create a run and watch it until it finishes
+  runs    List runs, or show one in full
   whoami  Show which principal the configured token resolves to
   help    Show this message
 
@@ -72,6 +73,8 @@ func run() int {
 	switch command {
 	case "run":
 		return cmdRun(ctx, c, rest)
+	case "runs":
+		return cmdRuns(ctx, c, rest)
 	case "whoami":
 		return cmdWhoAmI(ctx, c)
 	default:
