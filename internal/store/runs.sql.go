@@ -120,6 +120,38 @@ func (q *Queries) CreateRun(ctx context.Context, arg CreateRunParams) (Run, erro
 	return i, err
 }
 
+const finishRun = `-- name: FinishRun :exec
+UPDATE runs
+SET state = $2,
+    exit_code = $3,
+    container_id = $4,
+    failure_reason = $5,
+    finished_at = now()
+WHERE id = $1
+`
+
+type FinishRunParams struct {
+	ID            int64       `json:"id"`
+	State         string      `json:"state"`
+	ExitCode      pgtype.Int4 `json:"exit_code"`
+	ContainerID   pgtype.Text `json:"container_id"`
+	FailureReason pgtype.Text `json:"failure_reason"`
+}
+
+// Task 1.13. state is always a terminal one here (succeeded/failed for now;
+// cancelled/lost come later) - runs_state_timestamps_check requires
+// finished_at whenever state is terminal, which this always sets.
+func (q *Queries) FinishRun(ctx context.Context, arg FinishRunParams) error {
+	_, err := q.db.Exec(ctx, finishRun,
+		arg.ID,
+		arg.State,
+		arg.ExitCode,
+		arg.ContainerID,
+		arg.FailureReason,
+	)
+	return err
+}
+
 const getRun = `-- name: GetRun :one
 SELECT id, principal_id, state, idempotency_key, image_ref, argv,
        timeout_seconds, container_id, exit_code, failure_reason,

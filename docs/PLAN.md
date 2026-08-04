@@ -38,24 +38,24 @@ Update the marker on each task as it moves:
 > **Update this block every session.**
 
 - **Phase:** 1 — Vertical slice
-- **Task:** Phase 1a and `internal/podman` (1.9–1.11) done. 1.12 done. 1.13
-  next.
-- **Next action:** 1.13 — execute: create the container, start it, wait,
-  record `exit_code`, set the terminal state, `finished_at`, remove the
-  container. Wire `internal/podman` into `cmd/supervisor`'s claim loop.
+- **Task:** Phase 1a, `internal/podman` (1.9–1.11), 1.12 done. 1.13 done.
+  1.14 next.
+- **Next action:** 1.14 — implement all six run states end to end. `queued`/
+  `running`/`succeeded`/`failed` already happen; `cancelled` and `lost` don't
+  exist anywhere in the code yet (no cancel endpoint, no reconciler).
 - **Blocked on:** nothing
-- **Notes:** Phase 0, 1a, and `internal/podman`'s client side all done (see
-  prior entries / commits). Phase 1c started: `cmd/supervisor/main.go` — a
-  polling claim loop (`ClaimNextQueuedRun`, 1s ticker, drains all queued runs
-  each tick, exits cleanly on SIGINT/SIGTERM). The claim itself is one
-  atomic SQL statement (CTE with `FOR UPDATE SKIP LOCKED` + `UPDATE ...
-  RETURNING`), so there's no separate select-then-update race window.
-  Verified live with two supervisor processes running concurrently against 6
-  queued runs: all 6 reached `running` with `started_at` set, and the two
-  supervisors split the work with zero overlap (5 runs to one, 1 to the
-  other) - `SKIP LOCKED` holds up under real concurrency, not just in theory.
-  Execution (1.13) isn't wired in yet, so a claimed run currently just sits
-  in `running` forever - that's the very next task.
+- **Notes:** Phase 0, 1a, `internal/podman`, and the claim loop (1.12) all
+  done (see prior entries / commits). 1.13 closes the vertical slice's core
+  loop: `cmd/supervisor/execute.go` — `executeRun` creates the container,
+  starts it, waits, records the terminal state via `FinishRun`, removes the
+  container; every exit path (including a failed create/start/wait) writes a
+  terminal state, so a run can no longer get stuck `running` from an
+  infrastructure error the way it could before this task. Verified live: a
+  `queued` run submitted through the real API now reaches `succeeded` or
+  `failed` (with a correct `exit_code`) without any manual intervention,
+  including the bad-image infra-failure path, with zero leaked containers.
+  Runs within one supervisor process still execute strictly one at a time -
+  no concurrency within a process yet, not asked for by 1.13.
 
 ---
 
@@ -249,8 +249,17 @@ the run appears in Postgres with correct timestamps and state.
       SIGINT/SIGTERM shutdown. Verified live with two supervisor processes
       running concurrently against 6 queued runs - all 6 claimed exactly
       once between them (5/1 split), zero duplicates, zero left behind.
-- [ ] **1.13** Execute: create the container, start it, wait, record `exit_code`,
+- [x] **1.13** Execute: create the container, start it, wait, record `exit_code`,
       set the terminal state, `finished_at`. Remove the container.
+      `cmd/supervisor/execute.go`: `executeRun` + `finishRun` (writes via the
+      new `FinishRun` query) + `removeContainer` (fresh `context.Background()`
+      so a cancelled supervisor still cleans up a container whose run just
+      finished). `exitCode == 0` → `succeeded`; nonzero → `failed` with
+      `failureReason = "exit code N"`; a create/start/wait error also →
+      `failed`, with the error itself as `failureReason` and no `exit_code`.
+      Verified live: real success, real nonzero exit, and a nonexistent image
+      all reached the correct terminal state with correct `exit_code`/
+      `container_id`/`failure_reason`, zero leaked containers.
 - [ ] **1.14** Implement all six states: `queued`, `running`, `succeeded`, `failed`,
       `cancelled`, `lost`.
 - [ ] **1.15** **Reconciler.** On startup, list containers filtered by the `run_id`
@@ -553,7 +562,9 @@ Worked on: repo/documentation audit at the start of the session; PLAN.md accurac
 (list) — completing 1.3's three operations and closing out Phase 1a; 1.9
 (`internal/podman` client, opening Phase 1b); 1.10 (container lifecycle);
 1.11 (argv injection test) — closing out `internal/podman`'s client side;
-1.12 (supervisor claim loop, opening Phase 1c).
+1.12 (supervisor claim loop, opening Phase 1c); 1.13 (execute) — completes
+the CLI-less end of the vertical slice: submit a run over HTTP, it actually
+executes in a container and lands on a real terminal state.
 Completed:
   - 1.1: found `migrations/00001_create_database.sql` already written (full
     ARCHITECTURE.md §5 schema, all eight tables) but untracked and unapplied.
@@ -704,15 +715,36 @@ Completed:
     others") actually holding under two real OS processes, not just reasoned
     about. Execution isn't wired in yet - a claimed run currently stays
     `running` forever with no container behind it; that's 1.13.
+  - 1.13: new `FinishRun` query (plain `UPDATE ... WHERE id = $1`, `:exec`).
+    `cmd/supervisor/execute.go`: `executeRun` runs
+    create→start→wait→finish→remove in sequence; every failure branch
+    (create error, start error, wait error, and the normal nonzero-exit path)
+    still calls `finishRun` with `state="failed"` before returning, so there
+    is no code path that leaves a run `running` without an infrastructure
+    error to explain it. `removeContainer` deliberately uses
+    `context.Background()` instead of the loop's cancellable `ctx` - a run
+    that finishes right as the supervisor is shutting down should still get
+    its container cleaned up rather than leaking it because `ctx` already
+    cancelled. `finishRun`'s nil/empty checks (`exitCode != nil`,
+    `containerID != ""`, `failureReason != ""`) build the right `pgtype.Int4`/
+    `pgtype.Text` `Valid` flags - a nil `exitCode` correctly leaves the column
+    `NULL` for the "never got a container" failure case. Verified live: three
+    real runs through the full HTTP → Postgres → supervisor → Podman path -
+    `exit 0` → `succeeded`/`exit_code=0`; `exit 17` → `failed`/`exit_code=17`/
+    `failure_reason="exit code 17"`; a nonexistent image → `failed`/
+    `exit_code=NULL`/`container_id=NULL`/`failure_reason` containing Podman's
+    actual `"no such image"` error. `podman ps -a` showed nothing left behind
+    in any of the three cases.
 Broken / unresolved: nothing.
-Next action: 1.13 — execute: create the container, start it, wait, record
-`exit_code`, set the terminal state (`succeeded`/`failed` depending on the
-exit code), `finished_at`, then remove the container. This is where
-`cmd/supervisor` and `internal/podman` actually meet - `internal/podman`
-already has every primitive this needs (`CreateContainer`/`StartContainer`/
-`WaitContainer`/`RemoveContainer`), so 1.13 is wiring, not new Podman work.
-Needs a new sqlc query to write the terminal state back (something like
-`FinishRun(id, state, exit_code, container_id, finished_at)`).
+Next action: 1.14 — implement all six run states. `queued`, `running`,
+`succeeded`, `failed` all exist and are exercised now; `cancelled` and `lost`
+don't exist anywhere yet - no `POST .../cancel` endpoint (that's Phase 2,
+task 2.8, so `cancelled` may stay unreachable until then) and no reconciler
+(`lost` is 1.15's job specifically). Worth rereading PLAN.md's own phrasing
+of 1.14 closely when picking this up - it may turn out to be "confirm the
+CHECK constraints already prevent bad combinations" rather than new code,
+since the `runs_state_check` and `runs_state_timestamps_check` constraints
+already constrain all six values today.
 Notes to future me:
   - 1.1 went wider than planned (all eight tables, not just `principals`/`runs`)
     — future-phase tables are pre-created but commented as skeletons, so this

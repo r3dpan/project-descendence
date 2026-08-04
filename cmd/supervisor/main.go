@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/r3dpan/project-descendence/internal/podman"
 	"github.com/r3dpan/project-descendence/internal/store"
 )
 
@@ -34,20 +35,27 @@ func main() {
 
 	queries := store.New(pool)
 
+	podmanSocket := os.Getenv("PODMAN_SOCKET")
+	if podmanSocket == "" {
+		log.Fatal("PODMAN_SOCKET is not set")
+	}
+	podmanClient := podman.NewClient(podmanSocket)
+
 	log.Printf("Supervisor started, polling for queued runs every %s", pollInterval)
-	runClaimLoop(ctx, queries)
+	runClaimLoop(ctx, queries, podmanClient)
 	log.Println("Supervisor shutting down")
 }
 
-// runClaimLoop drains every currently queued run on each tick, then waits
-// for the next tick (or shutdown). Execution (task 1.13) isn't wired in yet -
-// for now a claimed run just sits in state=running.
-func runClaimLoop(ctx context.Context, queries *store.Queries) {
+// runClaimLoop drains every currently queued run on each tick - claiming and
+// executing it to completion before claiming the next - then waits for the
+// next tick (or shutdown). Runs within a single supervisor process execute
+// one at a time; nothing here bounds or parallelizes them yet.
+func runClaimLoop(ctx context.Context, queries *store.Queries, podmanClient *podman.Client) {
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 
 	for {
-		claimAllQueued(ctx, queries)
+		claimAndExecuteAllQueued(ctx, queries, podmanClient)
 
 		select {
 		case <-ctx.Done():
@@ -57,7 +65,7 @@ func runClaimLoop(ctx context.Context, queries *store.Queries) {
 	}
 }
 
-func claimAllQueued(ctx context.Context, queries *store.Queries) {
+func claimAndExecuteAllQueued(ctx context.Context, queries *store.Queries, podmanClient *podman.Client) {
 	for {
 		run, err := queries.ClaimNextQueuedRun(ctx)
 		if err != nil {
@@ -68,5 +76,6 @@ func claimAllQueued(ctx context.Context, queries *store.Queries) {
 		}
 
 		log.Printf("claimed run %d (image=%s argv=%v)", run.ID, run.ImageRef, run.Argv)
+		executeRun(ctx, queries, podmanClient, run)
 	}
 }
