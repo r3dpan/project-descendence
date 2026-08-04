@@ -3,6 +3,7 @@ package podman
 import (
 	"context"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -100,5 +101,55 @@ func TestCreateContainerArgvNeverShellInterpreted(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "no such file") {
 		t.Errorf("error = %q, want an exec-not-found error for %q, not evidence it ran as a shell command", err, injectionAttempt)
+	}
+}
+
+// A container that runs for longer than requestTimeout must still be waited
+// on successfully. WaitContainer long-polls - it returns only when the
+// container exits - so putting the ordinary http.Client.Timeout on it caps
+// every run at requestTimeout and reports a perfectly healthy long run as an
+// infrastructure failure (and leaks its container, since the supervisor then
+// tries to remove one that is still running).
+//
+// This was a real bug, found from the CLI in task 1.19 and invisible until
+// then because every earlier verification used runs shorter than the
+// timeout. Hence the test: it sleeps deliberately, just past the boundary.
+func TestWaitContainerOutlivesTheRequestTimeout(t *testing.T) {
+	if testing.Short() {
+		t.Skip("sleeps past the request timeout by design")
+	}
+
+	client, ctx := newTestClient(t)
+
+	sleepFor := requestTimeout + 3*time.Second
+
+	id, err := client.CreateContainer(ctx, CreateContainerParams{
+		RunID:   999997,
+		Image:   "docker.io/library/alpine:latest",
+		Command: []string{"sleep", strconv.Itoa(int(sleepFor.Seconds()))},
+	})
+	if err != nil {
+		t.Fatalf("CreateContainer: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := client.RemoveContainer(context.Background(), id); err != nil {
+			t.Logf("cleanup: RemoveContainer: %v", err)
+		}
+	})
+
+	if err := client.StartContainer(ctx, id); err != nil {
+		t.Fatalf("StartContainer: %v", err)
+	}
+
+	started := time.Now()
+	exitCode, err := client.WaitContainer(ctx, id)
+	if err != nil {
+		t.Fatalf("WaitContainer on a %s container: %v", sleepFor, err)
+	}
+	if exitCode != 0 {
+		t.Errorf("exit code = %d, want 0", exitCode)
+	}
+	if waited := time.Since(started); waited < requestTimeout {
+		t.Errorf("WaitContainer returned after %s, before the container could have finished - it did not actually wait", waited)
 	}
 }

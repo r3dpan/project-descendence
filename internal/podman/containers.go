@@ -76,8 +76,13 @@ func (c *Client) StartContainer(ctx context.Context, id string) error {
 // container reaches a terminal state, returning its exit code. Unlike every
 // other libpod endpoint this client calls, the response body is plain text
 // (Content-Type: text/plain), not JSON - just the exit code.
+//
+// This is the one long-polling call in this client, so it uses
+// longPollClient: how long it blocks is the container's business, not the
+// HTTP layer's. Bound it with ctx if you need a limit - the supervisor
+// derives one from the run's own timeout (task 1.17).
 func (c *Client) WaitContainer(ctx context.Context, id string) (int, error) {
-	resp, err := c.do(ctx, http.MethodPost, "/libpod/containers/"+id+"/wait", nil)
+	resp, err := c.doWith(ctx, c.longPollClient, http.MethodPost, "/libpod/containers/"+id+"/wait", nil)
 	if err != nil {
 		return 0, err
 	}

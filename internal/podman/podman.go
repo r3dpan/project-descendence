@@ -16,8 +16,21 @@ import (
 
 const apiVersion = "v5.0.0"
 
+// requestTimeout bounds the ordinary request/response calls, which libpod
+// answers immediately. It deliberately does NOT apply to /wait - see
+// longPollClient.
+const requestTimeout = 10 * time.Second
+
 type Client struct {
+	// httpClient handles every endpoint that answers immediately.
 	httpClient *http.Client
+	// longPollClient handles /wait, which blocks for as long as the
+	// container runs. A blanket http.Client.Timeout is exactly wrong there:
+	// it would cap every run at requestTimeout and report a perfectly
+	// healthy long run as an infrastructure failure. The wait is bounded by
+	// the caller's context instead (the supervisor derives one from the
+	// run's own timeout - task 1.17).
+	longPollClient *http.Client
 }
 
 // NewClient dials socketPath (e.g. $XDG_RUNTIME_DIR/podman/podman.sock) for
@@ -28,11 +41,15 @@ func NewClient(socketPath string) *Client {
 	dialContext := func(ctx context.Context, _, _ string) (net.Conn, error) {
 		return dialer.DialContext(ctx, "unix", socketPath)
 	}
+	transport := &http.Transport{DialContext: dialContext}
 
 	return &Client{
 		httpClient: &http.Client{
-			Transport: &http.Transport{DialContext: dialContext},
-			Timeout:   10 * time.Second,
+			Transport: transport,
+			Timeout:   requestTimeout,
+		},
+		longPollClient: &http.Client{
+			Transport: transport,
 		},
 	}
 }
@@ -40,6 +57,12 @@ func NewClient(socketPath string) *Client {
 // do issues a request against the libpod API. body, if non-nil, is
 // JSON-encoded as the request body.
 func (c *Client) do(ctx context.Context, method, path string, body any) (*http.Response, error) {
+	return c.doWith(ctx, c.httpClient, method, path, body)
+}
+
+// doWith is do, with the http.Client made explicit - so /wait can opt out
+// of the request timeout without every other endpoint losing it.
+func (c *Client) doWith(ctx context.Context, httpClient *http.Client, method, path string, body any) (*http.Response, error) {
 	var reader io.Reader
 	if body != nil {
 		encoded, err := json.Marshal(body)
@@ -57,7 +80,7 @@ func (c *Client) do(ctx context.Context, method, path string, body any) (*http.R
 		req.Header.Set("Content-Type", "application/json")
 	}
 
-	return c.httpClient.Do(req)
+	return httpClient.Do(req)
 }
 
 // apiError is libpod's JSON error shape, e.g.

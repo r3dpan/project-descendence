@@ -39,11 +39,13 @@ Update the marker on each task as it moves:
 
 - **Phase:** 1 — Vertical slice
 - **Task:** Phase 1a, `internal/podman` (1.9–1.11), 1.12, 1.13, 1.15, 1.16,
-  1.17 done — Phase 1c is done except 1.14. Now in Phase 1d (CLI): 1.18 done.
-- **Next action:** 1.19 — `cli run`: create a run and poll until terminal.
-  The CLI is being built on the Charm stack (bubbletea/bubbles/lipgloss) at
-  the user's explicit direction; 1.18 laid the transport-only client
-  underneath it. 1.14 (all six run states) is still open and has now been
+  1.17 done — Phase 1c is done except 1.14. Now in Phase 1d (CLI): 1.18,
+  1.19 done.
+- **Next action:** 1.20 — `cli runs list` and `cli runs get <id>`.
+  The CLI is built on the Charm stack (bubbletea/bubbles/lipgloss) at the
+  user's explicit direction, recorded as ARCHITECTURE.md decision #17;
+  dispatch and flags stay stdlib. 1.14 (all six run states) is still open
+  and has now been
   deliberately skipped four times (1.15, 1.16, 1.17, and again for 1d);
   likely mostly a verification pass -
   `queued`/`running`/`succeeded`/`failed`/`lost` all already happen, only
@@ -365,7 +367,19 @@ the run appears in Postgres with correct timestamps and state.
       Integration tests in `client_test.go` skip cleanly unless
       `DESCENDENCE_URL`/`DESCENDENCE_TOKEN` are set (same pattern as
       `internal/podman`); all pass against a live API + supervisor.
-- [ ] **1.19** `cli run` — creates a run and polls until terminal, printing state.
+- [x] **1.19** `cli run` — creates a run and polls until terminal, printing state.
+      `cmd/cli`: stdlib `flag` dispatch, bubbletea rendering. Two watch
+      paths chosen on `isTTY(os.Stdout)` — a live spinner + state view when
+      interactive, one line per *state change* plus a summary when piped.
+      Exits with the run's own exit code (1 when a failure produced none),
+      so it composes in a shell. `-detach` prints just the id; `-timeout`
+      and `-key` map to the API's timeout and `Idempotency-Key`. Ctrl-C
+      stops the watch, never the run (no cancel endpoint until Phase 2) and
+      says so. **Found and fixed a real pre-existing bug while verifying:**
+      `internal/podman`'s blanket `http.Client.Timeout` (10s) also applied
+      to the long-polling `/wait` call, so every run over 10s was marked
+      `failed` with an infrastructure error *and leaked its container*.
+      Split into `httpClient` / `longPollClient`; regression test added.
 - [ ] **1.20** `cli runs list`, `cli runs get <id>`.
 - [ ] **1.21** Config: server URL and token from env vars or `~/.config/<name>/config`.
 
@@ -938,7 +952,9 @@ Notes to future me:
     process (check `ss -ltnp` on :8080) or the port stays bound.
 
 ### 2026-08-05
-Worked on: Phase 1d (the CLI). 1.18 (hand-written API client).
+Worked on: Phase 1d (the CLI). 1.18 (hand-written API client); 1.19
+(`cli run`) — plus a genuine `internal/podman` bug that 1.19's verification
+surfaced, see below.
 Decision up front, at the user's explicit direction: **the CLI is built on
 the Charm stack** — `bubbletea` for anything interactive, with `bubbles` and
 `lipgloss` as needed. That is a real dependency choice for a project that has
@@ -964,11 +980,51 @@ Completed:
     pagination advancing across pages, and both sentinels firing. Tests skip
     cleanly when `DESCENDENCE_URL`/`DESCENDENCE_TOKEN` are unset, matching
     `internal/podman`'s pattern, so `go test ./...` still passes bare.
+  - 1.19: `cmd/cli` — `main.go` (dispatch), `config.go`, `run.go`,
+    `watch.go` (the bubbletea model), `style.go`. Design decisions worth
+    keeping: **two watch paths**, chosen on `isTTY(os.Stdout)` — the TUI
+    when interactive, one line per *state change* (not per poll) plus the
+    same summary block when piped, because a CLI that emits spinners and
+    cursor movement into a pipe is unusable in a script. The model owns its
+    own polling (one `tea.Tick` command per observation, the next scheduled
+    only when the previous message arrives, so polls can never pile up)
+    rather than reusing `client.PollRun` — bubbletea's loop must never
+    block. `PollRun` still gets used, by the non-TTY path, which is exactly
+    what it was written for. **The CLI exits with the run's own exit code**
+    (1 when a failure produced none, 130 on Ctrl-C), so it composes in a
+    shell like a local command. Ctrl-C stops the *watch*, never the run —
+    there is no cancel endpoint until Phase 2 and claiming otherwise would
+    be a lie; the TUI catches it as a keypress (raw mode swallows the
+    signal) and the plain path as a cancelled context, and both say the run
+    continues. Verified live: `echo` (exit 0), `exit 42` → CLI exits 42,
+    `-timeout 3` on a `sleep 30` → red `failed` + "exceeded timeout of 3s",
+    argv containing `; rm -rf /` and `$(whoami)` passed through literally,
+    `-detach` printing a bare id, `-key` replaying to the same run id, both
+    error sentinels, and SIGINT mid-watch leaving the run to finish on its
+    own (it reached `succeeded` afterwards, no leaked container). The TUI
+    itself was verified under a real pty via `script`; its *logic* is unit
+    tested in `watch_test.go` by calling `Update`/`View` directly, which is
+    both faster and stricter than driving a terminal.
+  - 1.19 (bug found, not planned): `internal/podman`'s `http.Client` had a
+    blanket `Timeout: 10s`, which also applied to `WaitContainer` — a
+    long-polling call that by design blocks for the container's entire
+    lifetime. Every run over 10 seconds was therefore marked `failed` with
+    `waiting for container: ... Client.Timeout exceeded`, *and* leaked its
+    container (the supervisor then tried to remove one that was still
+    running). Invisible until now because every previous verification used
+    runs shorter than 10s — 1.17's timeout tests used a 3s run timeout on a
+    `sleep 30`, so the run deadline always fired first. Fixed by splitting
+    into `httpClient` (bounded, `requestTimeout`) and `longPollClient`
+    (unbounded — the wait is bounded by the caller's context, which the
+    supervisor already derives from the run's own timeout in 1.17).
+    `TestWaitContainerOutlivesTheRequestTimeout` sleeps deliberately past
+    the boundary; confirmed it fails (and reproduces the leak) when the
+    timeout is put back.
 Broken / unresolved: nothing. 1.14 (all six states) is still open — now
 skipped four times, still not forgotten.
-Next action: 1.19 — `cli run <image> -- <argv...>`: create a run and poll
-until terminal, on bubbletea when stdout is a TTY and plain lines when it
-isn't.
+Next action: 1.20 — `cli runs list` and `cli runs get <id>`. The list wants
+`bubbles/table` or a lipgloss table; `runs get` should reuse
+`renderRunSummary` so a run looks identical however you arrived at it.
 Notes to future me:
   - `DESCENDENCE_URL` / `DESCENDENCE_TOKEN` are the CLI's env vars, chosen
     here in 1.18 (the client's tests read them) and formalised in 1.21.
@@ -977,3 +1033,13 @@ Notes to future me:
     principal (`cli-dev`) with a direct `INSERT` — `sha256sum` of the token
     into `decode(...,'hex')`. Worth an actual `descendence token create`
     command eventually.
+  - Driving the TUI from a test harness is not worth it. `script -qec` will
+    render it (good enough for eyeballing output), but feeding it keystrokes
+    doesn't work, and a hand-rolled `pty.fork()` harness hangs because
+    lipgloss's `AdaptiveColor` queries the terminal for its background
+    colour and nothing answers. Test `Update`/`View` directly instead —
+    they're pure functions of (model, msg).
+  - The lesson from the `/wait` timeout bug generalises: **a blanket
+    `http.Client.Timeout` is wrong for any long-polling endpoint.** Phase 2
+    adds log streaming over the same socket, which will have exactly this
+    shape — use `longPollClient` there too, not `httpClient`.
