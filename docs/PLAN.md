@@ -39,14 +39,14 @@ Update the marker on each task as it moves:
 
 - **Phase:** 1 — Vertical slice
 - **Task:** Phase 1a, `internal/podman` (1.9–1.11), 1.12, 1.13, 1.15, 1.16,
-  1.17 done — Phase 1c is done except 1.14. Now in Phase 1d (CLI): 1.18,
-  1.19, 1.20 done.
-- **Next action:** 1.21 — config: server URL and token from env vars or
-  `~/.config/descendence/config`. The env-var half already exists
-  (`cmd/cli/config.go`, `DESCENDENCE_URL`/`DESCENDENCE_TOKEN`); this task
-  is the file half plus precedence. After that Phase 1d is done and 1e
-  ("prove it", 1.22-1.25) is next — and 1e is the point of the whole phase,
-  so don't skim it.
+  1.17 done — Phase 1c is done except 1.14. **Phase 1d (CLI) is done:**
+  1.18-1.21.
+- **Next action:** Phase 1e — "prove it" (1.22-1.25): kill the supervisor
+  mid-run and restart it, kill the API mid-poll, submit 20 runs at once,
+  and confirm `podman ps -a` is clean afterwards. The plan is emphatic
+  that these are the point of the whole phase, so do them deliberately
+  rather than skimming. 1.14 should be settled before or alongside them,
+  since "all six states" is exactly what 1.22-1.25 exercise.
   The CLI is built on the Charm stack (bubbletea/bubbles/lipgloss) at the
   user's explicit direction, recorded as ARCHITECTURE.md decision #17;
   dispatch and flags stay stdlib. 1.14 (all six run states) is still open
@@ -393,7 +393,15 @@ the run appears in Postgres with correct timestamps and state.
       keyset cursor is never shown to the user) with enter to open a run in
       full; `tabwriter`-aligned rows plus `-all` to follow every page when
       piped. Columns flex with terminal width, argv favoured over image ref.
-- [ ] **1.21** Config: server URL and token from env vars or `~/.config/<name>/config`.
+- [x] **1.21** Config: server URL and token from env vars or `~/.config/<name>/config`.
+      `~/.config/descendence/config` (or `$DESCENDENCE_CONFIG`), hand-rolled
+      `key = value` parser - no TOML dependency. Environment wins over file
+      **per value**, so overriding just the URL keeps the stored token.
+      Unknown keys and malformed lines are errors with line numbers, not
+      silent no-ops. Warns when the file (which holds a token) is readable
+      by anyone else. New `descendence config` prints the resolved values,
+      where each came from, and the file path - the token only ever as its
+      trailing 8 characters, matching the server's `token_hint`.
 
 ### 1e. Prove it
 
@@ -966,7 +974,8 @@ Notes to future me:
 ### 2026-08-05
 Worked on: Phase 1d (the CLI). 1.18 (hand-written API client); 1.19
 (`cli run`) — plus a genuine `internal/podman` bug that 1.19's verification
-surfaced, see below; 1.20 (`cli runs list` / `runs get`).
+surfaced, see below; 1.20 (`cli runs list` / `runs get`); 1.21 (config file
++ precedence) — **Phase 1d complete**.
 Decision up front, at the user's explicit direction: **the CLI is built on
 the Charm stack** — `bubbletea` for anything interactive, with `bubbles` and
 `lipgloss` as needed. That is a real dependency choice for a project that has
@@ -1056,15 +1065,37 @@ Completed:
     = header + 20 runs, matching the unpaged list), a server-side
     `-limit 9999` rejection surfacing as a problem detail, and the table
     rendered under a pty at both 80 and 150 columns.
+  - 1.21: `cmd/cli/config.go`. `~/.config/descendence/config` via
+    `os.UserConfigDir` (which already handles `XDG_CONFIG_HOME`), or
+    `$DESCENDENCE_CONFIG` to point elsewhere - which is also what makes the
+    tests hermetic. Format is `key = value` with `#`/`;` comments, parsed by
+    hand: two keys do not justify a TOML dependency in a project that
+    hand-rolled its Podman client. Precedence is environment over file
+    **per value**, not all-or-nothing, so `DESCENDENCE_URL=... descendence
+    ...` overrides one setting for one invocation while the stored token
+    still applies. A missing file is fine (env-only is a legitimate setup);
+    a file that exists but is malformed, or has an unknown key, is an error
+    with a line number - a typo'd `tokn` that silently does nothing is
+    exactly the kind of thing that costs an hour. Warns (does not refuse)
+    when the file is group/world readable, since it holds a token.
+    New `descendence config` answers "why is it talking to the wrong
+    server": resolved values, the source of each, and the file path, with
+    the token shown only as its trailing 8 characters - which happens to
+    match the `token_hint` the server stores, so the two can be compared by
+    eye. Verified end to end with **no environment variables at all**:
+    `whoami`, a full `run`, and `runs list` all working from the file
+    alone, plus per-value override, the permission warning, an unknown key,
+    and the nothing-configured message.
 Broken / unresolved: nothing. 1.14 (all six states) is still open — now
-skipped four times, still not forgotten.
-Next action: 1.21 — config from env vars *or* `~/.config/descendence/config`.
-Half of it exists already (`cmd/cli/config.go` reads the two env vars); this
-task adds the file and the precedence rule. Then Phase 1d is done and 1e
-(1.22-1.25, "prove it") is next.
+skipped four times, still not forgotten, and 1e is the natural place to
+settle it since 1.22-1.25 exercise exactly those states.
+Next action: Phase 1e, "prove it" (1.22-1.25). Deliberately, not quickly.
 Notes to future me:
   - `DESCENDENCE_URL` / `DESCENDENCE_TOKEN` are the CLI's env vars, chosen
     here in 1.18 (the client's tests read them) and formalised in 1.21.
+    A real `~/.config/descendence/config` now exists on this machine with a
+    working token, so `internal/client`'s integration tests still need the
+    env vars exported but the CLI itself needs nothing.
   - `cmd/seed`'s one-shot-ness bit again: the `bootstrap` principal already
     existed, so this session's token was minted by hand as a second
     principal (`cli-dev`) with a direct `INSERT` — `sha256sum` of the token

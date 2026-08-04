@@ -26,11 +26,21 @@ Commands:
   run     Create a run and watch it until it finishes
   runs    List runs, or show one in full
   whoami  Show which principal the configured token resolves to
+  config  Show where the URL and token are being read from
   help    Show this message
 
-Configuration:
-  DESCENDENCE_URL     Base URL of the API server, e.g. http://127.0.0.1:8080
-  DESCENDENCE_TOKEN   Bearer token
+Configuration, in order of precedence:
+
+  1. Environment
+       DESCENDENCE_URL     Base URL of the API server
+       DESCENDENCE_TOKEN   Bearer token
+  2. ~/.config/descendence/config (or $DESCENDENCE_CONFIG)
+
+         # comments and blank lines are ignored
+         url   = http://127.0.0.1:8080
+         token = sra_live_...
+
+     It holds a token, so it should be mode 600.
 
 Run "descendence <command> -h" for a command's own flags.
 `
@@ -77,11 +87,37 @@ func run() int {
 		return cmdRuns(ctx, c, rest)
 	case "whoami":
 		return cmdWhoAmI(ctx, c)
+	case "config":
+		return cmdConfig(cfg)
 	default:
 		printError(fmt.Errorf("unknown command %q", command))
 		fmt.Fprint(os.Stderr, usage)
 		return 2
 	}
+}
+
+// cmdConfig shows the resolved settings and where each came from - the
+// answer to "why is it talking to the wrong server". The token is never
+// printed in full, only the same trailing hint the server stores, which is
+// enough to tell two tokens apart.
+func cmdConfig(cfg config) int {
+	field := func(label, value string, from source) {
+		fmt.Printf("  %s%s %s\n",
+			styleLabel.Render(fmt.Sprintf("%-7s", label)),
+			styleValue.Render(value),
+			styleHint.Render("("+string(from)+")"))
+	}
+
+	fmt.Println(styleBold.Render("resolved configuration"))
+	field("url", cfg.baseURL, cfg.urlSource)
+	field("token", tokenHint(cfg.token), cfg.tokenSource)
+
+	fmt.Printf("  %s%s\n", styleLabel.Render(fmt.Sprintf("%-7s", "file")), styleValue.Render(cfg.path))
+	if _, err := os.Stat(cfg.path); err != nil {
+		fmt.Println(styleHint.Render("          (does not exist)"))
+	}
+
+	return 0
 }
 
 func cmdWhoAmI(ctx context.Context, c *client.Client) int {
