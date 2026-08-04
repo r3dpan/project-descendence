@@ -41,6 +41,9 @@ func main() {
 	}
 	podmanClient := podman.NewClient(podmanSocket)
 
+	log.Println("Reconciling non-terminal runs from a previous run")
+	reconcile(ctx, queries, podmanClient)
+
 	log.Printf("Supervisor started, polling for queued runs every %s", pollInterval)
 	runClaimLoop(ctx, queries, podmanClient)
 	log.Println("Supervisor shutting down")

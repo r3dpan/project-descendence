@@ -32,10 +32,20 @@ func executeRun(ctx context.Context, queries *store.Queries, podmanClient *podma
 		return
 	}
 
+	waitFinishAndRemove(ctx, queries, podmanClient, run.ID, containerID)
+}
+
+// waitFinishAndRemove blocks until containerID exits (returning immediately
+// if it already has), records the outcome, and removes the container.
+// Shared between normal execution (called from executeRun, right after
+// start) and the reconciler's adoption path (task 1.15) - a container the
+// reconciler finds still running or already exited from before a crash goes
+// through exactly this same tail.
+func waitFinishAndRemove(ctx context.Context, queries *store.Queries, podmanClient *podman.Client, runID int64, containerID string) {
 	exitCode, err := podmanClient.WaitContainer(ctx, containerID)
 	if err != nil {
-		finishRun(ctx, queries, run.ID, "failed", nil, containerID, fmt.Sprintf("waiting for container: %v", err))
-		removeContainer(podmanClient, run.ID, containerID)
+		finishRun(ctx, queries, runID, "failed", nil, containerID, fmt.Sprintf("waiting for container: %v", err))
+		removeContainer(podmanClient, runID, containerID)
 		return
 	}
 
@@ -47,8 +57,8 @@ func executeRun(ctx context.Context, queries *store.Queries, podmanClient *podma
 	}
 
 	code := int32(exitCode)
-	finishRun(ctx, queries, run.ID, state, &code, containerID, failureReason)
-	removeContainer(podmanClient, run.ID, containerID)
+	finishRun(ctx, queries, runID, state, &code, containerID, failureReason)
+	removeContainer(podmanClient, runID, containerID)
 }
 
 func finishRun(ctx context.Context, queries *store.Queries, runID int64, state string, exitCode *int32, containerID, failureReason string) {

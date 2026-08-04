@@ -38,11 +38,13 @@ Update the marker on each task as it moves:
 > **Update this block every session.**
 
 - **Phase:** 1 — Vertical slice
-- **Task:** Phase 1a, `internal/podman` (1.9–1.11), 1.12 done. 1.13 done.
-  1.14 next.
-- **Next action:** 1.14 — implement all six run states end to end. `queued`/
-  `running`/`succeeded`/`failed` already happen; `cancelled` and `lost` don't
-  exist anywhere in the code yet (no cancel endpoint, no reconciler).
+- **Task:** Phase 1a, `internal/podman` (1.9–1.11), 1.12, 1.13 done. 1.15 done
+  (deliberately taken out of order, before 1.14 - see note). 1.14 still open.
+- **Next action:** 1.14 (implement all six run states) was deliberately
+  skipped this session in favor of 1.15; it's still open - `cancelled` still
+  has no producer anywhere (no cancel endpoint yet, that's Phase 2 task 2.8).
+  1.16 (advisory lock so a second supervisor refuses to start) is the other
+  open item in Phase 1c.
 - **Blocked on:** nothing
 - **Notes:** Phase 0, 1a, `internal/podman`, and the claim loop (1.12) all
   done (see prior entries / commits). 1.13 closes the vertical slice's core
@@ -54,6 +56,12 @@ Update the marker on each task as it moves:
   `queued` run submitted through the real API now reaches `succeeded` or
   `failed` (with a correct `exit_code`) without any manual intervention,
   including the bad-image infra-failure path, with zero leaked containers.
+  1.15's reconciler (`cmd/supervisor/reconcile.go`) runs once at startup,
+  before the claim loop: lists every container carrying a `run_id` label,
+  compares against non-terminal runs, adopts what's still alive or already
+  finished, marks the rest `lost` (and removes any stale never-started
+  container it finds). Verified live against four simulated crash scenarios -
+  see the session log for detail.
   Runs within one supervisor process still execute strictly one at a time -
   no concurrency within a process yet, not asked for by 1.13.
 
@@ -262,9 +270,33 @@ the run appears in Postgres with correct timestamps and state.
       `container_id`/`failure_reason`, zero leaked containers.
 - [ ] **1.14** Implement all six states: `queued`, `running`, `succeeded`, `failed`,
       `cancelled`, `lost`.
-- [ ] **1.15** **Reconciler.** On startup, list containers filtered by the `run_id`
+- [x] **1.15** **Reconciler.** On startup, list containers filtered by the `run_id`
       label and compare against runs in non-terminal states. Adopt what's still
       alive; mark the rest `lost`.
+      New `podman.ListContainersByRunIDLabel` (`all=true` + a `label` filter,
+      confirmed via `curl` first that libpod's `State` field uses `"created"`/
+      `"running"`/`"stopped"`, not Docker's `"exited"`) and
+      `ListNonTerminalRuns` (`state IN ('queued','running')`). Taken out of
+      order before 1.14 - see "Current position". Three-way classification
+      per non-terminal run: no matching container → `lost`; container found
+      but `State == "created"` (crashed between create and start, so there's
+      no outcome to adopt) → `lost` + remove the stale container; anything
+      else (running, or already exited but never recorded) → adopt via the
+      same `waitFinishAndRemove` tail `executeRun` (1.13) already uses -
+      `WaitContainer` returns immediately if the container already exited, so
+      "still running" and "finished but unrecorded" need no special-casing.
+      Queued runs are skipped entirely - they never have a container in this
+      design. Runs synchronously before the claim loop starts, so a
+      long-running adopted run currently delays new queued runs from being
+      claimed; noted as a known simplification, not a bug, since nothing
+      today runs multiple runs concurrently within one supervisor anyway.
+      Verified live with four simulated crash scenarios (state hand-edited in
+      Postgres + containers created directly via `curl` to fake each case):
+      a live/recently-exited container → adopted, correct terminal state; no
+      container → `lost`; a created-but-never-started container → `lost` +
+      container removed; an already-exited-but-unrecorded container →
+      adopted, correct exit code. `podman ps -a` empty afterward in every
+      case.
 - [ ] **1.16** Advisory lock so a second supervisor refuses to start (or waits).
 - [ ] **1.17** Timeouts: a per-run maximum duration, enforced with `context.Context`;
       on expiry, kill the container and record `failed` with a reason.
@@ -564,7 +596,8 @@ Worked on: repo/documentation audit at the start of the session; PLAN.md accurac
 1.11 (argv injection test) — closing out `internal/podman`'s client side;
 1.12 (supervisor claim loop, opening Phase 1c); 1.13 (execute) — completes
 the CLI-less end of the vertical slice: submit a run over HTTP, it actually
-executes in a container and lands on a real terminal state.
+executes in a container and lands on a real terminal state; 1.15 (reconciler)
+— skipped ahead of 1.14 deliberately, at the user's direction.
 Completed:
   - 1.1: found `migrations/00001_create_database.sql` already written (full
     ARCHITECTURE.md §5 schema, all eight tables) but untracked and unapplied.
@@ -735,16 +768,48 @@ Completed:
     `exit_code=NULL`/`container_id=NULL`/`failure_reason` containing Podman's
     actual `"no such image"` error. `podman ps -a` showed nothing left behind
     in any of the three cases.
-Broken / unresolved: nothing.
-Next action: 1.14 — implement all six run states. `queued`, `running`,
-`succeeded`, `failed` all exist and are exercised now; `cancelled` and `lost`
-don't exist anywhere yet - no `POST .../cancel` endpoint (that's Phase 2,
-task 2.8, so `cancelled` may stay unreachable until then) and no reconciler
-(`lost` is 1.15's job specifically). Worth rereading PLAN.md's own phrasing
-of 1.14 closely when picking this up - it may turn out to be "confirm the
-CHECK constraints already prevent bad combinations" rather than new code,
-since the `runs_state_check` and `runs_state_timestamps_check` constraints
-already constrain all six values today.
+  - 1.15: asked to skip ahead of 1.14 to the reconciler. New
+    `podman.ListContainersByRunIDLabel` - probed the real
+    `GET /libpod/containers/json?all=true&filters={"label":["run_id"]}`
+    endpoint first (as with every other libpod call this session) and found
+    libpod's `State` field says `"created"`/`"running"`/`"stopped"`, not
+    Docker's `"exited"` - would have gotten the never-started-vs-exited check
+    wrong by guessing. New `ListNonTerminalRuns` query. `reconcile()` in
+    `cmd/supervisor/reconcile.go`, called once at startup before
+    `runClaimLoop`: builds a `run_id → ContainerSummary` map from the
+    container list, then for every non-terminal run (skipping `queued` ones -
+    they never have a container yet by construction) - no container found →
+    `lost`; container `State == "created"` → `lost` + remove the stale
+    container (it never ran, nothing to adopt); anything else → adopt via
+    `waitFinishAndRemove`, the same tail `executeRun` already uses since
+    `WaitContainer` resolves immediately for an already-exited container, no
+    separate "already finished" branch needed. Verified live with four
+    simulated crashes (state hand-edited in Postgres, containers created
+    directly via `curl` to fake each scenario, since there's no automated way
+    yet to actually crash the supervisor mid-run): live container → adopted,
+    `succeeded`, `exit_code=0`; no container → `lost`; created-but-never-
+    started → `lost` + container removed; already-exited-but-unrecorded
+    (`exit 9`) → adopted, `failed`, `exit_code=9`. `podman ps -a` empty
+    afterward every time. Chose to run reconciliation synchronously before
+    the claim loop starts rather than adopting concurrently in goroutines -
+    simpler, and correctness-wise sufficient for now since nothing else in
+    this codebase runs multiple runs concurrently within one supervisor
+    process either; flagged as revisitable if a long-running adopted run
+    ever needs to not block newly queued ones from being claimed.
+Broken / unresolved: nothing. 1.14 (all six states) was intentionally
+skipped, not forgotten - see "Current position".
+Next action: user's choice between 1.14 (six states - likely mostly a
+verification pass given `queued`/`running`/`succeeded`/`failed`/`lost` all
+already exist and are exercised; `cancelled` genuinely can't be reached until
+Phase 2's cancel endpoint) and 1.16 (advisory lock so a second supervisor
+refuses to start or waits - explicitly a Phase 1c task, not deferred to
+Phase 5, even though its stated rationale in ARCHITECTURE.md §4.2 is owning
+the scheduler that doesn't exist until then). Worth noting: this session's
+1.12 and 1.15 verification steps both deliberately ran two supervisor
+processes at once (to prove `SKIP LOCKED` and, implicitly, that nothing
+currently stops a second one from starting) - once 1.16 lands, running a
+second supervisor should be refused or made to wait instead, so that
+verification approach won't reproduce the same way afterward.
 Notes to future me:
   - 1.1 went wider than planned (all eight tables, not just `principals`/`runs`)
     — future-phase tables are pre-created but commented as skeletons, so this

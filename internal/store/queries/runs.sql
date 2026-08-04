@@ -79,3 +79,13 @@ SET state = $2,
     failure_reason = $5,
     finished_at = now()
 WHERE id = $1;
+
+-- name: ListNonTerminalRuns :many
+-- The reconciler's input (task 1.15): every run that isn't in a terminal
+-- state, matching runs_active_idx.
+SELECT id, principal_id, state, idempotency_key, image_ref, argv,
+       timeout_seconds, container_id, exit_code, failure_reason,
+       cancel_requested_at, queued_at, started_at, finished_at, job_id,
+       commit_sha, runtime_id, image_digest, params_json
+FROM runs
+WHERE state IN ('queued', 'running');

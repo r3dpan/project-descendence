@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 )
@@ -109,4 +110,48 @@ func (c *Client) RemoveContainer(ctx context.Context, id string) error {
 	defer resp.Body.Close()
 
 	return checkStatus(resp, "remove container", http.StatusOK, http.StatusNoContent)
+}
+
+// ContainerSummary is the subset of a GET /libpod/containers/json entry the
+// reconciler (task 1.15) needs.
+type ContainerSummary struct {
+	ID     string            `json:"Id"`
+	Labels map[string]string `json:"Labels"`
+	// e.g. "created" (never started), "running", "stopped" (exited) -
+	// confirmed by probing the real API; libpod does not use Docker's
+	// "exited" spelling here.
+	State string `json:"State"`
+}
+
+// ListContainersByRunIDLabel calls GET /libpod/containers/json filtered to
+// containers carrying a "run_id" label (any value), including
+// stopped/never-started ones (all=true) - every container this application
+// has ever created, which is exactly what the reconciler needs to compare
+// against non-terminal runs in Postgres.
+func (c *Client) ListContainersByRunIDLabel(ctx context.Context) ([]ContainerSummary, error) {
+	filters, err := json.Marshal(map[string][]string{"label": {"run_id"}})
+	if err != nil {
+		return nil, fmt.Errorf("podman: encoding label filter: %w", err)
+	}
+
+	query := url.Values{}
+	query.Set("all", "true")
+	query.Set("filters", string(filters))
+
+	resp, err := c.do(ctx, http.MethodGet, "/libpod/containers/json?"+query.Encode(), nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if err := checkStatus(resp, "list containers", http.StatusOK); err != nil {
+		return nil, err
+	}
+
+	var containers []ContainerSummary
+	if err := json.NewDecoder(resp.Body).Decode(&containers); err != nil {
+		return nil, fmt.Errorf("podman: decoding list containers response: %w", err)
+	}
+
+	return containers, nil
 }

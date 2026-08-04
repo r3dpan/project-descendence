@@ -229,6 +229,57 @@ func (q *Queries) GetRunByIdempotencyKey(ctx context.Context, arg GetRunByIdempo
 	return i, err
 }
 
+const listNonTerminalRuns = `-- name: ListNonTerminalRuns :many
+SELECT id, principal_id, state, idempotency_key, image_ref, argv,
+       timeout_seconds, container_id, exit_code, failure_reason,
+       cancel_requested_at, queued_at, started_at, finished_at, job_id,
+       commit_sha, runtime_id, image_digest, params_json
+FROM runs
+WHERE state IN ('queued', 'running')
+`
+
+// The reconciler's input (task 1.15): every run that isn't in a terminal
+// state, matching runs_active_idx.
+func (q *Queries) ListNonTerminalRuns(ctx context.Context) ([]Run, error) {
+	rows, err := q.db.Query(ctx, listNonTerminalRuns)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Run
+	for rows.Next() {
+		var i Run
+		if err := rows.Scan(
+			&i.ID,
+			&i.PrincipalID,
+			&i.State,
+			&i.IdempotencyKey,
+			&i.ImageRef,
+			&i.Argv,
+			&i.TimeoutSeconds,
+			&i.ContainerID,
+			&i.ExitCode,
+			&i.FailureReason,
+			&i.CancelRequestedAt,
+			&i.QueuedAt,
+			&i.StartedAt,
+			&i.FinishedAt,
+			&i.JobID,
+			&i.CommitSha,
+			&i.RuntimeID,
+			&i.ImageDigest,
+			&i.ParamsJson,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listRuns = `-- name: ListRuns :many
 SELECT id, principal_id, state, idempotency_key, image_ref, argv,
        timeout_seconds, container_id, exit_code, failure_reason,
