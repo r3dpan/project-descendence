@@ -2,7 +2,7 @@
 
 **Project:** Script automation platform (working name: TBD)
 **Status:** Design agreed, not yet implemented
-**Last updated:** 2026-07-22
+**Last updated:** 2026-08-05
 
 ---
 
@@ -352,6 +352,7 @@ Recording *why*, because in three months the reasoning will be gone.
 | 14 | Swagger UI deferred, spec kept | UI is a static asset behind a flag; spec is codegen input | Whenever convenient |
 | 15 | Hand-write routing and handlers; no chi, no oapi-codegen | Learning value is the point of the project; stdlib `net/http` + Go 1.22 patterns are sufficient. Reverses the codegen half of #11 — the spec remains the contract | Handler boilerplate becomes genuinely unmanageable |
 | 16 | goose for migrations, not golang-migrate | Go-based migrations available for the Phase-1 bootstrap token (crypto/rand + SHA-256, not expressible in SQL); no dirty-flag state to force-clear after a failed migration; Postgres-only project makes golang-migrate's driver breadth irrelevant | Migrations ever need running by something that isn't Go |
+| 17 | CLI built on the Charm stack (`bubbletea`, `bubbles`, `lipgloss`), not plain `fmt.Println` | A run is a *live* thing — queued → running → terminal, on the order of seconds to an hour. Watching that is genuinely interactive, and a good TUI is the difference between a tool that gets used and one that doesn't. Deliberately narrower than #15's "hand-write it": rendering is not where this project's learning value is, and reimplementing a terminal renderer would be busywork, not education. Command dispatch and flag parsing stay stdlib (`flag`) — no cobra | The TUI outgrows bubbletea, or the CLI stops being the primary client |
 ---
 
 ## 7. Deliberately deferred

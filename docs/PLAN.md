@@ -1,7 +1,7 @@
 # Build Plan
 
 **Companion document:** ARCHITECTURE.md (the *what* and *why*; this file is the *when*)
-**Last updated:** 2026-07-22
+**Last updated:** 2026-08-05
 
 ---
 
@@ -39,12 +39,15 @@ Update the marker on each task as it moves:
 
 - **Phase:** 1 — Vertical slice
 - **Task:** Phase 1a, `internal/podman` (1.9–1.11), 1.12, 1.13, 1.15, 1.16,
-  1.17 done. Phase 1c is now done except 1.14.
-- **Next action:** 1.14 — implement all six run states. Deliberately skipped
-  three times now (1.15, 1.16, 1.17); still open, and likely mostly a
-  verification pass - `queued`/`running`/`succeeded`/`failed`/`lost` all
-  already happen, only `cancelled` has no producer (needs Phase 2's cancel
-  endpoint). After 1.14, Phase 1d (hand-written CLI, tasks 1.18-1.21) is next.
+  1.17 done — Phase 1c is done except 1.14. Now in Phase 1d (CLI): 1.18 done.
+- **Next action:** 1.19 — `cli run`: create a run and poll until terminal.
+  The CLI is being built on the Charm stack (bubbletea/bubbles/lipgloss) at
+  the user's explicit direction; 1.18 laid the transport-only client
+  underneath it. 1.14 (all six run states) is still open and has now been
+  deliberately skipped four times (1.15, 1.16, 1.17, and again for 1d);
+  likely mostly a verification pass -
+  `queued`/`running`/`succeeded`/`failed`/`lost` all already happen, only
+  `cancelled` has no producer (needs Phase 2's cancel endpoint).
 - **Blocked on:** nothing
 - **Notes:** Phase 0, 1a, `internal/podman`, and the claim loop (1.12) all
   done (see prior entries / commits). 1.13 closes the vertical slice's core
@@ -350,7 +353,18 @@ the run appears in Postgres with correct timestamps and state.
 
 ### 1d. CLI
 
-- [ ] **1.18** Hand write the API client from the same `openapi.yaml`.
+- [x] **1.18** Hand write the API client from the same `openapi.yaml`.
+      `internal/client`: `client.go` (transport, `APIError` + `ErrNotFound`/
+      `ErrUnauthorized` sentinels via a custom `Is`, `Info`, `Health`,
+      `WhoAmI`) and `runs.go` (`Run`/`RunList` types, state constants,
+      `Run.IsTerminal`, `CreateRun` with `Idempotency-Key`, `GetRun`,
+      `ListRuns`, `PollRun`). Nullable schema fields are pointers so a
+      `exitCode` of 0 is distinguishable from "hasn't finished". `/healthz`
+      is the one endpoint whose 503 carries a real body rather than a
+      problem document, handled with an explicit `alsoOK` status list.
+      Integration tests in `client_test.go` skip cleanly unless
+      `DESCENDENCE_URL`/`DESCENDENCE_TOKEN` are set (same pattern as
+      `internal/podman`); all pass against a live API + supervisor.
 - [ ] **1.19** `cli run` — creates a run and polls until terminal, printing state.
 - [ ] **1.20** `cli runs list`, `cli runs get <id>`.
 - [ ] **1.21** Config: server URL and token from env vars or `~/.config/<name>/config`.
@@ -922,3 +936,44 @@ Notes to future me:
   - `go run ./cmd/api &` in a shell: killing the parent PID it prints doesn't
     kill the compiled child binary `go run` execs — kill the actual `api`
     process (check `ss -ltnp` on :8080) or the port stays bound.
+
+### 2026-08-05
+Worked on: Phase 1d (the CLI). 1.18 (hand-written API client).
+Decision up front, at the user's explicit direction: **the CLI is built on
+the Charm stack** — `bubbletea` for anything interactive, with `bubbles` and
+`lipgloss` as needed. That is a real dependency choice for a project that has
+otherwise hand-rolled everything (decisions #3 and #15), so it is recorded as
+decision #17 in ARCHITECTURE.md rather than left implicit in the code.
+Completed:
+  - 1.18: `internal/client`, written from `api/openapi.yaml` by hand, split
+    into `client.go` (transport + the non-run endpoints) and `runs.go`.
+    Deliberate choices worth remembering: every schema field *not* in the
+    spec's `required` list is a pointer (`*int32`, `*time.Time`), because
+    `exitCode: 0` means success and must never be confused with "hasn't
+    finished yet" — the single most likely bug in a client like this.
+    Errors are one concrete `*APIError` carrying the RFC 9457 problem body,
+    with a custom `Is` mapping 401/404 onto `ErrUnauthorized`/`ErrNotFound`
+    so callers use `errors.Is` and never type-assert on a status code.
+    `/healthz` needed a small escape hatch (`requestOptions.alsoOK`) since
+    it is the one endpoint that answers 503 with a genuine body rather than
+    a problem document. `PollRun` is included here rather than in the CLI
+    because the non-TTY path of 1.19 wants exactly a blocking poll loop;
+    the bubbletea path will drive its own ticks instead.
+    Verified live against a real API + supervisor: create→poll→`succeeded`
+    with `exitCode` 0, idempotency replay returning the same run id, keyset
+    pagination advancing across pages, and both sentinels firing. Tests skip
+    cleanly when `DESCENDENCE_URL`/`DESCENDENCE_TOKEN` are unset, matching
+    `internal/podman`'s pattern, so `go test ./...` still passes bare.
+Broken / unresolved: nothing. 1.14 (all six states) is still open — now
+skipped four times, still not forgotten.
+Next action: 1.19 — `cli run <image> -- <argv...>`: create a run and poll
+until terminal, on bubbletea when stdout is a TTY and plain lines when it
+isn't.
+Notes to future me:
+  - `DESCENDENCE_URL` / `DESCENDENCE_TOKEN` are the CLI's env vars, chosen
+    here in 1.18 (the client's tests read them) and formalised in 1.21.
+  - `cmd/seed`'s one-shot-ness bit again: the `bootstrap` principal already
+    existed, so this session's token was minted by hand as a second
+    principal (`cli-dev`) with a direct `INSERT` — `sha256sum` of the token
+    into `decode(...,'hex')`. Worth an actual `descendence token create`
+    command eventually.
