@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 
+	"github.com/r3dpan/project-descendence/internal/podman"
 	"github.com/r3dpan/project-descendence/internal/store"
 )
 
@@ -15,16 +16,18 @@ type APIServer struct {
 	apiVersion   string
 
 	queries *store.Queries
+	podman  *podman.Client
 }
 
 // --- API server constructor ---
-func NewAPIServer(productName string, productBuild string, apiVersion string, queries *store.Queries) *APIServer {
+func NewAPIServer(productName string, productBuild string, apiVersion string, queries *store.Queries, podmanClient *podman.Client) *APIServer {
 	return &APIServer{
 		productName:  productName,
 		productBuild: productBuild,
 		apiVersion:   apiVersion,
 
 		queries: queries,
+		podman:  podmanClient,
 	}
 }
 
@@ -40,6 +43,7 @@ type serverInfo struct {
 type serverHealth struct {
 	HealthStatus string `json:"healthStatus"`
 	DatabaseUp   bool   `json:"databaseUp"`
+	PodmanUp     bool   `json:"podmanUp"`
 }
 
 // RFC 9457 problem details, used for all error responses.
@@ -105,9 +109,16 @@ func (s *APIServer) HealthHandler(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Health check: database ping failed: %v", err)
 	}
 
+	// Same idea for Podman: a real /libpod/info call, not just a configured socket path
+	_, err = s.podman.Info(r.Context())
+	podmanUp := err == nil
+	if err != nil {
+		log.Printf("Health check: podman info failed: %v", err)
+	}
+
 	healthStatus := "Healthy"
 	status := http.StatusOK
-	if !databaseUp {
+	if !databaseUp || !podmanUp {
 		healthStatus = "Unhealthy"
 		status = http.StatusServiceUnavailable
 	}
@@ -116,6 +127,7 @@ func (s *APIServer) HealthHandler(w http.ResponseWriter, r *http.Request) {
 	serverHealthData := serverHealth{
 		HealthStatus: healthStatus,
 		DatabaseUp:   databaseUp,
+		PodmanUp:     podmanUp,
 	}
 
 	writeJSON(w, status, serverHealthData)

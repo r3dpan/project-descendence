@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/r3dpan/project-descendence/internal/api"
+	"github.com/r3dpan/project-descendence/internal/podman"
 	"github.com/r3dpan/project-descendence/internal/store"
 )
 
@@ -44,12 +45,19 @@ func main() {
 
 	queries := store.New(pool)
 
+	// Connect to Podman
+	podmanSocket := os.Getenv("PODMAN_SOCKET")
+	if podmanSocket == "" {
+		log.Fatal("PODMAN_SOCKET is not set")
+	}
+	podmanClient := podman.NewClient(podmanSocket)
+
 	// Create custom mux
 	// Needed for preventing usage of global mux
 	descendenceMux := http.NewServeMux()
 
 	// Create new API server
-	descendenceAPI := api.NewAPIServer(productName, productBuild, apiVersion, queries)
+	descendenceAPI := api.NewAPIServer(productName, productBuild, apiVersion, queries, podmanClient)
 
 	// Create api handlers
 	// Rule: the most specific pattern always wins

@@ -195,9 +195,12 @@ components:
           type: string
         databaseUp:
           type: boolean
+        podmanUp:
+          type: boolean
       required:
         - healthStatus
         - databaseUp
+        - podmanUp
     Principal:
       type: object
       properties:

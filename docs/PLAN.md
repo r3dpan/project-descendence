@@ -38,39 +38,25 @@ Update the marker on each task as it moves:
 > **Update this block every session.**
 
 - **Phase:** 1 — Vertical slice
-- **Task:** 1.1 done, 1.2 done, 1.3 done, 1.5 done, 1.6 done, 1.7 done, 1.8 done,
-  `GET /api/v1/runs` (list) done, 1.4 done
-- **Next action:** Phase 1a (data/API skeleton) is done. Next is Phase 1b —
-  task 1.9, `internal/podman` HTTP client over the Unix socket, first call
-  `/libpod/info`
+- **Task:** Phase 1a (1.1–1.8, data/API skeleton) done. 1.9 done. 1.10 next.
+- **Next action:** 1.10 — implement create / start / wait / remove container
+  on the `podman.Client`, always labelled with `run_id`
 - **Blocked on:** nothing
-- **Notes:** Phase 0 complete. Migration 00001 applied and committed — all eight
-  ARCHITECTURE.md §5 tables exist in `descendent_db`. `pgx/v5` + `sqlc` wired up:
-  `sqlc.yaml` at repo root, queries in `internal/store/queries/`, generated code in
-  `internal/store/`. `cmd/api/main.go` opens a `pgxpool` from `DATABASE_URL` and
-  passes `*store.Queries` into `api.NewAPIServer`. `/healthz` does a real `Ping`
-  query and returns `503` if the database is unreachable. Auth middleware
-  (`internal/api/auth.go`, `RequireAuth`) resolves `Authorization: Bearer` →
-  SHA-256 → `principals.token_hash`, 401 via RFC 9457 `problem+json` on
-  missing/malformed/unknown/expired/revoked tokens; `cmd/seed` mints one
-  bootstrap token (`sra_live_...`, scopes `read`/`run`/`admin`), and
-  `GET /api/v1/whoami` (behind `RequireAuth`) proves the whole path — verified
-  live: no token / bad token → 401, real token → 200 with the principal.
-  `api/openapi.yaml` now also has the three run operations
-  (`POST`/`GET /api/v1/runs`, `GET /api/v1/runs/{id}`) fully specced.
-  `POST /api/v1/runs` (`internal/api/runs.go`, `CreateRunHandler`) is
-  implemented and stamps `principal_id` from the auth middleware's context —
-  validates, inserts a `queued` row, honours `Idempotency-Key` (via
-  `ON CONFLICT (principal_id, idempotency_key) DO NOTHING` + a fallback
-  `GetRunByIdempotencyKey` lookup on conflict), returns `202` + `Location`.
-  `GET /api/v1/runs/{id}` (`GetRunHandler`) looks up by id, `404` if missing or
-  malformed — not scoped to the caller's principal (RBAC is explicitly
-  deferred, ARCHITECTURE.md §7). `GET /api/v1/runs` (`ListRunsHandler`) does
-  keyset pagination on `(queued_at DESC, id DESC)` via an opaque base64
-  cursor — fetches `limit+1` rows to detect a next page without a count
-  query. All three run operations from 1.3 are now implemented; Phase 1a is
-  done. `cmd/supervisor`, `cmd/cli`, `internal/podman` still exist only as
-  empty directories — that's Phase 1b, starting at task 1.9.
+- **Notes:** Phase 0 and Phase 1a both complete — full schema applied
+  (`descendent_db`), `pgx`/`sqlc` wired (`internal/store`), auth middleware +
+  bootstrap token (`cmd/seed`), all three run operations
+  (`POST`/`GET /api/v1/runs`, `GET /api/v1/runs/{id}`) implemented and
+  verified live, including `Idempotency-Key` and keyset pagination. Full
+  detail for each is in the commits and the session log entries below rather
+  than repeated here.
+  Phase 1b started: `internal/podman/podman.go` — `Client` dials the rootless
+  Unix socket via a custom `DialContext` (plain `net/http`, not the official
+  bindings — ARCHITECTURE.md §6 decision #3), `Info()` calls
+  `GET /libpod/info`. Wired into `/healthz` (`podmanUp` field) the same way
+  `Ping` proved `pgx`/`sqlc` in 1.2 — verified live against the real socket
+  (`podmanUp: true`) and a broken path (`podmanUp: false`, `503`).
+  `cmd/supervisor` and `cmd/cli` are still empty directories; `internal/podman`
+  has only `Info()` so far — container create/start/wait/remove is 1.10.
 
 ---
 
@@ -216,8 +202,12 @@ the run appears in Postgres with correct timestamps and state.
 
 ### 1b. Podman client
 
-- [ ] **1.9** `internal/podman`: an HTTP client over the Unix socket
+- [x] **1.9** `internal/podman`: an HTTP client over the Unix socket
       (`http.Client` with a custom `DialContext`). First call: `/libpod/info`.
+      `podman.Client`, socket path from `PODMAN_SOCKET` (new required env var,
+      `.env`/`.env.sample`). Wired into `/healthz` as `podmanUp`, same pattern
+      as `Ping` for the database. Verified live against the real socket and a
+      broken one.
 - [ ] **1.10** Implement create / start / wait / remove container.
       **Always label the container with `run_id`.**
 - [ ] **1.11** Build argv as a **`[]string`, never a shell string.** Write a test that
@@ -528,7 +518,8 @@ Worked on: repo/documentation audit at the start of the session; PLAN.md accurac
 1.1 (apply + commit migration); 1.2 (`pgx` + `sqlc`); 1.5 (auth middleware);
 1.3 (openapi spec for the three run operations); 1.6 (`POST /api/v1/runs`);
 1.7 (`GET /api/v1/runs/{id}`); 1.8 (`Idempotency-Key`); `GET /api/v1/runs`
-(list) — completing 1.3's three operations and closing out Phase 1a.
+(list) — completing 1.3's three operations and closing out Phase 1a; 1.9
+(`internal/podman` client, opening Phase 1b).
 Completed:
   - 1.1: found `migrations/00001_create_database.sql` already written (full
     ARCHITECTURE.md §5 schema, all eight tables) but untracked and unapplied.
@@ -613,11 +604,32 @@ Completed:
     all 5 in one page; `limit=0`/`limit=abc` → `400`; malformed cursor → `400`;
     no token → `401`. This closes out Phase 1a - all three 1.3 operations and
     1.4's handlers are now implemented.
+  - 1.9: `internal/podman/podman.go` — `NewClient(socketPath)` builds an
+    `http.Client` whose `Transport.DialContext` always dials the given Unix
+    socket regardless of the request URL's host (used a placeholder
+    `http://d/...`, matching the `curl --unix-socket` convention from the
+    Phase 0 session log). `Info()` calls `GET /v5.0.0/libpod/info`, decoded
+    into a minimal struct (just `host.arch`/`host.os`/`version.*` - not
+    modeling Podman's full info schema, only what's used so far). New
+    required env var `PODMAN_SOCKET` (`.env`/`.env.sample`), defaults to this
+    machine's `/run/user/1000/podman/podman.sock`. Wired into `/healthz` as a
+    `podmanUp` field, same pattern as `Ping` for the database in 1.2 - not a
+    new task, just reusing the established "prove the client against
+    `/healthz`" approach. Verified live: real socket → `podmanUp: true`,
+    `200`; `PODMAN_SOCKET` pointed at a nonexistent path → `podmanUp: false`,
+    `503`. Went with plain `net/http` over the official
+    `github.com/containers/podman/v5/pkg/bindings`, per the already-recorded
+    ARCHITECTURE.md §6 decision #3 (bindings pull in native build deps for
+    ~15 endpoints this project actually needs).
 Broken / unresolved: nothing.
-Next action: Phase 1b — task 1.9, `internal/podman`: an HTTP client over the
-rootless Unix socket (custom `http.Client` `DialContext`), first call
-`/libpod/info`. This is the first task touching Podman at all in this
-codebase.
+Next action: 1.10 — implement create / start / wait / remove container on
+`podman.Client`. **Always label the container with `run_id`** (PLAN.md's own
+emphasis, task 1.10) - that label is what makes 1.15's reconciler possible
+later, so don't skip it even though nothing reads it yet. 1.11 (argv as
+`[]string`, never a shell string, with an explicit injection test) follows
+immediately after - the `runs.argv` column and `CreateRunHandler` already
+treat it as an array end to end, so 1.11 is really about making sure the
+Podman container-creation call preserves that.
 Notes to future me:
   - 1.1 went wider than planned (all eight tables, not just `principals`/`runs`)
     — future-phase tables are pre-created but commented as skeletons, so this
