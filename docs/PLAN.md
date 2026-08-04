@@ -38,11 +38,18 @@ Update the marker on each task as it moves:
 > **Update this block every session.**
 
 - **Phase:** 1 — Vertical slice
-- **Task:** 1.1 (next), 1.3/1.4 partially done
-- **Next action:** Migration 002 — `principals` and `runs` tables per ARCHITECTURE.md §5
+- **Task:** 1.1 (written, not yet applied/committed), 1.3/1.4 partially done
+- **Next action:** `goose up` migration 00001, commit `migrations/`, then 1.2 —
+  `pgx` + `sqlc` setup
 - **Blocked on:** nothing
-- **Notes:** Phase 0 complete. goose installed, `.env`-configured, up/down verified,
-  destroy-recreate-migrate exit check passed.
+- **Notes:** Phase 0 complete. `migrations/00001_create_database.sql` already exists
+  on disk but is untracked in git and unapplied (`goose status` shows it `Pending`).
+  It covers the *entire* ARCHITECTURE.md §5 schema sketch in one migration —
+  `principals`, `repos`, `runtimes`, `jobs`, `runs`, `run_logs`, `schedules`,
+  `audit` — rather than splitting `principals`/`runs` into a 002 as originally
+  planned here; tables beyond Phase 1 scope are commented `-- Skeleton. Fleshed
+  out at task X.Y`. `cmd/supervisor`, `cmd/cli`, `internal/store`, `internal/podman`
+  still exist only as empty directories.
 
 ---
 
@@ -115,8 +122,11 @@ the run appears in Postgres with correct timestamps and state.
 
 ### 1a. Data and API skeleton
 
-- [ ] **1.1** Migration: `principals` and `runs` tables. Use the sketch in
+- [~] **1.1** Migration: `principals` and `runs` tables. Use the sketch in
       ARCHITECTURE.md §5, trimmed to what Phase 1 needs.
+      Written as `migrations/00001_create_database.sql`, but scope grew to the
+      full §5 sketch (all eight tables) instead of just these two. Not yet
+      applied (`goose up`) or committed.
 - [ ] **1.2** Set up `pgx` (Postgres driver) and `sqlc` (generates typed Go from your
       SQL). Write one query, generate, call it.
 - [~] **1.3** Write `api/openapi.yaml` with exactly three operations:
@@ -448,3 +458,19 @@ Notes to future me:
     behind. `-- +goose NO TRANSACTION` gives that up (needed for
     CREATE INDEX CONCURRENTLY).
   - `identity ALWAYS` vs `BY DEFAULT` — decide per table in 1.1.
+
+### 2026-08-04
+Worked on: repo/documentation audit at the start of the session; PLAN.md accuracy.
+Completed: nothing new yet — found `migrations/00001_create_database.sql` already
+written (full ARCHITECTURE.md §5 schema, all eight tables) but untracked in git
+and unapplied per `goose status`. Postgres container confirmed running. Updated
+"Current position" and 1.1's checkbox to match reality instead of the stale
+"Migration 002" note.
+Broken / unresolved: nothing broken; migration just hasn't been run or committed.
+Next action: `goose up`, then `git add`/commit `migrations/`, then 1.2 (`pgx` +
+`sqlc`).
+Notes to future me: 1.1 went wider than planned (all eight tables, not just
+`principals`/`runs`) — future-phase tables are pre-created but commented as
+skeletons, so this isn't scope creep so much as writing the whole sketch down
+once. Decide during 1.2 whether `sqlc` queries should be restricted to Phase 1
+tables for now or not — no reason they can't touch the skeleton tables too.
