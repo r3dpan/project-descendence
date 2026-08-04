@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/r3dpan/project-descendence/internal/store"
 )
 
@@ -103,15 +104,35 @@ func (s *APIServer) CreateRunHandler(w http.ResponseWriter, r *http.Request) {
 		timeoutSeconds = *req.TimeoutSeconds
 	}
 
+	idempotencyKey := pgtype.Text{}
+	if key := strings.TrimSpace(r.Header.Get("Idempotency-Key")); key != "" {
+		idempotencyKey = pgtype.Text{String: key, Valid: true}
+	}
+
 	run, err := s.queries.CreateRun(r.Context(), store.CreateRunParams{
 		PrincipalID:    principal.ID,
 		ImageRef:       req.ImageRef,
 		Argv:           req.Argv,
 		TimeoutSeconds: timeoutSeconds,
+		IdempotencyKey: idempotencyKey,
 	})
 	if err != nil {
-		writeProblem(w, http.StatusInternalServerError, "failed creating run")
-		return
+		if err != pgx.ErrNoRows {
+			writeProblem(w, http.StatusInternalServerError, "failed creating run")
+			return
+		}
+
+		// ON CONFLICT DO NOTHING skipped the insert: idempotencyKey is only
+		// ever non-NULL here (NULL never conflicts), so this is a genuine
+		// replay - fetch and return the original run rather than erroring.
+		run, err = s.queries.GetRunByIdempotencyKey(r.Context(), store.GetRunByIdempotencyKeyParams{
+			PrincipalID:    principal.ID,
+			IdempotencyKey: idempotencyKey,
+		})
+		if err != nil {
+			writeProblem(w, http.StatusInternalServerError, "failed fetching original run for replayed Idempotency-Key")
+			return
+		}
 	}
 
 	w.Header().Set("Location", fmt.Sprintf("/api/v1/runs/%d", run.ID))

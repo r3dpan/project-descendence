@@ -38,10 +38,11 @@ Update the marker on each task as it moves:
 > **Update this block every session.**
 
 - **Phase:** 1 — Vertical slice
-- **Task:** 1.1 done, 1.2 done, 1.3 done, 1.5 done, 1.6 done, 1.7 done, 1.4
-  partially done
-- **Next action:** 1.8 — honour `Idempotency-Key` on `POST /api/v1/runs`
-  (unique index on `(principal_id, idempotency_key)` already exists)
+- **Task:** 1.1 done, 1.2 done, 1.3 done, 1.5 done, 1.6 done, 1.7 done, 1.8 done,
+  1.4 partially done
+- **Next action:** `GET /api/v1/runs` (list, keyset pagination) — the last of
+  1.3's three operations, not separately numbered in the checklist but still
+  open; then Phase 1b (`internal/podman`, task 1.9 onward)
 - **Blocked on:** nothing
 - **Notes:** Phase 0 complete. Migration 00001 applied and committed — all eight
   ARCHITECTURE.md §5 tables exist in `descendent_db`. `pgx/v5` + `sqlc` wired up:
@@ -59,7 +60,9 @@ Update the marker on each task as it moves:
   (`POST`/`GET /api/v1/runs`, `GET /api/v1/runs/{id}`) fully specced.
   `POST /api/v1/runs` (`internal/api/runs.go`, `CreateRunHandler`) is
   implemented and stamps `principal_id` from the auth middleware's context —
-  validates, inserts a `queued` row, returns `202` + `Location`.
+  validates, inserts a `queued` row, honours `Idempotency-Key` (via
+  `ON CONFLICT (principal_id, idempotency_key) DO NOTHING` + a fallback
+  `GetRunByIdempotencyKey` lookup on conflict), returns `202` + `Location`.
   `GET /api/v1/runs/{id}` (`GetRunHandler`) looks up by id, `404` if missing or
   malformed — not scoped to the caller's principal (RBAC is explicitly
   deferred, ARCHITECTURE.md §7). `GET /api/v1/runs` (list) still unregistered.
@@ -192,8 +195,19 @@ the run appears in Postgres with correct timestamps and state.
       RBAC is deferred (ARCHITECTURE.md §7) and this is a single-user tool for
       now. Verified live: existing id → `200`, unknown id → `404`, non-numeric
       id → `404`, no token → `401`.
-- [ ] **1.8** Honour `Idempotency-Key`: unique index on it; a repeat returns the
+- [x] **1.8** Honour `Idempotency-Key`: unique index on it; a repeat returns the
       original run rather than creating a second.
+      `CreateRun` uses `ON CONFLICT (principal_id, idempotency_key) DO NOTHING`
+      + `RETURNING`; a skipped insert surfaces as `pgx.ErrNoRows`, which
+      `CreateRunHandler` treats as "fetch and return the original" via the new
+      `GetRunByIdempotencyKey` query, rather than an error. No header at all →
+      `idempotency_key` stays `NULL`, which Postgres never treats as
+      conflicting, so unkeyed requests always insert. Verified live: same key
+      twice (different body the second time) → both `202`s point at the same
+      run id and return the *original* body; a different key or no key at all
+      → distinct new runs. Note: the id sequence still advances on a skipped
+      insert (`ON CONFLICT` doesn't roll back `nextval()`) — gaps in `runs.id`
+      are expected, not a bug.
 
 ### 1b. Podman client
 
@@ -508,7 +522,7 @@ Notes to future me:
 Worked on: repo/documentation audit at the start of the session; PLAN.md accuracy;
 1.1 (apply + commit migration); 1.2 (`pgx` + `sqlc`); 1.5 (auth middleware);
 1.3 (openapi spec for the three run operations); 1.6 (`POST /api/v1/runs`);
-1.7 (`GET /api/v1/runs/{id}`).
+1.7 (`GET /api/v1/runs/{id}`); 1.8 (`Idempotency-Key`).
 Completed:
   - 1.1: found `migrations/00001_create_database.sql` already written (full
     ARCHITECTURE.md §5 schema, all eight tables) but untracked and unapplied.
@@ -568,12 +582,23 @@ Completed:
     RBAC is deferred (ARCHITECTURE.md §7), this is a single-user tool for now.
     Verified live: real id → `200` with the full run body; unknown id → `404`;
     non-numeric id (`not-a-number`) → `404`; no token → `401`.
+  - 1.8: `CreateRun` gained an `ON CONFLICT (principal_id, idempotency_key)
+    DO NOTHING` + `RETURNING`; `pgx.ErrNoRows` from that now means "conflict,
+    not error" and `CreateRunHandler` falls back to the new
+    `GetRunByIdempotencyKey` to return the original run. No header → `NULL` →
+    never conflicts → always inserts, same code path either way. Verified
+    live: same key twice (second request had a different body) → both `202`s
+    return the *first* run's data at the *first* run's id; a different key, or
+    no key, both create genuinely new rows. Confirmed the id sequence still
+    skips a value on a conflict-skipped insert (expected Postgres behavior,
+    not a bug — `nextval()` isn't transactional with `DO NOTHING`).
 Broken / unresolved: nothing.
-Next action: 1.8 — honour `Idempotency-Key` on `POST /api/v1/runs`: a repeat
-with the same key (scoped per principal, per the existing unique index) should
-return the original run, not create or error. Then `GET /api/v1/runs` (list,
-keyset pagination) is the last of the three 1.3 operations, and 1c (supervisor
-claim loop) is what actually makes queued runs execute.
+Next action: `GET /api/v1/runs` (list) — the third of 1.3's operations, not
+separately numbered in the Phase 1a checklist but still unimplemented: keyset
+pagination on `(queued_at DESC, id DESC)` per the existing index, `cursor`/
+`limit` query params already in the spec. After that, Phase 1a's data/API
+skeleton is essentially done and 1b (`internal/podman`, task 1.9 onward) is
+next.
 Notes to future me:
   - 1.1 went wider than planned (all eight tables, not just `principals`/`runs`)
     — future-phase tables are pre-created but commented as skeletons, so this

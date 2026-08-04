@@ -7,11 +7,14 @@ package store
 
 import (
 	"context"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const createRun = `-- name: CreateRun :one
-INSERT INTO runs (principal_id, image_ref, argv, timeout_seconds)
-VALUES ($1, $2, $3, $4)
+INSERT INTO runs (principal_id, image_ref, argv, timeout_seconds, idempotency_key)
+VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (principal_id, idempotency_key) DO NOTHING
 RETURNING id, principal_id, state, idempotency_key, image_ref, argv,
           timeout_seconds, container_id, exit_code, failure_reason,
           cancel_requested_at, queued_at, started_at, finished_at, job_id,
@@ -19,18 +22,25 @@ RETURNING id, principal_id, state, idempotency_key, image_ref, argv,
 `
 
 type CreateRunParams struct {
-	PrincipalID    int64    `json:"principal_id"`
-	ImageRef       string   `json:"image_ref"`
-	Argv           []string `json:"argv"`
-	TimeoutSeconds int32    `json:"timeout_seconds"`
+	PrincipalID    int64       `json:"principal_id"`
+	ImageRef       string      `json:"image_ref"`
+	Argv           []string    `json:"argv"`
+	TimeoutSeconds int32       `json:"timeout_seconds"`
+	IdempotencyKey pgtype.Text `json:"idempotency_key"`
 }
 
+// Idempotency_key is NULL when the caller sent no Idempotency-Key header;
+// Postgres never treats NULL as conflicting with anything, so unkeyed runs
+// always insert. A repeated key for the same principal hits the unique index
+// and DO NOTHING skips the insert - :one then returns pgx.ErrNoRows, which is
+// the caller's signal to look the original up via GetRunByIdempotencyKey.
 func (q *Queries) CreateRun(ctx context.Context, arg CreateRunParams) (Run, error) {
 	row := q.db.QueryRow(ctx, createRun,
 		arg.PrincipalID,
 		arg.ImageRef,
 		arg.Argv,
 		arg.TimeoutSeconds,
+		arg.IdempotencyKey,
 	)
 	var i Run
 	err := row.Scan(
@@ -68,6 +78,47 @@ WHERE id = $1
 
 func (q *Queries) GetRun(ctx context.Context, id int64) (Run, error) {
 	row := q.db.QueryRow(ctx, getRun, id)
+	var i Run
+	err := row.Scan(
+		&i.ID,
+		&i.PrincipalID,
+		&i.State,
+		&i.IdempotencyKey,
+		&i.ImageRef,
+		&i.Argv,
+		&i.TimeoutSeconds,
+		&i.ContainerID,
+		&i.ExitCode,
+		&i.FailureReason,
+		&i.CancelRequestedAt,
+		&i.QueuedAt,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.JobID,
+		&i.CommitSha,
+		&i.RuntimeID,
+		&i.ImageDigest,
+		&i.ParamsJson,
+	)
+	return i, err
+}
+
+const getRunByIdempotencyKey = `-- name: GetRunByIdempotencyKey :one
+SELECT id, principal_id, state, idempotency_key, image_ref, argv,
+       timeout_seconds, container_id, exit_code, failure_reason,
+       cancel_requested_at, queued_at, started_at, finished_at, job_id,
+       commit_sha, runtime_id, image_digest, params_json
+FROM runs
+WHERE principal_id = $1 AND idempotency_key = $2
+`
+
+type GetRunByIdempotencyKeyParams struct {
+	PrincipalID    int64       `json:"principal_id"`
+	IdempotencyKey pgtype.Text `json:"idempotency_key"`
+}
+
+func (q *Queries) GetRunByIdempotencyKey(ctx context.Context, arg GetRunByIdempotencyKeyParams) (Run, error) {
+	row := q.db.QueryRow(ctx, getRunByIdempotencyKey, arg.PrincipalID, arg.IdempotencyKey)
 	var i Run
 	err := row.Scan(
 		&i.ID,
