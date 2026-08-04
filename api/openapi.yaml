@@ -44,7 +44,29 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ServerHealth"
+  /api/v1/whoami:
+    get:
+      operationId: getWhoAmI
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: The principal resolved from the Authorization header
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Principal"
+        "401":
+          description: Missing, malformed, unknown, expired or revoked token
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
 components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
   schemas:
     ServerHealth:
       type: object
@@ -56,3 +78,39 @@ components:
       required:
         - healthStatus
         - databaseUp
+    Principal:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        kind:
+          type: string
+          enum: [user, token]
+        scopes:
+          type: array
+          items:
+            type: string
+            enum: [read, run, admin]
+      required:
+        - id
+        - name
+        - kind
+        - scopes
+    Problem:
+      type: object
+      description: RFC 9457 problem details
+      properties:
+        type:
+          type: string
+        title:
+          type: string
+        status:
+          type: integer
+        detail:
+          type: string
+      required:
+        - type
+        - title
+        - status

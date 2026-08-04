@@ -56,6 +56,7 @@ func main() {
 	// A path pattern ending with '/' matches all paths beginning with that string. {$} anchors end of path.
 	descendenceMux.HandleFunc("GET /{$}", descendenceAPI.RootHandler)
 	descendenceMux.HandleFunc("GET /healthz", descendenceAPI.HealthHandler)
+	descendenceMux.HandleFunc("GET /api/v1/whoami", descendenceAPI.RequireAuth(descendenceAPI.WhoAmIHandler))
 
 	// Create descedence server
 	descendenceServer := &http.Server{

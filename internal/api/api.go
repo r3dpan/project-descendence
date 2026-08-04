@@ -42,6 +42,14 @@ type serverHealth struct {
 	DatabaseUp   bool   `json:"databaseUp"`
 }
 
+// RFC 9457 problem details, used for all error responses.
+type problemDetails struct {
+	Type   string `json:"type"`
+	Title  string `json:"title"`
+	Status int    `json:"status"`
+	Detail string `json:"detail,omitempty"`
+}
+
 // --- Helper functions ---
 // Handle JSON
 func writeJSON(w http.ResponseWriter, status int, data any) {
@@ -55,6 +63,23 @@ func writeJSON(w http.ResponseWriter, status int, data any) {
 	// Error handling needed as answer is already sent when status is checked -> client already received it
 	if err := json.NewEncoder(w).Encode(data); err != nil {
 		log.Printf("Failed encoding JSON: %v", err)
+	}
+}
+
+// Handle error responses (RFC 9457 application/problem+json, ARCHITECTURE.md §4.9)
+func writeProblem(w http.ResponseWriter, status int, detail string) {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(status)
+
+	problem := problemDetails{
+		Type:   "about:blank",
+		Title:  http.StatusText(status),
+		Status: status,
+		Detail: detail,
+	}
+
+	if err := json.NewEncoder(w).Encode(problem); err != nil {
+		log.Printf("Failed encoding problem+json: %v", err)
 	}
 }
 
@@ -94,4 +119,29 @@ func (s *APIServer) HealthHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, status, serverHealthData)
+}
+
+// The authenticated principal, as resolved by RequireAuth.
+type whoamiResponse struct {
+	ID     int64    `json:"id"`
+	Name   string   `json:"name"`
+	Kind   string   `json:"kind"`
+	Scopes []string `json:"scopes"`
+}
+
+// Handles identity calls. Registered behind RequireAuth - proves the auth
+// middleware resolves a real principal end to end.
+func (s *APIServer) WhoAmIHandler(w http.ResponseWriter, r *http.Request) {
+	principal, ok := principalFromContext(r.Context())
+	if !ok {
+		writeProblem(w, http.StatusInternalServerError, "no principal in request context")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, whoamiResponse{
+		ID:     principal.ID,
+		Name:   principal.Name,
+		Kind:   principal.Kind,
+		Scopes: principal.Scopes,
+	})
 }

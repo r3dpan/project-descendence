@@ -38,18 +38,24 @@ Update the marker on each task as it moves:
 > **Update this block every session.**
 
 - **Phase:** 1 — Vertical slice
-- **Task:** 1.1 done, 1.2 done, 1.3/1.4 partially done
-- **Next action:** 1.5 — auth middleware (Bearer token → principal lookup, 401 on
-  unknown), plus a bootstrap token seed
+- **Task:** 1.1 done, 1.2 done, 1.5 done, 1.3/1.4 partially done
+- **Next action:** 1.6 — `POST /api/v1/runs` (needs 1.3's spec/schemas finished
+  first: `Run`/`RunCreate`/`Problem` and the three run operations)
 - **Blocked on:** nothing
 - **Notes:** Phase 0 complete. Migration 00001 applied and committed — all eight
   ARCHITECTURE.md §5 tables exist in `descendent_db`. `pgx/v5` + `sqlc` wired up:
   `sqlc.yaml` at repo root, queries in `internal/store/queries/`, generated code in
   `internal/store/`. `cmd/api/main.go` opens a `pgxpool` from `DATABASE_URL` and
-  passes `*store.Queries` into `api.NewAPIServer`. `/healthz` now does a real
-  `Ping` query and returns `503` if the database is unreachable — proved end to
-  end with `go run ./cmd/api` + `curl`. `cmd/supervisor`, `cmd/cli`,
-  `internal/podman` still exist only as empty directories.
+  passes `*store.Queries` into `api.NewAPIServer`. `/healthz` does a real `Ping`
+  query and returns `503` if the database is unreachable. Auth middleware
+  (`internal/api/auth.go`, `RequireAuth`) resolves `Authorization: Bearer` →
+  SHA-256 → `principals.token_hash`, 401 via RFC 9457 `problem+json` on
+  missing/malformed/unknown/expired/revoked tokens; `cmd/seed` mints one
+  bootstrap token (`sra_live_...`, scopes `read`/`run`/`admin`), and
+  `GET /api/v1/whoami` (behind `RequireAuth`) proves the whole path — verified
+  live: no token / bad token → 401, real token → 200 with the principal.
+  `cmd/supervisor`, `cmd/cli`, `internal/podman` still exist only as empty
+  directories.
 
 ---
 
@@ -134,14 +140,20 @@ the run appears in Postgres with correct timestamps and state.
       `HealthHandler` — `/healthz` now reports real `databaseUp` status.
 - [~] **1.3** Write `api/openapi.yaml` with exactly three operations:
       `POST /api/v1/runs`, `GET /api/v1/runs/{id}`, `GET /api/v1/runs`.
-      Not started — spec currently only covers `/` and `/healthz`. Those two are
-      done but were never part of 1.3's three operations
+      Not started — spec currently covers `/`, `/healthz`, and (as of 1.5)
+      `GET /api/v1/whoami`, but none of 1.3's three run operations yet.
 - [~] **1.4** Write routing and handlers directly in `internal/api`, no chi, no codegen, for
       learning value. `internal/api` with `apiServer` struct + constructor +
-      handler methods exists and serves `/` and `/healthz`
-- [ ] **1.5** Auth middleware: read `Authorization: Bearer`, hash it, look up the
+      handler methods exists and serves `/`, `/healthz`, and `/api/v1/whoami`.
+- [x] **1.5** Auth middleware: read `Authorization: Bearer`, hash it, look up the
       principal, reject with 401 if unknown. One bootstrap token, inserted by a
       migration or a `make seed` target.
+      `internal/api/auth.go` — `RequireAuth` middleware, SHA-256 over the raw
+      token, `problem+json` 401s. Went with a `cmd/seed` Go command rather than
+      a Go migration for the bootstrap token (decision #16 anticipated either) —
+      simpler than teaching goose's Go-migration mode for one row. Token format
+      `sra_live_<64 hex>` per ARCHITECTURE.md §4.10. Proved via
+      `GET /api/v1/whoami`, which didn't exist before this task.
 
 > **Why auth now, when it's a single-user tool?** Because every handler needs a
 > `principal_id` to stamp onto records. Adding the concept later means touching every
@@ -464,7 +476,7 @@ Notes to future me:
 
 ### 2026-08-04
 Worked on: repo/documentation audit at the start of the session; PLAN.md accuracy;
-1.1 (apply + commit migration); 1.2 (`pgx` + `sqlc`).
+1.1 (apply + commit migration); 1.2 (`pgx` + `sqlc`); 1.5 (auth middleware).
 Completed:
   - 1.1: found `migrations/00001_create_database.sql` already written (full
     ARCHITECTURE.md §5 schema, all eight tables) but untracked and unapplied.
@@ -481,11 +493,25 @@ Completed:
     `api/openapi.yaml`'s `/healthz` schema updated to match (`databaseUp` field,
     documented `503` response). Verified live: `go run ./cmd/api` +
     `curl /healthz` → `{"healthStatus":"Healthy","databaseUp":true}`.
+  - 1.5: `internal/store/queries/principals.sql` — `GetPrincipalByTokenHash`,
+    `CreateTokenPrincipal`. `internal/api/auth.go` — `RequireAuth` middleware:
+    extracts `Authorization: Bearer <token>`, SHA-256s it, looks up
+    `principals.token_hash` (query already filters `kind='token'`,
+    `revoked_at IS NULL`, unexpired), stamps the principal onto the request
+    context, or writes a `problem+json` 401 (new `writeProblem` helper in
+    `api.go`, first use of RFC 9457 in this codebase). `cmd/seed/main.go` mints
+    one bootstrap principal: `crypto/rand` → 32 bytes → `sra_live_<hex>`,
+    SHA-256 stored, plaintext printed once, scopes `read`/`run`/`admin`. Added
+    `GET /api/v1/whoami` (behind `RequireAuth`) purely to prove the path — it
+    isn't one of 1.3's three run operations. Verified live: no token → 401,
+    wrong token → 401, real bootstrap token → 200 with the principal's
+    id/name/kind/scopes. `openapi.yaml` gained a `bearerAuth` security scheme,
+    `Principal`/`Problem` schemas, and the `/api/v1/whoami` path.
 Broken / unresolved: nothing.
-Next action: 1.5 — auth middleware (Bearer token → principal lookup, 401 on
-unknown) plus a bootstrap token seed. Note 1.6–1.8 (the run endpoints) need
-1.3's spec finished first, and 1.5's "why auth now" rationale in PLAN.md still
-applies — do it before the run handlers, not after.
+Next action: 1.3 — finish `api/openapi.yaml`'s `Run`/`RunCreate`/`Problem`
+schemas and the three run operations (`POST /api/v1/runs`,
+`GET /api/v1/runs/{id}`, `GET /api/v1/runs`), then 1.6 implements the first of
+them for real.
 Notes to future me:
   - 1.1 went wider than planned (all eight tables, not just `principals`/`runs`)
     — future-phase tables are pre-created but commented as skeletons, so this
@@ -497,3 +523,10 @@ Notes to future me:
   - `DATABASE_URL` is a new env var, separate from `GOOSE_DBSTRING` — goose and
     the app now each source their own connection string from `.env`, on purpose
     (goose is a separate CLI tool, not app config).
+  - `cmd/seed` is a one-shot: `principals.name` is unique, so running it twice
+    against the same database fails on the second `bootstrap` insert (expected,
+    not a bug) — revoke/rotate has no endpoint yet, so replacing the token means
+    an `UPDATE`/`DELETE` by hand for now.
+  - `go run ./cmd/api &` in a shell: killing the parent PID it prints doesn't
+    kill the compiled child binary `go run` execs — kill the actual `api`
+    process (check `ss -ltnp` on :8080) or the port stays bound.
