@@ -38,25 +38,26 @@ Update the marker on each task as it moves:
 > **Update this block every session.**
 
 - **Phase:** 1 — Vertical slice
-- **Task:** Phase 1a (1.1–1.8, data/API skeleton) done. 1.9 done. 1.10 next.
-- **Next action:** 1.10 — implement create / start / wait / remove container
-  on the `podman.Client`, always labelled with `run_id`
+- **Task:** Phase 1a done. 1.9 done. 1.10 done. 1.11 next.
+- **Next action:** 1.11 — build container argv as a `[]string`, never a shell
+  string; write a test passing `; rm -rf /` as an argument and assert it's
+  treated as literal text
 - **Blocked on:** nothing
-- **Notes:** Phase 0 and Phase 1a both complete — full schema applied
-  (`descendent_db`), `pgx`/`sqlc` wired (`internal/store`), auth middleware +
-  bootstrap token (`cmd/seed`), all three run operations
-  (`POST`/`GET /api/v1/runs`, `GET /api/v1/runs/{id}`) implemented and
-  verified live, including `Idempotency-Key` and keyset pagination. Full
-  detail for each is in the commits and the session log entries below rather
-  than repeated here.
-  Phase 1b started: `internal/podman/podman.go` — `Client` dials the rootless
-  Unix socket via a custom `DialContext` (plain `net/http`, not the official
-  bindings — ARCHITECTURE.md §6 decision #3), `Info()` calls
-  `GET /libpod/info`. Wired into `/healthz` (`podmanUp` field) the same way
-  `Ping` proved `pgx`/`sqlc` in 1.2 — verified live against the real socket
-  (`podmanUp: true`) and a broken path (`podmanUp: false`, `503`).
-  `cmd/supervisor` and `cmd/cli` are still empty directories; `internal/podman`
-  has only `Info()` so far — container create/start/wait/remove is 1.10.
+- **Notes:** Phase 0 and Phase 1a both complete (see prior entries / commits
+  for detail). Phase 1b in progress: `internal/podman` — `Client` (custom
+  `DialContext` over the rootless Unix socket), `Info()` (proved via
+  `/healthz`'s `podmanUp`), and now `CreateContainer`/`StartContainer`/
+  `WaitContainer`/`RemoveContainer` (`containers.go`). Every created container
+  is unconditionally labelled `run_id` — `CreateContainerParams.RunID` is a
+  required field, not a caller-supplied label, specifically so this can't be
+  forgotten (it's what the reconciler, 1.15, will depend on). Proved with a
+  real integration test (`containers_test.go`,
+  `go test ./internal/podman/...`, skips cleanly if `PODMAN_SOCKET` unset or
+  unreachable): create → start → wait → exit code `42` → remove, confirmed no
+  leaked container afterward. `Command` is passed through as `[]string` end
+  to end already (1.11 is about proving that explicitly, not building it).
+  `cmd/supervisor` and `cmd/cli` still empty — that's 1.12 onward (claim loop,
+  execute, states, reconciler, CLI).
 
 ---
 
@@ -208,8 +209,23 @@ the run appears in Postgres with correct timestamps and state.
       `.env`/`.env.sample`). Wired into `/healthz` as `podmanUp`, same pattern
       as `Ping` for the database. Verified live against the real socket and a
       broken one.
-- [ ] **1.10** Implement create / start / wait / remove container.
+- [x] **1.10** Implement create / start / wait / remove container.
       **Always label the container with `run_id`.**
+      `internal/podman/containers.go`: `CreateContainer` (`POST
+      /libpod/containers/create`, `201`), `StartContainer` (`POST .../start`,
+      `204`), `WaitContainer` (`POST .../wait` — response is plain text, not
+      JSON, unlike every other libpod endpoint used so far; parses the exit
+      code), `RemoveContainer` (`DELETE /libpod/containers/{id}`). Shared
+      `do()`/`checkStatus()` helpers moved into `podman.go` so `Info` (1.9)
+      and the container calls share request/error handling; libpod's error
+      body shape is `{"cause","message","response"}`, confirmed by probing
+      the real socket with `curl` before writing any Go. `RunID` on
+      `CreateContainerParams` is required (not an optional label) so the
+      `run_id` label can't be skipped by a future caller. Verified live via
+      `go test ./internal/podman/...`: full create/start/wait/remove cycle
+      against real Alpine, exit code round-tripped correctly, label confirmed
+      present via a manual `curl` inspect, no container left behind
+      afterward (`podman ps -a`).
 - [ ] **1.11** Build argv as a **`[]string`, never a shell string.** Write a test that
       passes `; rm -rf /` as an argument and asserts it is treated as literal text.
 
@@ -519,7 +535,7 @@ Worked on: repo/documentation audit at the start of the session; PLAN.md accurac
 1.3 (openapi spec for the three run operations); 1.6 (`POST /api/v1/runs`);
 1.7 (`GET /api/v1/runs/{id}`); 1.8 (`Idempotency-Key`); `GET /api/v1/runs`
 (list) — completing 1.3's three operations and closing out Phase 1a; 1.9
-(`internal/podman` client, opening Phase 1b).
+(`internal/podman` client, opening Phase 1b); 1.10 (container lifecycle).
 Completed:
   - 1.1: found `migrations/00001_create_database.sql` already written (full
     ARCHITECTURE.md §5 schema, all eight tables) but untracked and unapplied.
@@ -621,15 +637,30 @@ Completed:
     `github.com/containers/podman/v5/pkg/bindings`, per the already-recorded
     ARCHITECTURE.md §6 decision #3 (bindings pull in native build deps for
     ~15 endpoints this project actually needs).
+  - 1.10: probed the real socket with `curl --unix-socket` first (create,
+    start, wait, inspect, remove, plus two error cases) to pin down exact
+    wire shapes before writing any Go - worth doing again for any new libpod
+    endpoint, since e.g. `/wait`'s plain-text response was not obvious from
+    memory alone. `internal/podman/containers.go`:
+    `CreateContainer`/`StartContainer`/`WaitContainer`/`RemoveContainer`.
+    Refactored `Info`'s request/error handling into shared `do()`/
+    `checkStatus()` in `podman.go` (libpod error body:
+    `{"cause","message","response"}`). `CreateContainerParams.RunID` is
+    required, always becomes the `run_id` label - can't be skipped by a
+    future caller, unlike an optional `Labels` map would allow. Wrote
+    `containers_test.go` as a real integration test against the live socket
+    (skips cleanly if `PODMAN_SOCKET` unset/unreachable, doesn't fail CI or a
+    podman-less environment) — full lifecycle against Alpine, `sh -c "exit
+    42"`, confirmed exit code, confirmed the label via a manual `curl`
+    inspect, confirmed `podman ps -a` shows nothing left behind.
 Broken / unresolved: nothing.
-Next action: 1.10 — implement create / start / wait / remove container on
-`podman.Client`. **Always label the container with `run_id`** (PLAN.md's own
-emphasis, task 1.10) - that label is what makes 1.15's reconciler possible
-later, so don't skip it even though nothing reads it yet. 1.11 (argv as
-`[]string`, never a shell string, with an explicit injection test) follows
-immediately after - the `runs.argv` column and `CreateRunHandler` already
-treat it as an array end to end, so 1.11 is really about making sure the
-Podman container-creation call preserves that.
+Next action: 1.11 — build container argv as a `[]string`, never a shell
+string, and write a test that passes `; rm -rf /` as an argument and asserts
+it's treated as literal text. The `runs.argv` column and `CreateRunHandler`
+already carry argv as an array end to end (proved back in 1.6's session
+notes), and `CreateContainer`'s `Command []string` does too — 1.11 is mostly
+about writing the explicit injection test through the full path (API →
+Postgres → `podman.CreateContainer`) rather than building new plumbing.
 Notes to future me:
   - 1.1 went wider than planned (all eight tables, not just `principals`/`runs`)
     — future-phase tables are pre-created but commented as skeletons, so this
