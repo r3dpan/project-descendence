@@ -245,6 +245,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/repos/{id}/files/{path}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * @description Read one file's content at the repository's current HEAD (task 7.8).
+         *
+         *     The read counterpart to createRepoFile - for a client editing a manifest that already exists rather than only ever writing a new one. Always HEAD, never an arbitrary commit: there is no history browser here, only "what would I be changing if I committed now."
+         */
+        get: operations["getRepoFile"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/jobs": {
         parameters: {
             query?: never;
@@ -579,6 +600,13 @@ export interface components {
             content: string;
             /** @description Commit message. Defaults to "Update <path>". */
             message?: string;
+        };
+        /** @description One file's content as read at the repository's HEAD (task 7.8). */
+        RepoFileGet: {
+            path: string;
+            /** @description The commit this content was read at. */
+            commitSha: string;
+            content: string;
         };
         RepoFileResult: {
             path: string;
@@ -1428,6 +1456,57 @@ export interface operations {
             };
         };
     };
+    getRepoFile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+                /** @description Repository-root-relative path. May contain slashes (this is a Go 1.22 mux `{path...}` wildcard server-side, not a single segment). */
+                path: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The file's content as of HEAD, and the commit it was read at */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RepoFileGet"];
+                };
+            };
+            /** @description The path is absolute or escapes the repository root */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Missing, malformed, unknown, expired or revoked token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No repository with this id, no commits yet, or no such file at HEAD */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     listJobs: {
         parameters: {
             query?: {
@@ -2090,7 +2169,13 @@ export interface operations {
                     Location?: string;
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": {
+                        id: number;
+                        /** @enum {string} */
+                        buildStatus: "pending";
+                    };
+                };
             };
             /** @description Missing, malformed, unknown, expired or revoked token */
             401: {
