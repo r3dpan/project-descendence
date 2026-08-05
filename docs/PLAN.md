@@ -42,9 +42,17 @@ Update the marker on each task as it moves:
 
 > **Update this block every session.**
 
-- **Phase:** 6 — **complete** (6.1–6.7, exit check passed). Next up is
-  Phase 7 — Web UI.
-- **Task:** Jobs take typed, validated parameters end to end. The manifest's
+- **Phase:** 7 — **in progress**. 7.1–7.5 done and verified live (read-only
+  web UI: local-account cookie login, embedded same-origin SPA, run list/detail,
+  live logs via native `EventSource`). 7.6–7.8 (trigger runs, job/runtime
+  management, the form builder) remain - see Phase 7's own task list for
+  what shipped and how.
+- **Next action:** Phase 7.6 - wire a "run this job" form/button into the
+  existing run-list/detail views, then 7.7 (job/runtime management UI).
+  7.8 (form builder) is its own session per PLAN.md's original note: ship
+  YAML editing with a rendered preview before drag-and-drop.
+- **Blocked on:** nothing.
+- **Phase 6 summary** (complete, 6.1–6.7, exit check passed): Jobs take typed, validated parameters end to end. The manifest's
   `params:` block (name/type/required/default/secret) is real
   (`internal/manifest`, `internal/manifest/params.go`); submitted values are
   resolved against it server-side (`manifest.ResolveParams`, called from
@@ -63,10 +71,6 @@ Update the marker on each task as it moves:
   stayed a spike — no code from it merged, nothing wired into jobsync or
   manifest parsing; revisit it when Phase 7's form builder wants a
   best-effort "suggest the fields" affordance.
-- **Next action:** Phase 7 planning — re-read ARCHITECTURE.md §4.11 first,
-  per its own note, and scope it properly before starting; it's explicitly
-  "large, open-ended" in the phase table above, unlike every phase so far.
-- **Blocked on:** nothing
 - **Notes:** invariants live in CLAUDE.md's "Invariants worth not breaking" —
   that's the one place to check before touching jobs, git, or run execution.
   (The one fact from Phase 3 that isn't an invariant and has no other home:
@@ -98,7 +102,13 @@ Update the marker on each task as it moves:
   everywhere, like `params_json`, and let the type system do the enforcing.
   Also: Podman's `POST /libpod/secrets/create` returns `200`, not `201`, on
   this podman version — found by an unexplained "unexpected status 200 OK"
-  the first time a mount-type param actually ran.
+  the first time a mount-type param actually ran. From Phase 7: the same
+  sqlc row-type lesson recurred immediately in a new place — see task 7.3's
+  writeup above for the cookie-session variant (a join query, not a select
+  list this time). Also: browsers do accept a `Secure`-flagged cookie over
+  plain `http://localhost` (both Chrome and curl in this environment) —
+  `localhost` is treated as a potentially trustworthy origin, so dev-mode
+  testing over HTTP did not require relaxing the cookie flags.
 
 ---
 
@@ -489,19 +499,72 @@ literally and harmlessly. **→ Passed**, verified live — see HISTORY.md.
 
 ## Phase 7 — Web UI
 
-Deliberately vague; scope it properly when you get here, and re-read ARCHITECTURE.md
-§4.11 first.
+Deliberately vague; scoped properly on arrival per ARCHITECTURE.md §4.11. First pass
+covers 7.1–7.5 (a read-only vertical slice); 7.6–7.8 are a later session.
 
-- [ ] **7.1** Vite + TypeScript project under `web/`.
-- [ ] **7.2** Generate the TS client from `openapi.yaml`.
-- [ ] **7.3** Session cookie auth (OIDC comes later; a login form against a local
-      account is fine first).
-- [ ] **7.4** Embed the build with `//go:embed`, served same-origin.
-- [ ] **7.5** Read-only views first: run list, run detail, live logs via `EventSource`.
+- [x] **7.1** Vite + React + TypeScript project under `web/`. Scaffolded with
+      `create-vite`; `web/embed.go` (package `webdist`) is a small Go file living
+      inside the JS project root purely to hold the `//go:embed dist` directive -
+      embed requires the pattern's directory to exist at compile time, so
+      `web/dist/index.html` is a checked-in placeholder (`web/.gitignore` excludes
+      the rest of `dist/`) that a real `npm run build` overwrites locally.
+- [x] **7.2** TS types generated from `openapi.yaml` via `openapi-typescript`
+      (`npm run gen:api` → `web/src/api/schema.ts`, regenerated the way `sqlc
+      generate` regenerates Go). Request *logic* stays hand-written
+      (`web/src/api/client.ts`'s `request()`, mirroring `internal/client`'s
+      `do()`/`send()`/`requestOptions` shape) rather than fully codegen'd -
+      splits PLAN's literal "generate the client" from decision #15's
+      hand-written ethos instead of picking one over the other.
+- [x] **7.3** Session cookie auth. `principals.kind='user'` now carries a bcrypt
+      `password_hash` (migration `00008_web_auth.sql`), superseding migration
+      00001's original comment that those rows were OIDC placeholders - OIDC
+      stays deferred (§7), but "a login form against a local account" (this
+      task's own note) arrived first. New `sessions` table, hash-only storage
+      like `token_hash`. `RequireAuth` (`internal/api/auth.go`) now resolves
+      *either* a Bearer token or a `descendence_session` cookie into the same
+      `store.Principal`, so no existing handler changed. `POST
+      /api/v1/auth/login` / `.../logout` added to `openapi.yaml`. `cmd/seed
+      -kind user` mints the first local account, printing a password once like
+      the existing token bootstrap.
+- [x] **7.4** `web/dist` embedded into `cmd/api` (`web` package `webdist`),
+      mounted as a catch-all at `/` behind every `/api/v1/*`, `/healthz` and the
+      exact-match `GET /{$}` route - Go 1.22's mux always prefers the most
+      specific pattern, so `/` still answers JSON server info for machine
+      clients and only the SPA's own routes (`/login`, `/runs/42`, ...) hit the
+      catch-all. `spaHandler` falls back to `index.html` for any path with no
+      matching static file, so a browser refresh on a client-side route doesn't
+      404.
+- [x] **7.5** Read-only views: run list (cursor-paginated, `RunList`), run
+      detail, live logs via the browser's native `EventSource` against `GET
+      /api/v1/runs/{id}/logs` - confirmed live, verifying ARCHITECTURE.md
+      §4.11's central claim end to end (see exit check below).
 - [ ] **7.6** Trigger runs.
 - [ ] **7.7** Job and runtime management.
 - [ ] **7.8** Form builder — the largest single piece. Consider shipping YAML editing
       with a rendered preview before building drag-and-drop.
+
+**7.1–7.5 exit check**: verified against the real stack (Postgres, Podman, a live
+supervisor). `cmd/seed -kind user` minted a local account; logging in via `curl`
+set an `HttpOnly`/`Secure`/`SameSite=Lax` cookie; the cookie alone authenticated
+`GET /api/v1/whoami`, `GET /api/v1/runs` and a `text/event-stream` request against
+an existing run's logs (all four SSE `log` events plus the terminal `state` event
+arrived correctly). Logging out cleared the session and the same cookie then 401'd.
+Verified in both modes: `npm run dev` against a real `cmd/api` through the Vite
+proxy, and the fully embedded production path (`npm run build` → rebuild `cmd/api`
+→ no Vite process running at all) - root (`/`) still returns JSON, `/login` and
+`/runs/42` both correctly fall back to `index.html`, and hashed JS/CSS assets serve
+with correct content types. The existing CLI's bearer-token flow (`descendence runs
+list`) was confirmed unaffected by the new cookie path.
+
+One real bug caught in this verification, not just a plan: `GetPrincipalBySessionTokenHash`'s
+join query gives sqlc a distinct row type (`GetPrincipalBySessionTokenHashRow`),
+not `store.Principal` - exactly the Phase 6 `secret_params_json` lesson (same
+*columns*, different Go *type*) recurring in a new place. Storing that row
+directly into the request context made `principalFromContext`'s type assertion
+fail silently, turning every cookie-authenticated request into a 500 ("no
+principal in request context") instead of succeeding or 401ing - caught only by
+actually calling `/api/v1/whoami` with a real cookie, not by `go build`/`go vet`.
+Fixed by converting the row to `store.Principal` explicitly in `auth.go`.
 
 ---
 

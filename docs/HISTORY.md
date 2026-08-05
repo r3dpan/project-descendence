@@ -1837,3 +1837,64 @@ Notes to future me:
     don't re-derive them, and keep the result advisory only: the manifest's
     own `params:` contract stays authoritative, never something the
     platform trusts without a human reviewing and committing it.
+
+## 2026-08-06
+Worked on: Phase 7 scoping and its first slice (tasks 7.1-7.5): a read-only
+web UI with local-account cookie auth, served same-origin from the API
+binary.
+Completed:
+  - Migration `00008_web_auth.sql`: `password_hash` on `principals` (bcrypt,
+    symmetric CHECK to `token_hash`'s pattern), new `sessions` table
+    (hash-only `token_hash`, like tokens). Supersedes migration 00001's
+    comment calling `kind='user'` rows OIDC placeholders - password auth
+    arrived first, OIDC stays deferred either way (decision #29).
+  - `internal/api/auth.go`'s `RequireAuth` now resolves either a Bearer
+    token or a `descendence_session` cookie into the same `store.Principal`,
+    so no existing handler changed. New `internal/api/session.go`
+    (login/logout, bcrypt), two new `openapi.yaml` operations, `cmd/seed
+    -kind user` to mint the first local account (printing a generated
+    password once, same shape as the existing token bootstrap).
+  - `web/`: Vite + React + TypeScript, scaffolded with `create-vite`.
+    Types generated from `openapi.yaml` via `openapi-typescript`
+    (`npm run gen:api`); request logic hand-written
+    (`web/src/api/client.ts`, mirroring `internal/client`'s
+    `do()`/`send()`/`requestOptions`) rather than fully codegen'd.
+    `web/embed.go` (package `webdist`) holds `//go:embed dist`; a checked-in
+    placeholder `web/dist/index.html` keeps a fresh clone's `go build`
+    working before anyone runs `npm run build` (`web/.gitignore` excludes
+    the rest of `dist/`). `cmd/api/main.go` mounts the embedded build as a
+    catch-all behind every existing route, with an `index.html` fallback
+    for client-side routes.
+  - Views: login, run list (cursor-paginated), run detail with live logs via
+    native `EventSource` - the concrete test of ARCHITECTURE.md §4.11's
+    same-origin-cookie claim, and it held up exactly as predicted.
+  - Pinned `react-router-dom` to `7.18.2` after `npm audit` flagged the
+    package: recent 7.x releases carry an unrelated RSC-mode CSRF advisory
+    that doesn't apply to this plain client-side SPA (no server actions),
+    while versions below 7.12 carry real, applicable XSS/open-redirect
+    CVEs already fixed by 7.18.2. Latest wasn't blindly "safe."
+Broken / unresolved: nothing outstanding. One real bug caught and fixed
+during verification, not left as a note: `GetPrincipalBySessionTokenHash`'s
+join query gives sqlc a distinct row type from `store.Principal` (same
+lesson as Phase 6's `secret_params_json` finding, recurring in a new shape -
+a join this time, not a select list). Storing that row directly into the
+request context made `principalFromContext`'s type assertion fail silently,
+turning every cookie-authenticated request into a 500 instead of a 200 or a
+401 - `go build`/`go vet` were both clean; only an actual `curl` against
+`/api/v1/whoami` with a real cookie caught it. Fixed by converting the row
+to `store.Principal` explicitly in `auth.go`.
+Next action: Phase 7.6 (trigger runs from the UI) and 7.7 (job/runtime
+management), then 7.8 (form builder) as its own session - PLAN.md already
+suggests shipping YAML editing with a rendered preview there before
+drag-and-drop.
+Notes to future me:
+  - The full verification loop (real Postgres, real Podman, a live
+    supervisor) caught the sqlc row-type bug above; `go vet`/`go build`
+    alone would have shipped it. Whenever a new query returns a
+    store.* type into a context value or a comparison, actually call the
+    endpoint - don't trust the type system silently accepting an `any`.
+  - `web/dist/index.html` gets overwritten by every real `npm run build` -
+    that's by design (see web/.gitignore), not a stray diff to chase down.
+  - `curl`'s cookie jar and real browsers both accept a `Secure`-flagged
+    cookie over plain `http://localhost` - no need to relax cookie flags
+    for local dev testing.

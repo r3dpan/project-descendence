@@ -388,22 +388,54 @@ path), not a container directly.
 
 ### 4.10 Authentication
 
-Two credential types, resolved by one middleware into a common `principal`:
+Two credential types, resolved by one middleware (`RequireAuth`,
+`internal/api/auth.go`) into a common `principal`:
 
 | Caller | Credential | Storage |
 |---|---|---|
-| Machines / CLI | Opaque token, prefixed (`sra_live_<random>`) | Only a hash in Postgres; plaintext shown once |
-| Browsers (later) | Server-set session cookie after OIDC Authorization Code + PKCE | `HttpOnly`, `Secure`, `SameSite=Lax` |
+| Machines / CLI | Opaque token, prefixed (`sra_live_<random>`) | Only a hash in `principals.token_hash`; plaintext shown once |
+| Browsers | Server-set session cookie, from a local-account password login (task 7.3) | `HttpOnly`, `Secure`, `SameSite=Lax`; only a hash in `sessions.token_hash` |
 
-**Never store JWTs in `localStorage`.** Any XSS becomes total account compromise and
-they can't be revoked.
+Built as password auth ahead of OIDC, per this section's original note that a local
+account is fine first (§7 still defers OIDC/Authentik and full RBAC). A
+`kind='user'` principal carries a bcrypt `password_hash` (migration
+`00008_web_auth.sql`) — a symmetric CHECK to `token_hash`'s: a `user` row must
+have one, a `token` row must not. `POST /api/v1/auth/login` checks it and mints a
+row in a `sessions` table (principal_id, hash-only `token_hash`, `expires_at`);
+`POST /api/v1/auth/logout` deletes the row outright, not a soft-delete — a dead
+session has no history worth keeping, unlike a run or a job. `cmd/seed -kind user`
+mints the first local account the same way the bootstrap token is minted: a
+generated credential printed once. When OIDC does arrive, it plugs into the same
+`sessions` table and the same `RequireAuth` cookie path; only how the cookie gets
+issued changes.
+
+**Never store JWTs (or this session token) in `localStorage`.** Any XSS becomes
+total account compromise and they can't be revoked.
 
 Scopes from day one, even before full RBAC: `read` / `run` / `admin`.
 
-### 4.11 Web UI (deferred, Phase 7+)
+### 4.11 Web UI (Phase 7, in progress)
 
 Decision: a JavaScript SPA consuming the same API, **served from the same origin** as
 the API (built with Vite, embedded into the Go binary with `//go:embed`).
+
+Implemented (task 7.1–7.5): React + TypeScript under `web/`, scaffolded with
+`create-vite`. Types are generated from `api/openapi.yaml` via
+`openapi-typescript` (`npm run gen:api` → `web/src/api/schema.ts`); request
+*logic* is hand-written (`web/src/api/client.ts`), mirroring
+`internal/client`'s `do()`/`send()`/`requestOptions` shape rather than being
+fully codegen'd — splits decision #11 (spec as contract) from decision #15
+(hand-written logic) instead of picking one over the other for the browser
+client. `web/embed.go` (package `webdist`) holds the `//go:embed dist`
+directive; since embed needs the directory to exist at compile time,
+`web/dist/index.html` is a checked-in placeholder and `web/.gitignore`
+excludes the rest of `dist/`, which a real `npm run build` fills in locally.
+`cmd/api/main.go` mounts the embedded build as a catch-all at `/`, behind
+every `/api/v1/*`, `/healthz` and the exact-match root route — Go 1.22's mux
+always prefers the more specific pattern, so `/` keeps returning JSON server
+info for machine clients and only the SPA's own client-side routes hit the
+catch-all, with an `index.html` fallback for any path with no matching
+static file (so a refresh on `/runs/42` doesn't 404).
 
 The same-origin choice is not cosmetic. **`EventSource` cannot set custom headers** —
 it issues GET only, with no way to attach `Authorization`
@@ -413,6 +445,9 @@ workarounds are tokens in query strings (logged, cached, in browser history), a
 polyfill, or hand-rolling `fetch` + `ReadableStream` with a custom SSE parser.
 Same-origin + cookie session means `new EventSource('/api/v1/runs/42/logs')` simply
 works. External clients still use bearer tokens against the same endpoints.
+**Confirmed live** (task 7.5): a real run's log stream, both `log` and `state`
+events, arrived over a plain `new EventSource(...)` with no query-string token
+and no polyfill, authenticated purely by the cookie `RequireAuth` set at login.
 
 Server-rendered HTML + htmx was considered and rejected: the form builder is a
 genuine client-side application, and a single API with one client type is simpler
@@ -425,10 +460,18 @@ than two rendering strategies.
 Phases 0–4's tables (`principals`, `repos`, `jobs`, `runs`, `run_logs`, `runtimes`)
 are built; this sketch of them is illustrative, not authoritative — the migrations in
 `migrations/` are the source of truth for exact columns and constraints.
-`schedules` and `audit` are still Phase 5+ sketches, not yet built.
+`audit` is still a sketch, not yet built.
 
 ```
-principals    id, kind(user|token), name, token_hash, scopes[], created_at
+principals    id, kind(user|token), name, token_hash, password_hash, scopes[],
+              created_at
+              -- a token principal carries token_hash; a user principal
+              -- (task 7.3) carries password_hash instead - symmetric CHECKs
+              -- tie each column to its kind, mirroring one another.
+sessions      id, principal_id, token_hash, created_at, expires_at
+              -- browser sessions (task 7.3). Hash-only storage, same
+              -- reasoning as principals.token_hash. Logout deletes the row
+              -- outright - no soft-delete, a dead session has no history.
 repos         id, name, path, kind(local|external), remote_url, default_branch,
               last_synced_at, last_synced_commit_sha
 jobs          id, repo_id, manifest_path, name, runtime_id, enabled,
@@ -515,6 +558,7 @@ Recording *why*, because in three months the reasoning will be gone.
 | 26 | **Every PowerShell runtime's Containerfile sets `ENV DOTNET_SYSTEM_NET_DISABLEIPV6=1`** | Measured, not theorised, at task 4.6's exit check: on a network where IPv6 is routed but blackholed rather than rejected outright, `curl` and Python's `urllib` fall back to IPv4 in well under a second (Happy Eyeballs), but .NET's `HttpClient` — what `Install-PSResource`/`PowerShellGet` use to reach PSGallery — does not fall back nearly as fast, and hung past its own 100s internal timeout on every attempt, retries included, in this platform's development sandbox. A plain HTTPS `HEAD` request that hung past 100s completed in 0.8s with this one variable set, and nothing else tried (retry loops, `--network=host`, an older `Install-Module` code path) fixed it. Scoped to the PowerShell install step only — it is a .NET-specific workaround and irrelevant to `pip`/`npm`, which were unaffected | The host network's IPv6 path is fixed, or the target deployment host doesn't blackhole IPv6 in the same way and the variable is confirmed unnecessary there — safe to leave set either way, since it is a no-op where IPv6 works |
 | 27 | **Scheduling (Phase 5) uses generated systemd (user) `.timer`/`.service` units, not an in-process cron loop, and the supervisor — not the api process — owns rendering and reloading them.** `robfig/cron/v3` is added as a dependency for cron validation and display purposes only, never for firing | Postgres (`schedules`) stays authoritative either way; systemd units are a regenerable render target, the same relationship `internal/runtimebuild` already has between a `runtimes` row and a Containerfile — decision #23's "regenerable projection" pattern, applied a third time. Firing survives a supervisor crash or restart for free, since systemd is host-level and outlives the Go process — closing Phase 5's exit check ("across a supervisor restart") more directly than an in-process timer ever could, and `Persistent=true` gives missed-window catch-up (task 5.4) as a systemd primitive instead of app code (semantics: fires **once** to catch up, never once per missed window). `TimeZone=` on the generated timer gives timezone/DST handling (task 5.5) to systemd's own well-tested calendar evaluator rather than reimplementing it. The supervisor, not the api process, owns the unit files because the api process's only host side effects until now were Postgres writes, git repo writes and log reads — adding `systemctl --user` there would have been a new trust boundary; the supervisor already is "the only component that touches Podman" (§4.2), and its existing advisory lock (one supervisor process, guaranteed) is exactly the guarantee needed for "exactly one process touches `~/.config/systemd/user/`" too, with no new locking primitive. This makes schedule CRUD a plain Postgres write from the api's point of view, same shape as jobs/runtimes CRUD, with the supervisor's schedule-sync loop (task 5.3) picking up the change asynchronously on its next poll tick — a real, if small, propagation-delay trade-off, accepted at homelab scale. `cron_expr` → systemd `OnCalendar=` translation (`internal/scheduling.CronToOnCalendar`) is deliberately scoped to a conservative subset (single value, `*`, simple `*/N` steps, comma-lists) and rejects anything else (ranges, combined dom+dow) by name, matching this codebase's "unknown key is an error, not silently wrong" posture (`internal/manifest.Parse`) rather than risk a subtly wrong translation that fires at the wrong time silently — exactly the failure shape decisions #20/#21/#26 all found the hard way. Overlap policy (task 5.6, per-schedule `skip`/`queue`/`concurrent`) is enforced in the trigger endpoint, not the unit; **`queue` and `concurrent` are behaviorally identical today** because the supervisor's run-claim loop already executes runs strictly one at a time (the Phase 1/3 concurrency limitation flagged in PLAN.md) — worth stating plainly rather than implying "concurrent" does something it can't yet | Real run concurrency arrives (at which point `queue` and `concurrent` need to actually diverge), or the propagation delay between a schedule CRUD write and the supervisor regenerating its unit proves too slow in practice |
 | 28 | **PowerShell AST introspection (task 6.7) is usable for a future best-effort form-builder suggestion, never as a source of truth.** `[System.Management.Automation.Language.Parser]::ParseFile` cleanly extracts a `param()` block's names, static types and `[ValidateSet(...)]` values | Prototyped live against `mcr.microsoft.com/powershell:7.4-debian-12` (no bare `pwsh` in this dev environment, matching decision #25's reasoning for why that image exists at all) with a five-parameter sample script and a deliberately-broken one. Two real gotchas, not hypothetical ones: (1) a `[Parameter(...)]` attribute's `Mandatory` named argument is an *expression AST*, not a value — checking only whether the argument is *present* silently treats `Mandatory = $false` as mandatory, caught only by testing a script that actually sets it false; correct detection means reading `NamedArgumentAst.ExpressionOmitted` (the bare `-Mandatory` shorthand) or comparing `Argument.Extent.Text` against `'$true'`. (2) `DefaultValue` is the default's raw *source text*, not a value — turning `"default-tag"` into this platform's manifest default string is fine, but a script with `$Tag = (Get-Date)` or any non-literal expression has no default this system could produce without executing script code, which introspection must never do (ARCHITECTURE.md's whole "best-effort, never a runtime dependency" framing exists for exactly this). Type mapping onto the platform's four-value contract (§4.7) is lossy in both directions: `SwitchParameter` behaves as `$false` by default but carries no `DefaultValue` node to read that from, and anything outside string/numeric/bool/switch (arrays, hashtables, custom types) has no destination in the contract and must be skipped, not guessed at. On the robustness side: a script with no `param()` block parses cleanly to an empty result, and a syntactically broken one fails fast with `ParseFile`'s own error list and a non-zero exit — neither hangs nor crashes the process, so a caller can treat "introspection didn't work for this script" as an ordinary, non-fatal outcome rather than something requiring special handling | Phase 7's form builder actually gets built and wants a "guess the fields for me" affordance — implement then, reusing this prototype's mandatory/default-extraction fixes, and keep it advisory: the manifest's own `params:` contract (task 6.1) stays authoritative, and a suggestion this produces is something an author reviews and commits, never something the platform trusts unread |
+| 29 | **Phase 7's browser auth is a local username+password principal against a new `sessions` table, not OIDC** | ARCHITECTURE.md §4.10 always allowed "a login form against a local account is fine first," and §7 keeps deferring OIDC/Authentik past this phase regardless of which comes first - so building password auth now does not foreclose OIDC later, it just means `RequireAuth`'s cookie path and the `sessions` table already exist for OIDC to plug into rather than being built alongside it. `password_hash` on `principals` mirrors `token_hash`'s pattern exactly (symmetric kind-tied CHECKs, hash-only storage), so a `user` principal and a `token` principal stay visibly the same *kind* of thing rather than diverging in shape. Migration 00001's original comment ("kind='user' rows are placeholders for OIDC-backed browser sessions") is superseded by this, not merely stale - fixed in the same change (`00008_web_auth.sql`) per CLAUDE.md's doc rule | OIDC/Authentik integration (§7) actually gets scheduled, at which point it targets the same `sessions` table and `RequireAuth` cookie path already built here - only how the cookie gets issued changes, not how it is checked |
 
 ---
 
@@ -522,8 +566,9 @@ Recording *why*, because in three months the reasoning will be gone.
 
 Not forgotten — sequenced. See PLAN.md for when.
 
-- Web UI / SPA
-- Form builder
+- Web UI / SPA — in progress: read-only slice (7.1–7.5) built; trigger runs,
+  job/runtime management (7.6–7.7) still deferred
+- Form builder (7.8)
 - OIDC / Authentik integration
 - Full RBAC
 - External git repo sync + webhooks
