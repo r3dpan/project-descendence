@@ -322,3 +322,62 @@ func TestFollowContainerLogsStopsOnContextCancel(t *testing.T) {
 		t.Fatal("follow did not return within 15s of its context being cancelled")
 	}
 }
+
+// A burst of output survives intact.
+//
+// This is the regression test for ARCHITECTURE.md decision #20. The host's
+// default log driver is journald, which rate-limits (10000 messages per 30
+// seconds as shipped) and silently discards everything past the limit for the
+// rest of the window - so this exact test, before the driver was pinned to
+// k8s-file, returned about 17500 of 20000 lines, and *zero* when run twice in
+// quick succession. Nothing anywhere reported an error either time.
+//
+// 20000 lines is chosen to sit well past that limit. If this ever starts
+// failing with a plausible-but-short count, suspect the log driver before
+// suspecting the capture code: a line the driver dropped never reaches us at
+// all, and no amount of care downstream can recover it.
+func TestFollowContainerLogsCapturesABurstWithoutLoss(t *testing.T) {
+	client, ctx := newTestClient(t)
+
+	const want = 20000
+
+	id, err := client.CreateContainer(ctx, CreateContainerParams{
+		RunID:   999993,
+		Image:   "docker.io/library/alpine:latest",
+		Command: []string{"seq", "1", strconv.Itoa(want)},
+	})
+	if err != nil {
+		t.Fatalf("CreateContainer: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := client.RemoveContainer(context.Background(), id); err != nil {
+			t.Logf("cleanup: RemoveContainer: %v", err)
+		}
+	})
+
+	if err := client.StartContainer(ctx, id); err != nil {
+		t.Fatalf("StartContainer: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	if err := client.FollowContainerLogs(ctx, id, func(f LogFrame) error {
+		if f.Stream == StreamStdout {
+			stdout.Write(f.Data)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("FollowContainerLogs: %v", err)
+	}
+
+	lines := strings.Split(strings.TrimSuffix(stdout.String(), "\n"), "\n")
+	if len(lines) != want {
+		t.Fatalf("captured %d lines, want %d - output was lost before it reached us", len(lines), want)
+	}
+	// Complete *and* in order: a limiter that dropped from the middle would
+	// still leave the right count if something else duplicated lines.
+	for i, line := range lines {
+		if line != strconv.Itoa(i+1) {
+			t.Fatalf("line %d = %q, want %q", i+1, line, strconv.Itoa(i+1))
+		}
+	}
+}

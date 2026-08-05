@@ -25,10 +25,33 @@ type CreateContainerParams struct {
 	Command []string
 }
 
+// logDriver is the container log driver every run gets, set explicitly rather
+// than inherited from the host (ARCHITECTURE.md decision #20).
+//
+// The host default here is journald, and journald rate-limits: the shipped
+// setting is 10000 messages per 30 seconds, after which it discards the rest
+// and keeps discarding for the remainder of the window. A script printing
+// 20000 lines therefore loses several thousand of them, and a second run
+// started inside the same window can lose *all* of its output - measured, not
+// theorised, and neither podman nor the API reports anything wrong, because
+// from their point of view nothing is: the lines never existed.
+//
+// That is fatal to the one thing this platform promises about logs, and no
+// amount of care further down the pipeline can recover a line the log driver
+// dropped. k8s-file writes to a file per container instead, with no limiter,
+// and podman deletes it when the container is removed - which the supervisor
+// does at the end of every run, after its own durable copy is safely written.
+const logDriver = "k8s-file"
+
 type createContainerRequest struct {
-	Image   string            `json:"image"`
-	Command []string          `json:"command"`
-	Labels  map[string]string `json:"labels"`
+	Image     string            `json:"image"`
+	Command   []string          `json:"command"`
+	Labels    map[string]string `json:"labels"`
+	LogConfig logConfig         `json:"log_configuration"`
+}
+
+type logConfig struct {
+	Driver string `json:"driver"`
 }
 
 type createContainerResponse struct {
@@ -40,9 +63,10 @@ type createContainerResponse struct {
 // created but not started; call StartContainer next.
 func (c *Client) CreateContainer(ctx context.Context, params CreateContainerParams) (string, error) {
 	resp, err := c.do(ctx, http.MethodPost, "/libpod/containers/create", createContainerRequest{
-		Image:   params.Image,
-		Command: params.Command,
-		Labels:  map[string]string{"run_id": strconv.FormatInt(params.RunID, 10)},
+		Image:     params.Image,
+		Command:   params.Command,
+		Labels:    map[string]string{"run_id": strconv.FormatInt(params.RunID, 10)},
+		LogConfig: logConfig{Driver: logDriver},
 	})
 	if err != nil {
 		return "", err
