@@ -21,6 +21,13 @@ const (
 	// stuck capture would stall every queued run behind it.
 	captureGrace = 5 * time.Second
 
+	// captureStopGrace bounds the second wait, after the capture has been told
+	// to stop. Reaching this one means a cancelled context did not unblock the
+	// capture, which should be impossible; it is logged as loudly as it
+	// deserves rather than hanging the supervisor on the strength of an
+	// assumption.
+	captureStopGrace = 5 * time.Second
+
 	// lineQueueDepth is how many captured lines may be waiting to be indexed
 	// before the capture loop blocks. Blocking is the intended behaviour: the
 	// index is authoritative, so applying backpressure to the reader is
@@ -37,7 +44,13 @@ const (
 // matter how many clients are eventually watching it (ARCHITECTURE.md §4.2).
 type logCapture struct {
 	runID int64
-	done  chan struct{}
+	// cancel stops the capture. Its own context, derived from the
+	// supervisor's, is what makes "stop waiting for this capture" mean
+	// something: without it, wait could only ever walk away from a capture
+	// that then went on running - reading a container the supervisor is about
+	// to remove, writing a file for a run it has already finished.
+	cancel context.CancelFunc
+	done   chan struct{}
 }
 
 // startLogCapture attaches to containerID's output, writes it to run runID's
@@ -48,20 +61,26 @@ type logCapture struct {
 // correctly is worth a loud log line, but it is not an execution failure and
 // rewriting a successful run as failed because of it would be a lie.
 func startLogCapture(ctx context.Context, queries *store.Queries, podmanClient *podman.Client, logDir string, runID int64, containerID string) *logCapture {
-	capture := &logCapture{runID: runID, done: make(chan struct{})}
+	captureCtx, cancel := context.WithCancel(ctx)
+	capture := &logCapture{runID: runID, cancel: cancel, done: make(chan struct{})}
 
 	go func() {
 		defer close(capture.done)
+		defer cancel()
 
-		if err := captureLogs(ctx, queries, podmanClient, logDir, runID, containerID); err != nil {
-			// A cancelled context here is the supervisor shutting down, not a
-			// capture fault - the same distinction the claim loop learned to
-			// make in Phase 1e.
-			if ctx.Err() != nil {
+		if err := captureLogs(captureCtx, queries, podmanClient, logDir, runID, containerID); err != nil {
+			// Three ways to get here, and they are not the same event. The
+			// supervisor shutting down is normal (the claim loop learned this
+			// distinction in Phase 1e); being told to stop is wait giving up
+			// and has already been logged; anything else is a real fault.
+			switch {
+			case ctx.Err() != nil:
 				log.Printf("run %d: log capture stopped early (%v); the rest of the output is not recorded", runID, ctx.Err())
-				return
+			case captureCtx.Err() != nil:
+				// Already reported by wait, which asked for this.
+			default:
+				log.Printf("run %d: log capture: %v", runID, err)
 			}
-			log.Printf("run %d: log capture: %v", runID, err)
 		}
 	}()
 
@@ -234,11 +253,20 @@ func toIndexRow(runID int64, line runlog.Line) store.InsertRunLogsParams {
 	}
 }
 
-// wait blocks until the capture has drained, indexed and closed its file, or
-// until captureGrace elapses. Nil-safe, so callers with no capture in hand
-// (the reconciler's never-started-container path) can call it
-// unconditionally, and idempotent, so the paths that both wait and defer a
-// wait are fine.
+// wait blocks until the capture has drained, indexed and closed its file.
+// Nil-safe, so callers with no capture in hand (the reconciler's
+// never-started-container path) can call it unconditionally, and idempotent,
+// so the paths that both wait and defer a wait are fine.
+//
+// A capture that has not finished within captureGrace is *stopped*, not
+// abandoned. The difference is the whole point of this function: an abandoned
+// capture keeps its connection to podman open and keeps writing to a run the
+// supervisor has moved on from, and it never ends, because the thing it is
+// blocked on is by definition the thing that was not going to happen. One was
+// measured still blocked in a read two minutes after its run finished
+// (decision #20 has the cause). Stopping it costs whatever output had not
+// arrived - which is already lost either way - and gets the file closed, the
+// last lines indexed and the goroutine ended.
 func (c *logCapture) wait() {
 	if c == nil {
 		return
@@ -246,7 +274,15 @@ func (c *logCapture) wait() {
 
 	select {
 	case <-c.done:
+		return
 	case <-time.After(captureGrace):
-		log.Printf("run %d: log capture still running after %s; continuing without it", c.runID, captureGrace)
+		log.Printf("run %d: log capture still running after %s; stopping it - the rest of the output will not be recorded", c.runID, captureGrace)
+		c.cancel()
+	}
+
+	select {
+	case <-c.done:
+	case <-time.After(captureStopGrace):
+		log.Printf("run %d: log capture did not stop within %s of being cancelled; abandoning it", c.runID, captureStopGrace)
 	}
 }

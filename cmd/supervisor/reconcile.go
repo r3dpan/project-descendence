@@ -65,7 +65,7 @@ func reconcile(ctx context.Context, queries *store.Queries, podmanClient *podman
 			// rather than leaving it behind.
 			log.Printf("reconcile: run %d's container %s was created but never started, marking lost", run.ID, container.ID)
 			finishRun(ctx, queries, run.ID, store.StateLost, nil, container.ID, "supervisor restarted before the container started")
-			removeContainer(nil, podmanClient, run.ID, container.ID)
+			removeContainer(podmanClient, run.ID, container.ID)
 
 		default:
 			log.Printf("reconcile: adopting run %d (container %s, state %s)", run.ID, container.ID, container.State)

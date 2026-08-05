@@ -43,7 +43,7 @@ func executeRun(ctx context.Context, queries *store.Queries, podmanClient *podma
 
 	if err := podmanClient.StartContainer(ctx, containerID); err != nil {
 		finishRun(ctx, queries, run.ID, store.StateFailed, nil, containerID, fmt.Sprintf("starting container: %v", err))
-		removeContainer(nil, podmanClient, run.ID, containerID)
+		removeContainer(podmanClient, run.ID, containerID)
 		return
 	}
 
@@ -72,9 +72,19 @@ func executeRun(ctx context.Context, queries *store.Queries, podmanClient *podma
 // exactly as-is - still "running" - for the reconciler to pick up on the
 // next start, rather than being recorded as failed or timed out.
 //
-// capture is the run's log capture (task 2.1), or nil if there is none. It is
-// waited on before the container is removed, since removing a container out
-// from under an open log stream loses whatever had not been read yet.
+// capture is the run's log capture (task 2.1), or nil if there is none. Every
+// path here drains it *before* writing the terminal state, which is what makes
+// this hold:
+//
+//	once a run is in a terminal state, its log index is complete.
+//
+// Streaming clients depend on that (task 2.5). Without it a stream that ends
+// when the run ends would truncate the last lines - the container exits, the
+// state is written, and the final frames are still being indexed behind it -
+// and the alternative, guessing at a settle period after the run finishes, is
+// exactly the sort of "probably long enough" that fails on a loaded machine.
+// Draining first also protects the output from container removal, which
+// discards whatever has not been read yet.
 func waitFinishAndRemove(ctx context.Context, queries *store.Queries, podmanClient *podman.Client, run store.Run, containerID string, capture *logCapture) {
 	deadline := run.StartedAt.Time.Add(time.Duration(run.TimeoutSeconds) * time.Second)
 	waitCtx, cancel := context.WithDeadline(ctx, deadline)
@@ -93,8 +103,9 @@ func waitFinishAndRemove(ctx context.Context, queries *store.Queries, podmanClie
 			log.Printf("run %d: stopped waiting (%v); leaving it running for the reconciler", run.ID, waitCtx.Err())
 			capture.wait()
 		default:
+			capture.wait()
 			finishRun(ctx, queries, run.ID, store.StateFailed, nil, containerID, fmt.Sprintf("waiting for container: %v", err))
-			removeContainer(capture, podmanClient, run.ID, containerID)
+			removeContainer(podmanClient, run.ID, containerID)
 		}
 		return
 	}
@@ -106,9 +117,12 @@ func waitFinishAndRemove(ctx context.Context, queries *store.Queries, podmanClie
 		failureReason = fmt.Sprintf("exit code %d", exitCode)
 	}
 
+	// Drain before finishing, not after: see this function's doc comment.
+	capture.wait()
+
 	code := int32(exitCode)
 	finishRun(ctx, queries, run.ID, state, &code, containerID, failureReason)
-	removeContainer(capture, podmanClient, run.ID, containerID)
+	removeContainer(podmanClient, run.ID, containerID)
 }
 
 // handleTimeout kills a container whose run exceeded its timeout, confirms
@@ -129,8 +143,9 @@ func handleTimeout(queries *store.Queries, podmanClient *podman.Client, run stor
 		log.Printf("run %d: failed confirming kill of container %s: %v", run.ID, containerID, err)
 	}
 
+	capture.wait()
 	finishRun(ctx, queries, run.ID, store.StateFailed, nil, containerID, fmt.Sprintf("exceeded timeout of %ds", run.TimeoutSeconds))
-	removeContainer(capture, podmanClient, run.ID, containerID)
+	removeContainer(podmanClient, run.ID, containerID)
 }
 
 // finishRun records a terminal state. A terminal state is final (task
@@ -174,15 +189,14 @@ func finishRun(ctx context.Context, queries *store.Queries, runID int64, state s
 	})
 }
 
-// removeContainer waits for the run's log capture to drain, then removes the
-// container. The order matters: WaitContainer returns the moment the
-// container exits, but the log stream can still have unread frames behind it,
-// and a removed container's output is gone. Uses a fresh context - a
-// cancelled supervisor shouldn't leave a container behind just because
-// shutdown was in progress when the run finished.
-func removeContainer(capture *logCapture, podmanClient *podman.Client, runID int64, containerID string) {
-	capture.wait()
-
+// removeContainer removes a run's container. Callers must have drained the
+// run's log capture first (waitFinishAndRemove does, and explains why): a
+// removed container's unread output is gone, and WaitContainer returns the
+// moment the container exits, while the log stream can still have frames
+// behind it. Uses a fresh context - a cancelled supervisor shouldn't leave a
+// container behind just because shutdown was in progress when the run
+// finished.
+func removeContainer(podmanClient *podman.Client, runID int64, containerID string) {
 	if err := podmanClient.RemoveContainer(context.Background(), containerID); err != nil {
 		log.Printf("run %d: failed removing container %s: %v", runID, containerID, err)
 	}
