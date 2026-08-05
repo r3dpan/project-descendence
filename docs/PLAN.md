@@ -41,58 +41,57 @@ Update the marker on each task as it moves:
 
 > **Update this block every session.**
 
-- **Phase:** 2 — Logs
-- **Task:** Phase 1 complete (1.1–1.25). **Phase 2: 2.1–2.7 done.** Output
-  is captured, indexed, retained for 30 days, served as JSON pages *and*
-  as a live SSE stream that resumes cleanly after a disconnect. What is
-  left is 2.8 (cancel) and 2.9 (CLI `--follow`), then the phase exit check.
-- **Next action:** 2.8 — `POST /api/v1/runs/{id}/cancel`. Read the phase's
-  warning first: get cancellation and context propagation right *here*,
-  because scheduling and parameters land on top of it. The debt from 1.14
-  is still exactly as described — `cancelled` is defined, constrained,
-  rendered and tested everywhere and has no producer — so this is the
-  transition plus stopping the container, not plumbing a new state. Note
-  the shape of the problem: the API accepts the cancel, but only the
-  supervisor can stop a container, and **the two never talk** (§3). The
-  same `LISTEN`/`NOTIFY` channel 2.3 built is the obvious carrier, with
-  the same caveat that notifications are lossy — so the supervisor must
-  also notice a cancellation request by polling, or a cancel will
-  occasionally do nothing at all.
+- **Phase:** 2 — **complete** (2.1–2.9, exit check passed). Next up is
+  Phase 3 — jobs and git.
+- **Task:** Phases 0, 1 and 2 all done. A run's output is captured
+  completely, indexed, kept for 30 days, served as JSON pages and as a
+  live SSE stream that resumes cleanly after a disconnect; runs can be
+  cancelled whether or not they have started; the CLI can follow one live.
+- **Next action:** 3.1 — the `repos` and `jobs` migration. Before starting,
+  re-read ARCHITECTURE.md §4.5 and §5, and note that Phase 3 is the first
+  one that makes `runs` rows refer to something outside themselves
+  (`job_id`, `commit_sha`), which is what the reproducibility principle
+  (§2.4) has been waiting for.
 - **Blocked on:** nothing
-- **Notes:** Phase 2 so far:
+- **Notes:** what Phase 2 leaves behind that later phases must not break:
 
   - **Log bodies are files, the index is Postgres** (ARCHITECTURE.md §4.1).
     `RUN_LOG_DIR` must be set for *both* the api and the supervisor, and
     must be the same directory — the supervisor is the sole writer, the
-    API only reads. That shared filesystem is a third channel the §3
-    diagram originally lacked, and it is what pins the two processes to one
-    host; it is the first assumption that breaks under multi-node
-    (decision #19).
+    API only reads. That shared filesystem is what pins the two processes
+    to one host, and it is the first assumption that breaks under
+    multi-node (decision #19).
   - **The invariant to not break:** flush the file, *then* write the index
     row, *then* notify. The index row is what tells a reader those bytes
     exist, so any other order publishes an offset pointing past the end of
     the file. Stated in `runlog.Flush`, in `runlogs.sql`, and in
     `capturePass`.
   - **Captured output is not to be trusted without a completeness check.**
-    Two separate things were silently dropping lines — journald's rate
-    limiter (decision #20) and libpod's follower cutting off at container
-    exit (decision #21) — and *neither produced an error anywhere*. Both
-    are fixed, but the shape is worth remembering: in this pipeline,
-    failure looks like less output, not like a failure.
+    Two separate things silently dropped lines — journald's rate limiter
+    (decision #20) and libpod's follower cutting off at container exit
+    (decision #21) — and *neither produced an error anywhere*. Both are
+    fixed. The shape is the lesson: in this pipeline, failure looks like
+    less output, not like a failure.
   - **Once a run is terminal, its log index is complete.** The supervisor
     drains the capture before writing the terminal state, deliberately, so
     a stream can end when the run ends without racing the last few lines.
     Do not reorder that.
-  - **Notifications are lossy on purpose.** They carry watermarks, not log
-    text, so a dropped or missed one costs latency and nothing else. Every
-    consumer must therefore poll on a slow timer as well; a consumer that
-    trusts notifications alone will hang the first time the listener
-    reconnects.
+  - **Notifications are lossy on purpose**, and only in the
+    supervisor→api direction. They carry watermarks, not log text, so a
+    dropped one costs latency and nothing else — which is why every
+    consumer must also poll on a slow timer. The api→supervisor direction
+    (cancellation) deliberately does *not* use them: a missed "stop this
+    run" is not a latency problem, so it polls a column instead (task 2.8).
   - **Recapture is always from scratch**, never a resume at an offset —
-    both for the reconciler adopting a run and for decision #21's second
-    pass. It is safe because libpod replays the same bytes in the same
-    order, so the same lines come back with the same sequence numbers and
+    for the reconciler adopting a run and for decision #21's second pass
+    alike. Safe because libpod replays the same bytes in the same order,
+    so the same lines come back with the same sequence numbers and
     offsets. Only the capture timestamp changes.
+  - **A blanket `http.Client.Timeout` is wrong for any long-lived
+    response.** Three instances so far: podman's `/wait` (1.19), podman's
+    log follow (2.1), and the API client's log follow (2.9). Every new
+    long-lived endpoint needs its own timeout-free client, and the symptom
+    when it doesn't is always a misleading network error partway through.
   - Runs within one supervisor process still execute strictly one at a
     time. Unchanged by Phase 2, and still the most likely thing to bite in
     real use (see 1e's note on reconciliation blocking the claim loop).
@@ -590,13 +589,55 @@ resumes without gaps.
       while the supervisor was **SIGKILLed mid-run** was carried out on
       restart, via the reconciler's adoption path, with no leftover
       containers.
-- [ ] **2.9** CLI `--follow`.
+- [x] **2.9** CLI `--follow`.
+      `descendence run -follow` streams output instead of state, plus a
+      `descendence logs [-follow] <id>` for a run you did not start and a
+      `descendence cancel <id>` for 2.8. A run's stdout goes to the CLI's
+      stdout and its stderr to stderr, so `descendence logs 42 > out 2> err`
+      splits them the way running the script locally would; anything the
+      CLI says for itself is styled and on stderr, so it never
+      contaminates piped output.
+      Following and watching are alternatives, not layers — a spinner and
+      a script's stdout cannot share a terminal without one corrupting the
+      other.
+      **`FollowRunLogs` reconnects by itself**, which is what 2.6 was
+      built for: a terminal `state` event is the stream's defined ending,
+      so anything else means the connection broke and the client resumes
+      from the last sequence number it *delivered to its caller* (not the
+      last it parsed). 401/403/404/410/400 are fatal instead — retrying
+      those forever would be a busy loop.
+      **Third instance of the blanket-timeout bug**, caught before it
+      shipped this time: `internal/client` had one `http.Client` with a 30s
+      timeout, which would have cut every follow off at 30 seconds and
+      reported it as a network error. Split into `httpClient` /
+      `streamClient`, exactly as `internal/podman` was in 1.19 and 2.1.
+      **Ctrl-C still stops the watch, not the run** — now a deliberate
+      choice rather than a missing endpoint. Detaching from something is
+      not ending it, and a `logs` command that killed a job on Ctrl-C
+      would make watching dangerous. The message says
+      `descendence cancel <id>` instead.
 
 > Get cancellation and context propagation right **here**. It gets much harder once
 > scheduling and parameters are layered on.
 
 **Exit check:** a 60-second script streams live; disconnect and reconnect mid-run and
 no lines are lost or duplicated; cancel works within a second or two.
+**→ Passed**, through the real CLI against the real stack:
+
+- **Streams live.** A 60s script's lines arrived at the rate they were
+  printed (7 → 10 lines over 3 seconds of a 1-line-per-second script).
+- **Disconnect and reconnect.** Killing the follower mid-run and starting
+  another gave a dense 1..60 with no duplicates. Resuming from an exact
+  position split a 30-line run 17 + 13 across the seam — joined, still
+  dense 1..30, still no duplicates. Killing and restarting the *API* twice
+  underneath a live follower cost 40 of 40 lines nothing.
+- **Cancel is prompt.** 1.02s, three times running, measured end to end
+  from the CLI.
+
+Phase 2 also cost two silent-data-loss defects in the capture that had
+been there since 2.1 (decisions #20 and #21) — see HISTORY.md. Neither
+produced an error anywhere; both were found only by printing 20000 lines
+instead of three.
 
 ---
 

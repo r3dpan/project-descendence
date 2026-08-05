@@ -710,3 +710,44 @@ Notes to future me:
     behind. `podman ps -a` and a non-terminal-run count are worth checking
     before calling a session done - killing the supervisor mid-run strands
     one every time (the reconciler does clean it up on restart, and did).
+
+## 2026-08-05 (Phase 2, part 3)
+Worked on: 2.8 (cancel) and 2.9 (CLI --follow), then the phase exit check.
+Completed: **Phase 2 is done.** Exit check passed through the real CLI
+  against the real stack - a 60s script streaming live, a follower killed
+  and resumed mid-run with no gap or repeat, the API killed and restarted
+  twice underneath a live follower costing 40 of 40 lines nothing, and
+  cancellation landing in 1.02s three times running.
+  - 2.8: `POST /runs/{id}/cancel`. Two operations behind one endpoint - the
+    API cancels a *queued* run outright (the only terminal state it ever
+    writes), and records a request for a *running* one, which the
+    supervisor performs. Always 202. Closes the debt 1.14 deliberately left.
+  - 2.9: `run -follow`, `logs [-follow]`, `cancel`. `FollowRunLogs`
+    reconnects by itself, resuming from the last line delivered.
+Broken / unresolved: nothing. Phase 2 complete.
+Next action: Phase 3, task 3.1 (`repos` and `jobs` migration).
+Notes to future me:
+  - **The api→supervisor direction polls; it does not notify.** This looks
+    inconsistent next to 2.3's LISTEN/NOTIFY and is the whole point:
+    notifications are lossy by design, which is fine for "there is more
+    output to read" and unacceptable for "stop this run". A cancel that
+    takes a second beats a cancel that silently never happens. Any future
+    api→supervisor command belongs in a column, not a notification.
+  - **The blanket-timeout bug appeared for the third time**, in
+    `internal/client` - one `http.Client` with a 30s timeout would have cut
+    every `-follow` off at 30 seconds and reported a network error. Caught
+    before shipping this time because the pattern is now familiar. Assume
+    the fourth instance is waiting in whatever long-lived endpoint comes
+    next; give it its own timeout-free client from the start.
+  - The cancel watcher kills the container, and the executor checks
+    `requested()` *before* reading the exit code. Get that order wrong and
+    every cancelled run is recorded as `failed` with the signal's exit
+    status, which defeats the reason `cancelled` is a state at all.
+  - `descendence cancel` waits for the run to actually reach a terminal
+    state rather than printing "cancelled" when the 202 arrives. The API
+    returns 202 because the run is still running at that moment; a CLI
+    reporting success there would be describing the request, not the
+    outcome.
+  - Ctrl-C still stops watching rather than the run - now a choice, not a
+    limitation. Detaching from something is not ending it, and a `logs`
+    command that killed a job on Ctrl-C would make watching dangerous.

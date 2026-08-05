@@ -24,6 +24,8 @@ Usage:
 
 Commands:
   run     Create a run and watch it until it finishes
+  logs    Print a run's output, optionally following it live
+  cancel  Stop a run
   runs    List runs, or show one in full
   whoami  Show which principal the configured token resolves to
   config  Show where the URL and token are being read from
@@ -72,9 +74,12 @@ func run() int {
 		return 2
 	}
 
-	// Ctrl-C stops the CLI, not the run - there is no cancel endpoint until
-	// Phase 2, and pretending otherwise would be a lie about what happened
-	// to the container.
+	// Ctrl-C stops the CLI, not the run. That is a deliberate choice rather
+	// than a limitation now that `descendence cancel` exists (task 2.8):
+	// detaching from something is not the same as ending it, and a watch
+	// command that killed a job on Ctrl-C would make interrupting a `logs`
+	// command dangerous. The commands that stop watching say how to stop the
+	// run instead.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -83,6 +88,10 @@ func run() int {
 	switch command {
 	case "run":
 		return cmdRun(ctx, c, rest)
+	case "logs":
+		return cmdLogs(ctx, c, rest)
+	case "cancel":
+		return cmdCancel(ctx, c, rest)
 	case "runs":
 		return cmdRuns(ctx, c, rest)
 	case "whoami":

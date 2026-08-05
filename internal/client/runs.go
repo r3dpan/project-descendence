@@ -44,7 +44,13 @@ type Run struct {
 // IsTerminal reports whether the run has reached a state it will never leave -
 // the condition `cli run` polls until (task 1.19).
 func (r Run) IsTerminal() bool {
-	switch r.State {
+	return IsTerminalState(r.State)
+}
+
+// IsTerminalState reports whether a state string is one a run never leaves.
+// Same list as the server's store.IsTerminal, which a test checks.
+func IsTerminalState(state string) bool {
+	switch state {
 	case StateSucceeded, StateFailed, StateCancelled, StateLost:
 		return true
 	default:

@@ -62,9 +62,20 @@ func (e *APIError) Is(target error) bool {
 
 // Client talks to one API server as one principal.
 type Client struct {
-	baseURL    string
-	token      string
+	baseURL string
+	token   string
+
 	httpClient *http.Client
+	// streamClient has no timeout, for the endpoints whose duration is the
+	// run's business rather than the HTTP layer's - currently only log
+	// following, which lasts as long as the run does.
+	//
+	// A blanket http.Client.Timeout is wrong for any long-lived response, and
+	// this project has now been bitten by that three times: podman's /wait in
+	// task 1.19, podman's log follow in 2.1, and this. The symptom is always
+	// the same and always misleading - the operation is cut off partway
+	// through and reported as a network failure.
+	streamClient *http.Client
 }
 
 // New returns a client for baseURL (e.g. "http://127.0.0.1:8080"),
@@ -77,6 +88,7 @@ func New(baseURL, token string) *Client {
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
+		streamClient: &http.Client{},
 	}
 }
 
@@ -97,38 +109,7 @@ type requestOptions struct {
 // out (which may be nil to discard the body). A non-2xx response becomes an
 // *APIError; the body is never decoded into out in that case.
 func (c *Client) do(ctx context.Context, method, path string, opts requestOptions, out any) error {
-	var reader io.Reader
-	if opts.body != nil {
-		encoded, err := json.Marshal(opts.body)
-		if err != nil {
-			return fmt.Errorf("encoding request body: %w", err)
-		}
-		reader = bytes.NewReader(encoded)
-	}
-
-	target := c.baseURL + path
-	if len(opts.query) > 0 {
-		target += "?" + opts.query.Encode()
-	}
-
-	req, err := http.NewRequestWithContext(ctx, method, target, reader)
-	if err != nil {
-		return err
-	}
-	for key, values := range opts.header {
-		for _, value := range values {
-			req.Header.Add(key, value)
-		}
-	}
-	if opts.body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
-	}
-	req.Header.Set("Accept", "application/json")
-
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.send(ctx, c.httpClient, method, path, opts)
 	if err != nil {
 		return err
 	}
@@ -146,6 +127,49 @@ func (c *Client) do(ctx context.Context, method, path string, opts requestOption
 	}
 
 	return nil
+}
+
+// send builds and issues an authenticated request on the given http.Client,
+// returning the raw response with its body unread. Split out of do so
+// streaming endpoints can consume the body themselves instead of having it
+// decoded and closed - the caller owns closing it.
+func (c *Client) send(ctx context.Context, httpClient *http.Client, method, path string, opts requestOptions) (*http.Response, error) {
+	var reader io.Reader
+	if opts.body != nil {
+		encoded, err := json.Marshal(opts.body)
+		if err != nil {
+			return nil, fmt.Errorf("encoding request body: %w", err)
+		}
+		reader = bytes.NewReader(encoded)
+	}
+
+	target := c.baseURL + path
+	if len(opts.query) > 0 {
+		target += "?" + opts.query.Encode()
+	}
+
+	req, err := http.NewRequestWithContext(ctx, method, target, reader)
+	if err != nil {
+		return nil, err
+	}
+	for key, values := range opts.header {
+		for _, value := range values {
+			req.Header.Add(key, value)
+		}
+	}
+	if opts.body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	// Only when the caller has not asked for something else - a streaming
+	// request sets text/event-stream and must keep it.
+	if req.Header.Get("Accept") == "" {
+		req.Header.Set("Accept", "application/json")
+	}
+
+	return httpClient.Do(req)
 }
 
 func statusAcceptable(status int, alsoOK []int) bool {

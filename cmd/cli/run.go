@@ -17,6 +17,8 @@ const runUsage = `Usage: descendence run [flags] <image> [--] <argv...>
 Creates a run and watches it until it finishes.
 
 Flags:
+  -follow              Stream the run's output as it happens, instead of
+                       showing its state
   -timeout <seconds>   Maximum run duration (server decides if omitted)
   -key <string>        Idempotency-Key: retrying with the same key returns
                        the original run instead of queueing a second one
@@ -30,6 +32,7 @@ Examples:
   descendence run docker.io/library/alpine:latest echo hello
   descendence run -timeout 30 docker.io/library/alpine:latest sleep 5
   descendence run docker.io/library/alpine:latest -- ls -la /
+  descendence run -follow docker.io/library/alpine:latest sh -c 'echo hi; sleep 5'
 `
 
 // cmdRun implements `descendence run`. It exits with the run's own exit
@@ -43,6 +46,7 @@ func cmdRun(ctx context.Context, c *client.Client, args []string) int {
 	timeout := fs.Int("timeout", 0, "maximum run duration in seconds")
 	key := fs.String("key", "", "Idempotency-Key for this request")
 	detach := fs.Bool("detach", false, "create the run and exit without watching")
+	follow := fs.Bool("follow", false, "stream the run's output as it happens")
 
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -81,6 +85,18 @@ func cmdRun(ctx context.Context, c *client.Client, args []string) int {
 	if *detach {
 		fmt.Println(run.ID)
 		return 0
+	}
+
+	// Following prints the run's own output; watching prints its state. They
+	// are alternatives rather than layers, because a spinner and a script's
+	// stdout cannot share a terminal without one corrupting the other.
+	//
+	// after=0: this run was created a moment ago, so there is no history to
+	// skip, and starting at 0 means output printed between the create and the
+	// stream still arrives (task 2.1 - libpod replays from the beginning, and
+	// the endpoint serves history before it follows).
+	if *follow {
+		return streamLogs(ctx, c, run.ID, 0, logPrinter{stdout: true, stderr: true})
 	}
 
 	final, err := watchRun(ctx, c, run)
