@@ -1898,3 +1898,42 @@ Notes to future me:
   - `curl`'s cookie jar and real browsers both accept a `Secure`-flagged
     cookie over plain `http://localhost` - no need to relax cookie flags
     for local dev testing.
+
+## 2026-08-06 (later same day)
+Worked on: Phase 7 task 7.6 - trigger runs from the web UI.
+Completed:
+  - `web/src/api/jobs.ts` (list/get/`createJobRun`, mirroring
+    `internal/client/jobs.go`'s shape).
+  - `JobList` page (name, description, enabled, param count) and `JobDetail`
+    page: renders one form field per `JobParam` (checkbox for `bool`,
+    `password` input for `secret`/`mount`, otherwise text/`number`),
+    pre-fills declared defaults, omits untouched optional fields from the
+    submitted body so the server's own default applies, and disables the Run
+    button for a disabled or deleted job (the server's 409 stays the real
+    guard either way). On success, navigates to `/runs/{id}`, reusing 7.5's
+    live-log view.
+  - `web/src/Layout.tsx`: small top nav (Runs | Jobs | Sign out) now wraps
+    every authenticated route, replacing the bare `RequireAuth` wrapper with
+    a `Protected` component that also applies the layout.
+Broken / unresolved: nothing outstanding. One accepted, non-destructive loose
+end: verifying this live created two real runs (245, 246) under a fresh
+seeded test principal (`webui-716`), and `runs.principal_id` is `ON DELETE
+RESTRICT` (unlike `job_id`'s `SET NULL`) - so unlike the session-7.1-7.5
+cleanup, that principal can't be deleted without deleting run history with
+it. Left in place rather than take a destructive shortcut; noted in PLAN.md's
+Current position.
+Next action: Phase 7.7 (job/runtime management - enable/disable a job,
+runtime build status/trigger), then 7.8 (form builder) as its own session.
+Notes to future me:
+  - Verified the exact request bodies the UI sends by curling them directly
+    against a live job with a required string param and a required
+    mount/secret param (`POST /api/v1/jobs/69/runs` with
+    `{"params":{"name":"...","token":"..."}}`) before trusting the React
+    form to build them correctly - cheaper than debugging through the
+    browser, and it caught nothing wrong this time, which is itself useful
+    signal that the client.ts/jobs.ts shapes match the contract.
+  - `runs.principal_id`'s `ON DELETE RESTRICT` (vs. `job_id`/`schedule_id`'s
+    `SET NULL`) means any principal that has ever created a run is
+    permanent until a proper user-management/RBAC pass exists. Don't try to
+    seed-and-delete test *user* principals the way earlier sessions did with
+    plain token principals, once they've actually triggered a run.

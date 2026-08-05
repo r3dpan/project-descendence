@@ -1,11 +1,14 @@
 import type { ReactNode } from 'react'
 import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { AuthProvider, useAuth } from './auth'
+import Layout from './Layout'
 import Login from './pages/Login'
 import RunList from './pages/RunList'
 import RunDetail from './pages/RunDetail'
+import JobList from './pages/JobList'
+import JobDetail from './pages/JobDetail'
 
-function RequireAuth({ children }: { children: ReactNode }) {
+function Protected({ children }: { children: ReactNode }) {
   const { principal } = useAuth()
   const location = useLocation()
 
@@ -13,7 +16,7 @@ function RequireAuth({ children }: { children: ReactNode }) {
   if (principal === null) {
     return <Navigate to="/login" replace state={{ from: location.pathname }} />
   }
-  return <>{children}</>
+  return <Layout>{children}</Layout>
 }
 
 export default function App() {
@@ -25,17 +28,33 @@ export default function App() {
           <Route
             path="/"
             element={
-              <RequireAuth>
+              <Protected>
                 <RunList />
-              </RequireAuth>
+              </Protected>
             }
           />
           <Route
             path="/runs/:id"
             element={
-              <RequireAuth>
+              <Protected>
                 <RunDetail />
-              </RequireAuth>
+              </Protected>
+            }
+          />
+          <Route
+            path="/jobs"
+            element={
+              <Protected>
+                <JobList />
+              </Protected>
+            }
+          />
+          <Route
+            path="/jobs/:id"
+            element={
+              <Protected>
+                <JobDetail />
+              </Protected>
             }
           />
         </Routes>

@@ -42,16 +42,24 @@ Update the marker on each task as it moves:
 
 > **Update this block every session.**
 
-- **Phase:** 7 — **in progress**. 7.1–7.5 done and verified live (read-only
-  web UI: local-account cookie login, embedded same-origin SPA, run list/detail,
-  live logs via native `EventSource`). 7.6–7.8 (trigger runs, job/runtime
+- **Phase:** 7 — **in progress**. 7.1–7.6 done and verified live (read-only
+  web UI plus trigger runs: local-account cookie login, embedded same-origin
+  SPA, run list/detail, live logs via native `EventSource`, a jobs list and a
+  per-job trigger form generated from its param contract). 7.7–7.8 (job/runtime
   management, the form builder) remain - see Phase 7's own task list for
   what shipped and how.
-- **Next action:** Phase 7.6 - wire a "run this job" form/button into the
-  existing run-list/detail views, then 7.7 (job/runtime management UI).
-  7.8 (form builder) is its own session per PLAN.md's original note: ship
-  YAML editing with a rendered preview before drag-and-drop.
+- **Next action:** Phase 7.7 - job/runtime management UI (enable/disable a
+  job, view/trigger a runtime build). 7.8 (form builder) is its own session
+  per PLAN.md's original note: ship YAML editing with a rendered preview
+  before drag-and-drop.
 - **Blocked on:** nothing.
+- **Notes carried from 7.6:** the dev Postgres instance now has a
+  `kind='user'` principal named `webui-716` that cannot be cleaned up like
+  the session's other seeded test principals were - it owns runs 245/246
+  (`runs.principal_id` is `ON DELETE RESTRICT`, unlike `job_id`'s `SET
+  NULL`), so deleting it would mean deleting run history rather than a
+  no-op. Harmless to leave; a real RBAC/user-management pass (§7, still
+  deferred) is the actual fix, not a one-off DELETE.
 - **Phase 6 summary** (complete, 6.1–6.7, exit check passed): Jobs take typed, validated parameters end to end. The manifest's
   `params:` block (name/type/required/default/secret) is real
   (`internal/manifest`, `internal/manifest/params.go`); submitted values are
@@ -538,7 +546,17 @@ covers 7.1–7.5 (a read-only vertical slice); 7.6–7.8 are a later session.
       detail, live logs via the browser's native `EventSource` against `GET
       /api/v1/runs/{id}/logs` - confirmed live, verifying ARCHITECTURE.md
       §4.11's central claim end to end (see exit check below).
-- [ ] **7.6** Trigger runs.
+- [x] **7.6** Trigger runs. New `web/src/api/jobs.ts` (list/get/`createJobRun`,
+      mirroring `internal/client/jobs.go`), a `JobList` page and a `JobDetail`
+      page that renders a form from the job's `params` contract (`JobParam`:
+      one input per param, checkbox for `bool`, `password` input for
+      `secret`/`mount` types) and POSTs `/api/v1/jobs/{id}/runs` on submit -
+      an omitted field lets the server apply its own default, same as
+      `--param name=value` on the CLI. A disabled or deleted job's Run button
+      is disabled client-side (the server's 409 is still the real guard). On
+      success the new run's id navigates straight to `/runs/{id}`, reusing
+      7.5's live-log view to watch it. A small top nav (`web/src/Layout.tsx`:
+      Runs | Jobs | Sign out) now wraps every authenticated route.
 - [ ] **7.7** Job and runtime management.
 - [ ] **7.8** Form builder — the largest single piece. Consider shipping YAML editing
       with a rendered preview before building drag-and-drop.
@@ -565,6 +583,18 @@ fail silently, turning every cookie-authenticated request into a 500 ("no
 principal in request context") instead of succeeding or 401ing - caught only by
 actually calling `/api/v1/whoami` with a real cookie, not by `go build`/`go vet`.
 Fixed by converting the row to `store.Principal` explicitly in `auth.go`.
+
+**7.6 exit check**: verified against the real stack by issuing the exact requests
+the new UI code makes. `POST /api/v1/jobs/69/runs` (a job with a required
+`string` param and a required `mount`/secret param) with
+`{"params":{"name":"UI Test","token":"sk-uitest"}}` - the same shape
+`JobDetail`'s form submits - returned `202` with `Location: /api/v1/runs/245`,
+and the run completed `succeeded` with `params: [{"name":"name","value":"UI
+Test"}]` (the mount param correctly absent from `params_json`, per task 6.6).
+`POST /api/v1/jobs/20/runs` with no body (a job with no params) also queued
+correctly. The embedded production build was rebuilt afterward and serves
+`/jobs` and `/jobs/69` with `200` and the SPA shell, alongside the existing
+`/`, `/login`, `/runs/42` routes.
 
 ---
 
