@@ -81,7 +81,14 @@ func materialiseScript(
 	// Tar paths are container paths with their leading slash removed, since
 	// a tar entry is relative to where it is unpacked.
 	containerPath := manifest.ContainerScriptPath(parsed.ScriptPath)
-	paramsJSON := paramsJSONOrEmpty(run.ParamsJson)
+	// task 6.6: rebuilt from the contract, not read verbatim off the run -
+	// a mount-type entry's value here is the path its Podman secret was
+	// mounted at (createRunSecrets, execute.go), never the plaintext, which
+	// run.ParamsJson never held in the first place.
+	paramsJSON, err := manifest.MergeParamsForDelivery(parsed.Params, run.ParamsJson)
+	if err != nil {
+		return fmt.Errorf("building params.json: %w", err)
+	}
 	files := []podman.ArchiveFile{
 		{Path: containerPath[1:], Mode: 0o755, Content: script},
 		// task 6.3: params.json travels in the same archive as the script,
@@ -120,17 +127,6 @@ func materialiseScript(
 	}
 
 	return nil
-}
-
-// paramsJSONOrEmpty normalises an empty/NULL params_json into a valid empty
-// JSON array (matching manifest.ResolvedParam's array shape, task 6.4)
-// rather than zero bytes, so a script parsing the file never has to
-// special-case "no params" as "no valid JSON".
-func paramsJSONOrEmpty(raw []byte) []byte {
-	if len(raw) == 0 {
-		return []byte("[]")
-	}
-	return raw
 }
 
 // shortSHA trims a commit SHA for log lines and failure reasons, which are

@@ -101,6 +101,15 @@ func ContainerShimPath(lang string) string {
 	return path.Join(ContainerScriptDir, "shim."+lang)
 }
 
+// ContainerSecretPath is where a mount-type param's Podman secret (task
+// 6.6) is mounted inside the container. Deterministic from the param's own
+// name alone - the supervisor's secret creation and this package's
+// params.json merge (MergeParamsForDelivery) never need to agree through
+// anything but that name.
+func ContainerSecretPath(paramName string) string {
+	return path.Join(ContainerScriptDir, "secrets", paramName)
+}
+
 // Manifest is a validated job definition, with paths already resolved
 // relative to the repository root.
 type Manifest struct {
@@ -473,7 +482,12 @@ func checkScalarType(paramType, value string) error {
 		}
 		return nil
 	case ParamTypeMount:
-		return fmt.Errorf("mount params take no literal value")
+		// A mount value is an opaque string - the secret's literal content -
+		// with no shape of its own to validate, the same as ParamTypeString.
+		// A mount param having a `default:` in the manifest is rejected
+		// separately and earlier, in validateParams, before this is ever
+		// reached for one.
+		return nil
 	default:
 		return fmt.Errorf("unknown param type %q", paramType)
 	}

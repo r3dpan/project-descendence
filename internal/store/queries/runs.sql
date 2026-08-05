@@ -11,7 +11,7 @@ RETURNING id, principal_id, state, idempotency_key, image_ref, argv,
           timeout_seconds, container_id, exit_code, failure_reason,
           cancel_requested_at, queued_at, started_at, finished_at, job_id,
           commit_sha, runtime_id, image_digest, params_json, logs_pruned_at,
-          schedule_id;
+          schedule_id, secret_params_json;
 
 -- name: CreateJobRun :one
 -- Task 3.5. The same insert as CreateRun, plus the columns that make a run
@@ -34,16 +34,28 @@ RETURNING id, principal_id, state, idempotency_key, image_ref, argv,
 -- against the job's contract - defaults applied, types coerced - never the
 -- raw submission. A schedule trigger has no submission of its own, so it
 -- always passes the contract's defaults-only resolution.
+--
+-- secret_params_json (task 6.6) holds only the mount-type entries of that
+-- same resolution, split out of params_json entirely at the point of
+-- resolution (manifest.ResolveParams) so a secret value is never even
+-- assembled into params_json to begin with. It rides along on every
+-- run query below like every other column - the safety boundary is the API
+-- layer's response structs (runResponse has no field for it, so
+-- encoding/json cannot serialise what was never assigned to it), not which
+-- SQL columns a query selects; splitting sqlc's generated row shape per
+-- query for this would trade a real, load-bearing invariant (Go's type
+-- system) for a second, weaker one (query hygiene) without removing the
+-- first.
 INSERT INTO runs (principal_id, image_ref, argv, timeout_seconds, idempotency_key,
                   job_id, commit_sha, runtime_id, image_digest, schedule_id,
-                  params_json)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                  params_json, secret_params_json)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 ON CONFLICT (principal_id, idempotency_key) DO NOTHING
 RETURNING id, principal_id, state, idempotency_key, image_ref, argv,
           timeout_seconds, container_id, exit_code, failure_reason,
           cancel_requested_at, queued_at, started_at, finished_at, job_id,
           commit_sha, runtime_id, image_digest, params_json, logs_pruned_at,
-          schedule_id;
+          schedule_id, secret_params_json;
 
 -- name: ListRunsByJob :many
 -- Runs of one job, newest first, matching runs_job_id_idx. Same keyset shape
@@ -52,7 +64,7 @@ SELECT id, principal_id, state, idempotency_key, image_ref, argv,
        timeout_seconds, container_id, exit_code, failure_reason,
        cancel_requested_at, queued_at, started_at, finished_at, job_id,
        commit_sha, runtime_id, image_digest, params_json, logs_pruned_at,
-       schedule_id
+       schedule_id, secret_params_json
 FROM runs
 WHERE job_id = sqlc.arg(job_id)::bigint
   AND (sqlc.narg(cursor_queued_at)::timestamptz IS NULL
@@ -65,7 +77,7 @@ SELECT id, principal_id, state, idempotency_key, image_ref, argv,
        timeout_seconds, container_id, exit_code, failure_reason,
        cancel_requested_at, queued_at, started_at, finished_at, job_id,
        commit_sha, runtime_id, image_digest, params_json, logs_pruned_at,
-       schedule_id
+       schedule_id, secret_params_json
 FROM runs
 WHERE id = $1;
 
@@ -74,7 +86,7 @@ SELECT id, principal_id, state, idempotency_key, image_ref, argv,
        timeout_seconds, container_id, exit_code, failure_reason,
        cancel_requested_at, queued_at, started_at, finished_at, job_id,
        commit_sha, runtime_id, image_digest, params_json, logs_pruned_at,
-       schedule_id
+       schedule_id, secret_params_json
 FROM runs
 WHERE principal_id = $1 AND idempotency_key = $2;
 
@@ -87,7 +99,7 @@ SELECT id, principal_id, state, idempotency_key, image_ref, argv,
        timeout_seconds, container_id, exit_code, failure_reason,
        cancel_requested_at, queued_at, started_at, finished_at, job_id,
        commit_sha, runtime_id, image_digest, params_json, logs_pruned_at,
-       schedule_id
+       schedule_id, secret_params_json
 FROM runs
 WHERE sqlc.narg(cursor_queued_at)::timestamptz IS NULL
    OR (queued_at, id) < (sqlc.narg(cursor_queued_at)::timestamptz, sqlc.narg(cursor_id)::bigint)
@@ -117,7 +129,8 @@ RETURNING runs.id, runs.principal_id, runs.state, runs.idempotency_key,
           runs.exit_code, runs.failure_reason, runs.cancel_requested_at,
           runs.queued_at, runs.started_at, runs.finished_at, runs.job_id,
           runs.commit_sha, runs.runtime_id, runs.image_digest,
-          runs.params_json, runs.logs_pruned_at, runs.schedule_id;
+          runs.params_json, runs.logs_pruned_at, runs.schedule_id,
+          runs.secret_params_json;
 
 -- name: FinishRun :execrows
 -- Task 1.13. state is always a terminal one here -
@@ -145,7 +158,7 @@ SELECT id, principal_id, state, idempotency_key, image_ref, argv,
        timeout_seconds, container_id, exit_code, failure_reason,
        cancel_requested_at, queued_at, started_at, finished_at, job_id,
        commit_sha, runtime_id, image_digest, params_json, logs_pruned_at,
-       schedule_id
+       schedule_id, secret_params_json
 FROM runs
 WHERE state IN ('queued', 'running');
 

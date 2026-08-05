@@ -82,6 +82,7 @@ type Run struct {
 	ParamsJson        []byte             `json:"params_json"`
 	LogsPrunedAt      pgtype.Timestamptz `json:"logs_pruned_at"`
 	ScheduleID        pgtype.Int8        `json:"schedule_id"`
+	SecretParamsJson  []byte             `json:"secret_params_json"`
 }
 
 type RunLog struct {

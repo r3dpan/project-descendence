@@ -379,17 +379,24 @@ func (s *APIServer) createJobRun(ctx context.Context, principal store.Principal,
 		return store.Run{}, &problemError{http.StatusConflict, fmt.Sprintf("manifest is not valid at %s: %v", shortSHA(sha), err)}
 	}
 
-	// Task 6.2: submitted values are resolved against the contract at the
-	// same pinned commit the manifest itself was just read at, so a param
-	// added or removed by a later commit can never be applied to a run
-	// pinned to an earlier one.
-	resolvedParams, err := manifest.ResolveParams(parsed.Params, submittedParams)
+	// Task 6.2/6.6: submitted values are resolved against the contract at
+	// the same pinned commit the manifest itself was just read at, so a
+	// param added or removed by a later commit can never be applied to a
+	// run pinned to an earlier one. ResolveParams already splits mount-type
+	// values out into secrets - secretParams never touches paramsJSON or
+	// anything derived from it, closing the gap task 6.5 could only patch
+	// at response time.
+	resolvedParams, secretParams, err := manifest.ResolveParams(parsed.Params, submittedParams)
 	if err != nil {
 		return store.Run{}, &problemError{http.StatusBadRequest, err.Error()}
 	}
 	paramsJSON, err := json.Marshal(resolvedParams)
 	if err != nil {
 		return store.Run{}, &problemError{http.StatusInternalServerError, "failed encoding resolved params"}
+	}
+	secretParamsJSON, err := json.Marshal(secretParams)
+	if err != nil {
+		return store.Run{}, &problemError{http.StatusInternalServerError, "failed encoding resolved secret params"}
 	}
 
 	// Task 4.6: the manifest names either an image directly or a runtime -
@@ -435,17 +442,18 @@ func (s *APIServer) createJobRun(ctx context.Context, principal store.Principal,
 	}
 
 	run, err := s.queries.CreateJobRun(ctx, store.CreateJobRunParams{
-		PrincipalID:    principal.ID,
-		ImageRef:       imageRef,
-		Argv:           parsed.Argv(),
-		TimeoutSeconds: timeoutSeconds,
-		IdempotencyKey: idempotencyKeyCol,
-		JobID:          pgtype.Int8{Int64: job.ID, Valid: true},
-		CommitSha:      pgtype.Text{String: sha, Valid: true},
-		RuntimeID:      runtimeID,
-		ImageDigest:    imageDigest,
-		ScheduleID:     scheduleIDCol,
-		ParamsJson:     paramsJSON,
+		PrincipalID:      principal.ID,
+		ImageRef:         imageRef,
+		Argv:             parsed.Argv(),
+		TimeoutSeconds:   timeoutSeconds,
+		IdempotencyKey:   idempotencyKeyCol,
+		JobID:            pgtype.Int8{Int64: job.ID, Valid: true},
+		CommitSha:        pgtype.Text{String: sha, Valid: true},
+		RuntimeID:        runtimeID,
+		ImageDigest:      imageDigest,
+		ScheduleID:       scheduleIDCol,
+		ParamsJson:       paramsJSON,
+		SecretParamsJson: secretParamsJSON,
 	})
 	if err != nil {
 		if err != pgx.ErrNoRows {

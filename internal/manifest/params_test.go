@@ -2,6 +2,7 @@ package manifest
 
 import (
 	"bytes"
+	"encoding/json"
 	"testing"
 )
 
@@ -13,9 +14,12 @@ func TestResolveParams(t *testing.T) {
 	}
 
 	t.Run("applies defaults, coerces types, preserves contract order", func(t *testing.T) {
-		got, err := ResolveParams(contract, map[string]string{"name": "World", "shout": "true"})
+		got, secrets, err := ResolveParams(contract, map[string]string{"name": "World", "shout": "true"})
 		if err != nil {
 			t.Fatalf("ResolveParams: %v", err)
+		}
+		if len(secrets) != 0 {
+			t.Errorf("secrets = %+v, want none (no mount params in this contract)", secrets)
 		}
 		want := []ResolvedParam{
 			{Name: "name", Value: "World"},
@@ -33,35 +37,81 @@ func TestResolveParams(t *testing.T) {
 	})
 
 	t.Run("missing required param", func(t *testing.T) {
-		_, err := ResolveParams(contract, map[string]string{})
+		_, _, err := ResolveParams(contract, map[string]string{})
 		if err == nil {
 			t.Fatal("ResolveParams accepted a submission missing a required param")
 		}
 	})
 
 	t.Run("unknown param rejected", func(t *testing.T) {
-		_, err := ResolveParams(contract, map[string]string{"name": "x", "bogus": "y"})
+		_, _, err := ResolveParams(contract, map[string]string{"name": "x", "bogus": "y"})
 		if err == nil {
 			t.Fatal("ResolveParams accepted an unknown param name")
 		}
 	})
 
 	t.Run("bad type coercion rejected", func(t *testing.T) {
-		_, err := ResolveParams(contract, map[string]string{"name": "x", "count": "not-a-number"})
+		_, _, err := ResolveParams(contract, map[string]string{"name": "x", "count": "not-a-number"})
 		if err == nil {
 			t.Fatal("ResolveParams accepted a non-numeric value for a number param")
 		}
 	})
 
 	t.Run("no submission, no contract", func(t *testing.T) {
-		got, err := ResolveParams(nil, nil)
+		got, secrets, err := ResolveParams(nil, nil)
 		if err != nil {
 			t.Fatalf("ResolveParams: %v", err)
 		}
-		if len(got) != 0 {
-			t.Errorf("got %v, want empty", got)
+		if len(got) != 0 || len(secrets) != 0 {
+			t.Errorf("got %v / %v, want both empty", got, secrets)
 		}
 	})
+
+	t.Run("mount params are split into secrets, not params", func(t *testing.T) {
+		withMount := append(contract, Param{Name: "token", Type: ParamTypeMount, Required: true})
+		got, secrets, err := ResolveParams(withMount, map[string]string{"name": "x", "token": "sekrit"})
+		if err != nil {
+			t.Fatalf("ResolveParams: %v", err)
+		}
+		for _, p := range got {
+			if p.Name == "token" {
+				t.Errorf("mount param %q leaked into the non-secret result", p.Name)
+			}
+		}
+		if len(secrets) != 1 || secrets[0].Name != "token" || secrets[0].Value != "sekrit" {
+			t.Errorf("secrets = %+v, want [{token sekrit}]", secrets)
+		}
+	})
+}
+
+func TestMergeParamsForDelivery(t *testing.T) {
+	contract := []Param{
+		{Name: "name", Type: ParamTypeString, Required: true},
+		{Name: "token", Type: ParamTypeMount, Required: true},
+	}
+	paramsJSON := []byte(`[{"name":"name","value":"World"}]`)
+
+	got, err := MergeParamsForDelivery(contract, paramsJSON)
+	if err != nil {
+		t.Fatalf("MergeParamsForDelivery: %v", err)
+	}
+
+	var merged []ResolvedParam
+	if err := json.Unmarshal(got, &merged); err != nil {
+		t.Fatalf("decoding merged result: %v", err)
+	}
+	want := []ResolvedParam{
+		{Name: "name", Value: "World"},
+		{Name: "token", Value: "/run/job/secrets/token"},
+	}
+	if len(merged) != len(want) {
+		t.Fatalf("got %+v, want %+v", merged, want)
+	}
+	for i := range want {
+		if merged[i] != want[i] {
+			t.Errorf("[%d] = %+v, want %+v", i, merged[i], want[i])
+		}
+	}
 }
 
 // TestArgvShimRouting covers task 6.4's routing rule: a shim only enters

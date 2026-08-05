@@ -23,6 +23,19 @@ type CreateContainerParams struct {
 	// Executed as-is inside the container - never joined into a shell
 	// string (task 1.11).
 	Command []string
+	// Podman secrets to mount (task 6.6's mount-type params). Empty for
+	// every run without one - most of them.
+	Secrets []ContainerSecret
+}
+
+// ContainerSecret is one entry of CreateContainerParams.Secrets: mount the
+// already-created Podman secret named Source at Target inside the
+// container, readable by root only (mode 0400) - matching §4.6's
+// preference for `type=mount` delivering a file rather than an env var,
+// which would leak into `podman inspect` and child process environments.
+type ContainerSecret struct {
+	Source string
+	Target string
 }
 
 // logDriver is the container log driver every run gets, set explicitly rather
@@ -48,10 +61,23 @@ type createContainerRequest struct {
 	Command   []string          `json:"command"`
 	Labels    map[string]string `json:"labels"`
 	LogConfig logConfig         `json:"log_configuration"`
+	Secrets   []secretMountSpec `json:"secrets,omitempty"`
 }
 
 type logConfig struct {
 	Driver string `json:"driver"`
+}
+
+// secretMountSpec mirrors libpod's SpecGenerator.Secrets entry. Mode 0400
+// (owner-read-only, owner root) is fixed rather than configurable - nothing
+// in this platform's use of secrets needs anything looser, and a task 6.6
+// mount-type param has exactly one consumer, the script itself.
+type secretMountSpec struct {
+	Source string `json:"source"`
+	Target string `json:"target,omitempty"`
+	UID    uint32 `json:"uid"`
+	GID    uint32 `json:"gid"`
+	Mode   uint32 `json:"mode"`
 }
 
 type createContainerResponse struct {
@@ -62,11 +88,17 @@ type createContainerResponse struct {
 // CreateContainer calls POST /libpod/containers/create. The container is
 // created but not started; call StartContainer next.
 func (c *Client) CreateContainer(ctx context.Context, params CreateContainerParams) (string, error) {
+	var secrets []secretMountSpec
+	for _, s := range params.Secrets {
+		secrets = append(secrets, secretMountSpec{Source: s.Source, Target: s.Target, Mode: 0o400})
+	}
+
 	resp, err := c.do(ctx, http.MethodPost, "/libpod/containers/create", createContainerRequest{
 		Image:     params.Image,
 		Command:   params.Command,
 		Labels:    map[string]string{"run_id": strconv.FormatInt(params.RunID, 10)},
 		LogConfig: logConfig{Driver: logDriver},
+		Secrets:   secrets,
 	})
 	if err != nil {
 		return "", err

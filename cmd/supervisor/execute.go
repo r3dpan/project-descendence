@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/r3dpan/project-descendence/internal/gitrepo"
 	"github.com/r3dpan/project-descendence/internal/logstream"
+	"github.com/r3dpan/project-descendence/internal/manifest"
 	"github.com/r3dpan/project-descendence/internal/podman"
 	"github.com/r3dpan/project-descendence/internal/store"
 )
@@ -21,9 +23,20 @@ import (
 // never returns from here still "running" (except when the supervisor
 // itself is shutting down; see waitFinishAndRemove).
 func executeRun(ctx context.Context, queries *store.Queries, podmanClient *podman.Client, repoStore *gitrepo.Store, logDir string, run store.Run) {
-	containerID, err := createContainerPullingIfNeeded(ctx, podmanClient, run)
+	// Task 6.6: a mount-type param's Podman secret must exist before create,
+	// since create is what references it by name. Created fresh per run and
+	// never reused - removeContainer removes them again alongside the
+	// container, on every exit path.
+	secrets, err := createRunSecrets(ctx, podmanClient, run)
+	if err != nil {
+		finishRun(ctx, queries, run.ID, store.StateFailed, nil, "", fmt.Sprintf("creating secrets: %v", err))
+		return
+	}
+
+	containerID, err := createContainerPullingIfNeeded(ctx, podmanClient, run, secrets)
 	if err != nil {
 		finishRun(ctx, queries, run.ID, store.StateFailed, nil, "", fmt.Sprintf("creating container: %v", err))
+		removeRunSecrets(podmanClient, run)
 		return
 	}
 
@@ -44,13 +57,13 @@ func executeRun(ctx context.Context, queries *store.Queries, podmanClient *podma
 	// arrival. An ad-hoc run carries its own argv and this does nothing.
 	if err := materialiseScript(ctx, queries, podmanClient, repoStore, run, containerID); err != nil {
 		finishRun(ctx, queries, run.ID, store.StateFailed, nil, containerID, fmt.Sprintf("preparing script: %v", err))
-		removeContainer(podmanClient, run.ID, containerID)
+		removeContainer(podmanClient, run.ID, containerID, run)
 		return
 	}
 
 	if err := podmanClient.StartContainer(ctx, containerID); err != nil {
 		finishRun(ctx, queries, run.ID, store.StateFailed, nil, containerID, fmt.Sprintf("starting container: %v", err))
-		removeContainer(podmanClient, run.ID, containerID)
+		removeContainer(podmanClient, run.ID, containerID, run)
 		return
 	}
 
@@ -74,11 +87,12 @@ func executeRun(ctx context.Context, queries *store.Queries, podmanClient *podma
 // No digest pinning happens here. Runs pin digests from Phase 4 (§4.3, tasks
 // 4.4/4.6); this exists so that the first run of a job on a fresh machine
 // works rather than dying with an opaque "no such image".
-func createContainerPullingIfNeeded(ctx context.Context, podmanClient *podman.Client, run store.Run) (string, error) {
+func createContainerPullingIfNeeded(ctx context.Context, podmanClient *podman.Client, run store.Run, secrets []podman.ContainerSecret) (string, error) {
 	params := podman.CreateContainerParams{
 		RunID:   run.ID,
 		Image:   run.ImageRef,
 		Command: run.Argv,
+		Secrets: secrets,
 	}
 
 	containerID, err := podmanClient.CreateContainer(ctx, params)
@@ -156,7 +170,7 @@ func waitFinishAndRemove(ctx context.Context, queries *store.Queries, podmanClie
 		default:
 			capture.wait()
 			finishRun(ctx, queries, run.ID, store.StateFailed, nil, containerID, fmt.Sprintf("waiting for container: %v", err))
-			removeContainer(podmanClient, run.ID, containerID)
+			removeContainer(podmanClient, run.ID, containerID, run)
 		}
 		return
 	}
@@ -175,7 +189,7 @@ func waitFinishAndRemove(ctx context.Context, queries *store.Queries, podmanClie
 	// script did.
 	if cancelWatcher.requested() {
 		finishRun(ctx, queries, run.ID, store.StateCancelled, nil, containerID, "cancelled on request")
-		removeContainer(podmanClient, run.ID, containerID)
+		removeContainer(podmanClient, run.ID, containerID, run)
 		return
 	}
 
@@ -188,7 +202,7 @@ func waitFinishAndRemove(ctx context.Context, queries *store.Queries, podmanClie
 
 	code := int32(exitCode)
 	finishRun(ctx, queries, run.ID, state, &code, containerID, failureReason)
-	removeContainer(podmanClient, run.ID, containerID)
+	removeContainer(podmanClient, run.ID, containerID, run)
 }
 
 // handleTimeout kills a container whose run exceeded its timeout, confirms
@@ -211,7 +225,7 @@ func handleTimeout(queries *store.Queries, podmanClient *podman.Client, run stor
 
 	capture.wait()
 	finishRun(ctx, queries, run.ID, store.StateFailed, nil, containerID, fmt.Sprintf("exceeded timeout of %ds", run.TimeoutSeconds))
-	removeContainer(podmanClient, run.ID, containerID)
+	removeContainer(podmanClient, run.ID, containerID, run)
 }
 
 // finishRun records a terminal state. A terminal state is final (task
@@ -255,15 +269,74 @@ func finishRun(ctx context.Context, queries *store.Queries, runID int64, state s
 	})
 }
 
-// removeContainer removes a run's container. Callers must have drained the
-// run's log capture first (waitFinishAndRemove does, and explains why): a
-// removed container's unread output is gone, and WaitContainer returns the
-// moment the container exits, while the log stream can still have frames
-// behind it. Uses a fresh context - a cancelled supervisor shouldn't leave a
-// container behind just because shutdown was in progress when the run
+// removeContainer removes a run's container and any Podman secrets task
+// 6.6 created for it. Callers must have drained the run's log capture first
+// (waitFinishAndRemove does, and explains why): a removed container's
+// unread output is gone, and WaitContainer returns the moment the container
+// exits, while the log stream can still have frames behind it. Uses a fresh
+// context throughout - a cancelled supervisor shouldn't leave a container
+// or a secret behind just because shutdown was in progress when the run
 // finished.
-func removeContainer(podmanClient *podman.Client, runID int64, containerID string) {
+func removeContainer(podmanClient *podman.Client, runID int64, containerID string, run store.Run) {
 	if err := podmanClient.RemoveContainer(context.Background(), containerID); err != nil {
 		log.Printf("run %d: failed removing container %s: %v", runID, containerID, err)
 	}
+	removeRunSecrets(podmanClient, run)
+}
+
+// createRunSecrets creates one Podman secret per mount-type param already
+// resolved onto run (task 6.6, manifest.ResolveParams at run creation) and
+// returns what CreateContainer needs to mount them. Named
+// "run-<id>-<param>" - unique per run, so a retry or a reconciler adoption
+// can never collide with a still-live secret from a different run.
+func createRunSecrets(ctx context.Context, podmanClient *podman.Client, run store.Run) ([]podman.ContainerSecret, error) {
+	if !run.JobID.Valid || len(run.SecretParamsJson) == 0 {
+		return nil, nil
+	}
+
+	var params []manifest.ResolvedParam
+	if err := json.Unmarshal(run.SecretParamsJson, &params); err != nil {
+		return nil, fmt.Errorf("decoding secret params: %w", err)
+	}
+
+	secrets := make([]podman.ContainerSecret, 0, len(params))
+	for _, p := range params {
+		value, ok := p.Value.(string)
+		if !ok {
+			return nil, fmt.Errorf("secret param %q has a non-string value", p.Name)
+		}
+		name := runSecretName(run.ID, p.Name)
+		if _, err := podmanClient.SecretCreate(ctx, name, []byte(value)); err != nil {
+			return nil, fmt.Errorf("creating secret for param %q: %w", p.Name, err)
+		}
+		secrets = append(secrets, podman.ContainerSecret{Source: name, Target: manifest.ContainerSecretPath(p.Name)})
+	}
+	return secrets, nil
+}
+
+// removeRunSecrets removes every secret createRunSecrets may have created
+// for run. Re-derives names from run.SecretParamsJson rather than requiring
+// a caller to have kept the list around - safe to call unconditionally
+// (including for a run with no mount params, or one whose secret creation
+// itself failed partway through) since SecretRemove treats "not found" as
+// success (task 6.6).
+func removeRunSecrets(podmanClient *podman.Client, run store.Run) {
+	if len(run.SecretParamsJson) == 0 {
+		return
+	}
+	var params []manifest.ResolvedParam
+	if err := json.Unmarshal(run.SecretParamsJson, &params); err != nil {
+		log.Printf("run %d: failed decoding secret params for cleanup: %v", run.ID, err)
+		return
+	}
+	for _, p := range params {
+		name := runSecretName(run.ID, p.Name)
+		if err := podmanClient.SecretRemove(context.Background(), name); err != nil {
+			log.Printf("run %d: failed removing secret %s: %v", run.ID, name, err)
+		}
+	}
+}
+
+func runSecretName(runID int64, paramName string) string {
+	return fmt.Sprintf("run-%d-%s", runID, paramName)
 }

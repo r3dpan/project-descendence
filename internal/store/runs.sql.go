@@ -58,7 +58,8 @@ RETURNING runs.id, runs.principal_id, runs.state, runs.idempotency_key,
           runs.exit_code, runs.failure_reason, runs.cancel_requested_at,
           runs.queued_at, runs.started_at, runs.finished_at, runs.job_id,
           runs.commit_sha, runs.runtime_id, runs.image_digest,
-          runs.params_json, runs.logs_pruned_at, runs.schedule_id
+          runs.params_json, runs.logs_pruned_at, runs.schedule_id,
+          runs.secret_params_json
 `
 
 // The supervisor's claim loop (task 1.12). The CTE's FOR UPDATE SKIP LOCKED
@@ -92,6 +93,7 @@ func (q *Queries) ClaimNextQueuedRun(ctx context.Context) (Run, error) {
 		&i.ParamsJson,
 		&i.LogsPrunedAt,
 		&i.ScheduleID,
+		&i.SecretParamsJson,
 	)
 	return i, err
 }
@@ -99,28 +101,29 @@ func (q *Queries) ClaimNextQueuedRun(ctx context.Context) (Run, error) {
 const createJobRun = `-- name: CreateJobRun :one
 INSERT INTO runs (principal_id, image_ref, argv, timeout_seconds, idempotency_key,
                   job_id, commit_sha, runtime_id, image_digest, schedule_id,
-                  params_json)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                  params_json, secret_params_json)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 ON CONFLICT (principal_id, idempotency_key) DO NOTHING
 RETURNING id, principal_id, state, idempotency_key, image_ref, argv,
           timeout_seconds, container_id, exit_code, failure_reason,
           cancel_requested_at, queued_at, started_at, finished_at, job_id,
           commit_sha, runtime_id, image_digest, params_json, logs_pruned_at,
-          schedule_id
+          schedule_id, secret_params_json
 `
 
 type CreateJobRunParams struct {
-	PrincipalID    int64       `json:"principal_id"`
-	ImageRef       string      `json:"image_ref"`
-	Argv           []string    `json:"argv"`
-	TimeoutSeconds int32       `json:"timeout_seconds"`
-	IdempotencyKey pgtype.Text `json:"idempotency_key"`
-	JobID          pgtype.Int8 `json:"job_id"`
-	CommitSha      pgtype.Text `json:"commit_sha"`
-	RuntimeID      pgtype.Int8 `json:"runtime_id"`
-	ImageDigest    pgtype.Text `json:"image_digest"`
-	ScheduleID     pgtype.Int8 `json:"schedule_id"`
-	ParamsJson     []byte      `json:"params_json"`
+	PrincipalID      int64       `json:"principal_id"`
+	ImageRef         string      `json:"image_ref"`
+	Argv             []string    `json:"argv"`
+	TimeoutSeconds   int32       `json:"timeout_seconds"`
+	IdempotencyKey   pgtype.Text `json:"idempotency_key"`
+	JobID            pgtype.Int8 `json:"job_id"`
+	CommitSha        pgtype.Text `json:"commit_sha"`
+	RuntimeID        pgtype.Int8 `json:"runtime_id"`
+	ImageDigest      pgtype.Text `json:"image_digest"`
+	ScheduleID       pgtype.Int8 `json:"schedule_id"`
+	ParamsJson       []byte      `json:"params_json"`
+	SecretParamsJson []byte      `json:"secret_params_json"`
 }
 
 // Task 3.5. The same insert as CreateRun, plus the columns that make a run
@@ -143,6 +146,18 @@ type CreateJobRunParams struct {
 // against the job's contract - defaults applied, types coerced - never the
 // raw submission. A schedule trigger has no submission of its own, so it
 // always passes the contract's defaults-only resolution.
+//
+// secret_params_json (task 6.6) holds only the mount-type entries of that
+// same resolution, split out of params_json entirely at the point of
+// resolution (manifest.ResolveParams) so a secret value is never even
+// assembled into params_json to begin with. It rides along on every
+// run query below like every other column - the safety boundary is the API
+// layer's response structs (runResponse has no field for it, so
+// encoding/json cannot serialise what was never assigned to it), not which
+// SQL columns a query selects; splitting sqlc's generated row shape per
+// query for this would trade a real, load-bearing invariant (Go's type
+// system) for a second, weaker one (query hygiene) without removing the
+// first.
 func (q *Queries) CreateJobRun(ctx context.Context, arg CreateJobRunParams) (Run, error) {
 	row := q.db.QueryRow(ctx, createJobRun,
 		arg.PrincipalID,
@@ -156,6 +171,7 @@ func (q *Queries) CreateJobRun(ctx context.Context, arg CreateJobRunParams) (Run
 		arg.ImageDigest,
 		arg.ScheduleID,
 		arg.ParamsJson,
+		arg.SecretParamsJson,
 	)
 	var i Run
 	err := row.Scan(
@@ -180,6 +196,7 @@ func (q *Queries) CreateJobRun(ctx context.Context, arg CreateJobRunParams) (Run
 		&i.ParamsJson,
 		&i.LogsPrunedAt,
 		&i.ScheduleID,
+		&i.SecretParamsJson,
 	)
 	return i, err
 }
@@ -192,7 +209,7 @@ RETURNING id, principal_id, state, idempotency_key, image_ref, argv,
           timeout_seconds, container_id, exit_code, failure_reason,
           cancel_requested_at, queued_at, started_at, finished_at, job_id,
           commit_sha, runtime_id, image_digest, params_json, logs_pruned_at,
-          schedule_id
+          schedule_id, secret_params_json
 `
 
 type CreateRunParams struct {
@@ -239,6 +256,7 @@ func (q *Queries) CreateRun(ctx context.Context, arg CreateRunParams) (Run, erro
 		&i.ParamsJson,
 		&i.LogsPrunedAt,
 		&i.ScheduleID,
+		&i.SecretParamsJson,
 	)
 	return i, err
 }
@@ -316,7 +334,7 @@ SELECT id, principal_id, state, idempotency_key, image_ref, argv,
        timeout_seconds, container_id, exit_code, failure_reason,
        cancel_requested_at, queued_at, started_at, finished_at, job_id,
        commit_sha, runtime_id, image_digest, params_json, logs_pruned_at,
-       schedule_id
+       schedule_id, secret_params_json
 FROM runs
 WHERE id = $1
 `
@@ -346,6 +364,7 @@ func (q *Queries) GetRun(ctx context.Context, id int64) (Run, error) {
 		&i.ParamsJson,
 		&i.LogsPrunedAt,
 		&i.ScheduleID,
+		&i.SecretParamsJson,
 	)
 	return i, err
 }
@@ -355,7 +374,7 @@ SELECT id, principal_id, state, idempotency_key, image_ref, argv,
        timeout_seconds, container_id, exit_code, failure_reason,
        cancel_requested_at, queued_at, started_at, finished_at, job_id,
        commit_sha, runtime_id, image_digest, params_json, logs_pruned_at,
-       schedule_id
+       schedule_id, secret_params_json
 FROM runs
 WHERE principal_id = $1 AND idempotency_key = $2
 `
@@ -390,6 +409,7 @@ func (q *Queries) GetRunByIdempotencyKey(ctx context.Context, arg GetRunByIdempo
 		&i.ParamsJson,
 		&i.LogsPrunedAt,
 		&i.ScheduleID,
+		&i.SecretParamsJson,
 	)
 	return i, err
 }
@@ -421,7 +441,7 @@ SELECT id, principal_id, state, idempotency_key, image_ref, argv,
        timeout_seconds, container_id, exit_code, failure_reason,
        cancel_requested_at, queued_at, started_at, finished_at, job_id,
        commit_sha, runtime_id, image_digest, params_json, logs_pruned_at,
-       schedule_id
+       schedule_id, secret_params_json
 FROM runs
 WHERE state IN ('queued', 'running')
 `
@@ -459,6 +479,7 @@ func (q *Queries) ListNonTerminalRuns(ctx context.Context) ([]Run, error) {
 			&i.ParamsJson,
 			&i.LogsPrunedAt,
 			&i.ScheduleID,
+			&i.SecretParamsJson,
 		); err != nil {
 			return nil, err
 		}
@@ -475,7 +496,7 @@ SELECT id, principal_id, state, idempotency_key, image_ref, argv,
        timeout_seconds, container_id, exit_code, failure_reason,
        cancel_requested_at, queued_at, started_at, finished_at, job_id,
        commit_sha, runtime_id, image_digest, params_json, logs_pruned_at,
-       schedule_id
+       schedule_id, secret_params_json
 FROM runs
 WHERE $1::timestamptz IS NULL
    OR (queued_at, id) < ($1::timestamptz, $2::bigint)
@@ -524,6 +545,7 @@ func (q *Queries) ListRuns(ctx context.Context, arg ListRunsParams) ([]Run, erro
 			&i.ParamsJson,
 			&i.LogsPrunedAt,
 			&i.ScheduleID,
+			&i.SecretParamsJson,
 		); err != nil {
 			return nil, err
 		}
@@ -540,7 +562,7 @@ SELECT id, principal_id, state, idempotency_key, image_ref, argv,
        timeout_seconds, container_id, exit_code, failure_reason,
        cancel_requested_at, queued_at, started_at, finished_at, job_id,
        commit_sha, runtime_id, image_digest, params_json, logs_pruned_at,
-       schedule_id
+       schedule_id, secret_params_json
 FROM runs
 WHERE job_id = $1::bigint
   AND ($2::timestamptz IS NULL
@@ -594,6 +616,7 @@ func (q *Queries) ListRunsByJob(ctx context.Context, arg ListRunsByJobParams) ([
 			&i.ParamsJson,
 			&i.LogsPrunedAt,
 			&i.ScheduleID,
+			&i.SecretParamsJson,
 		); err != nil {
 			return nil, err
 		}

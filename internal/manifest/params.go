@@ -19,24 +19,26 @@ type ResolvedParam struct {
 }
 
 // ResolveParams validates a run request's submitted values against a job's
-// parameter contract (task 6.2) and returns the values to store on the run
-// and deliver to the container - typed (string/float64/bool), coerced from
-// the raw strings a submission arrives as (CLI flags and JSON request
-// bodies both carry strings; the contract's declared type is what decides
-// what a value *means*).
+// parameter contract (task 6.2) and returns two ordered, contract-order
+// slices: params for every non-mount param (what's stored in
+// runs.params_json and, redaction aside, what the API returns) and secrets
+// for every mount-type one (runs.secret_params_json, task 6.6 - never
+// returned by an API response, only read by the supervisor to create
+// Podman secrets). Splitting here, at the one place a submission becomes
+// stored values, is what makes "a mount value never reaches params_json"
+// true from the moment a run exists rather than something a later step has
+// to remember to enforce.
+//
+// Values are typed (string/float64/bool), coerced from the raw strings a
+// submission arrives as (CLI flags and JSON request bodies both carry
+// strings; the contract's declared type is what decides what a value
+// *means*) - a mount value is always a string, the secret's literal
+// content.
 //
 // Every error here is meant to become an HTTP 400: nothing is queued until
 // submitted values are known to satisfy the contract, so a malformed
 // request never reaches the supervisor.
-//
-// mount-type params (task 6.6's mechanism) are resolved here like any other
-// param - the raw string stored in the result is turned into an actual
-// Podman secret only by the supervisor. Until task 6.6, that means a
-// mount-type value's plaintext sits in the same result this returns for
-// every other param; task 6.5 redacts it from anything the API returns
-// about the run, but storage doesn't split it out until 6.6 gives it a
-// dedicated column.
-func ResolveParams(contract []Param, submitted map[string]string) ([]ResolvedParam, error) {
+func ResolveParams(contract []Param, submitted map[string]string) (params []ResolvedParam, secrets []ResolvedParam, err error) {
 	byName := make(map[string]Param, len(contract))
 	for _, p := range contract {
 		byName[p.Name] = p
@@ -44,34 +46,43 @@ func ResolveParams(contract []Param, submitted map[string]string) ([]ResolvedPar
 
 	for name := range submitted {
 		if _, ok := byName[name]; !ok {
-			return nil, fmt.Errorf("unknown param %q; this job accepts %s", name, contractNames(contract))
+			return nil, nil, fmt.Errorf("unknown param %q; this job accepts %s", name, contractNames(contract))
 		}
 	}
 
-	resolved := make([]ResolvedParam, 0, len(contract))
 	for _, p := range contract {
 		raw, submittedOK := submitted[p.Name]
+		var value any
 		switch {
 		case submittedOK:
-			value, err := coerceParam(p.Type, raw)
+			v, err := coerceParam(p.Type, raw)
 			if err != nil {
-				return nil, fmt.Errorf("param %q: %w", p.Name, err)
+				return nil, nil, fmt.Errorf("param %q: %w", p.Name, err)
 			}
-			resolved = append(resolved, ResolvedParam{Name: p.Name, Value: value})
+			value = v
 		case p.Default != nil:
-			value, err := coerceParam(p.Type, *p.Default)
+			v, err := coerceParam(p.Type, *p.Default)
 			if err != nil {
 				// The manifest's own default failing its own type is a
 				// validateParams bug, not a caller error - but surfacing it
 				// beats silently dropping the param.
-				return nil, fmt.Errorf("param %q: manifest default is invalid: %w", p.Name, err)
+				return nil, nil, fmt.Errorf("param %q: manifest default is invalid: %w", p.Name, err)
 			}
-			resolved = append(resolved, ResolvedParam{Name: p.Name, Value: value})
+			value = v
 		case p.Required:
-			return nil, fmt.Errorf("missing required param %q", p.Name)
+			return nil, nil, fmt.Errorf("missing required param %q", p.Name)
+		default:
+			continue // optional, no default, not submitted: simply absent
+		}
+
+		resolved := ResolvedParam{Name: p.Name, Value: value}
+		if p.Type == ParamTypeMount {
+			secrets = append(secrets, resolved)
+		} else {
+			params = append(params, resolved)
 		}
 	}
-	return resolved, nil
+	return params, secrets, nil
 }
 
 // coerceParam turns a raw submitted or default string into the typed value
@@ -114,6 +125,42 @@ func ParamsArgv(paramsJSON []byte) ([]byte, error) {
 		buf.WriteByte(0)
 	}
 	return buf.Bytes(), nil
+}
+
+// MergeParamsForDelivery rebuilds the full, contract-ordered params.json
+// that goes into a container (task 6.3/6.6): non-mount values come from
+// paramsJSON (runs.params_json, task 6.2's split), and every mount-type
+// entry's value is the path its Podman secret is mounted at
+// (ContainerSecretPath) - never the secret's plaintext, which this
+// function never even sees, since runs.params_json never held it in the
+// first place (ResolveParams already split it into secret_params_json).
+// Contract order, not either input's order, decides the result's order -
+// what the Bash shim (task 6.4) turns into positional arguments.
+func MergeParamsForDelivery(contract []Param, paramsJSON []byte) ([]byte, error) {
+	var params []ResolvedParam
+	if len(paramsJSON) > 0 {
+		if err := json.Unmarshal(paramsJSON, &params); err != nil {
+			return nil, fmt.Errorf("decoding params.json: %w", err)
+		}
+	}
+	byName := make(map[string]any, len(params))
+	for _, p := range params {
+		byName[p.Name] = p.Value
+	}
+
+	merged := make([]ResolvedParam, 0, len(contract))
+	for _, p := range contract {
+		if p.Type == ParamTypeMount {
+			merged = append(merged, ResolvedParam{Name: p.Name, Value: ContainerSecretPath(p.Name)})
+			continue
+		}
+		if v, ok := byName[p.Name]; ok {
+			merged = append(merged, ResolvedParam{Name: p.Name, Value: v})
+		}
+		// Absent: an optional param with neither a submission nor a
+		// default, which ResolveParams already leaves out of paramsJSON.
+	}
+	return json.Marshal(merged)
 }
 
 func contractNames(contract []Param) string {
