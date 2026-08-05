@@ -29,6 +29,17 @@ func executeRun(ctx context.Context, queries *store.Queries, podmanClient *podma
 		return
 	}
 
+	// Record the container before starting it, not just at the end. Phase 1e
+	// found a running run reporting containerId: null - no way to reach the
+	// container of a run that is still going, which is exactly when you want
+	// it. Best-effort: failing to note it is not a reason to abandon the run.
+	if err := queries.SetRunContainerID(ctx, store.SetRunContainerIDParams{
+		ID:          run.ID,
+		ContainerID: pgtype.Text{String: containerID, Valid: true},
+	}); err != nil {
+		log.Printf("run %d: failed recording container %s: %v", run.ID, containerID, err)
+	}
+
 	if err := podmanClient.StartContainer(ctx, containerID); err != nil {
 		finishRun(ctx, queries, run.ID, store.StateFailed, nil, containerID, fmt.Sprintf("starting container: %v", err))
 		removeContainer(podmanClient, run.ID, containerID)

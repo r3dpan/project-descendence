@@ -78,7 +78,11 @@ func claimAndExecuteAllQueued(ctx context.Context, queries *store.Queries, podma
 	for {
 		run, err := queries.ClaimNextQueuedRun(ctx)
 		if err != nil {
-			if !errors.Is(err, pgx.ErrNoRows) {
+			// ErrNoRows just means the queue is empty. A cancelled context
+			// means we are shutting down - Phase 1e showed that logging it
+			// as "claim: context canceled" makes an ordinary SIGTERM look
+			// like a fault in the logs.
+			if !errors.Is(err, pgx.ErrNoRows) && ctx.Err() == nil {
 				log.Printf("claim: %v", err)
 			}
 			return

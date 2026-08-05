@@ -39,12 +39,18 @@ Update the marker on each task as it moves:
 
 - **Phase:** 1 — Vertical slice
 - **Task:** Phase 1a, `internal/podman` (1.9–1.11), 1.12, 1.13, 1.15, 1.16,
-  1.17 done. **Phases 1a, 1b, 1c and 1d are all complete** (1.1-1.21).
-- **Next action:** Phase 1e — "prove it" (1.22-1.25): kill the supervisor
-  mid-run and restart it, kill the API mid-poll, submit 20 runs at once,
-  and confirm `podman ps -a` is clean afterwards. The plan is emphatic
-  that these are the point of the whole phase, so do them deliberately
-  rather than skimming.
+  1.17 done. **PHASE 1 IS COMPLETE** — 1.1 through 1.25, including 1e's
+  exit check. The vertical slice works end to end and survives being
+  attacked: `descendence run ...` → API → Postgres → supervisor → Podman
+  container → exit code back in your shell, with crash recovery, timeouts,
+  single-scheduler enforcement and no container leaks, all demonstrated
+  rather than assumed.
+- **Next action:** Phase 2 — log capture and streaming (2.1-2.9). Start
+  with 2.1 (attach to container output in the supervisor). Note 2.8
+  (cancel) is owed a debt from 1.14: `cancelled` is defined, constrained,
+  rendered and tested everywhere but has no producer, deliberately, so 2.8
+  only has to add the transition. Read the Phase 2 warning about getting
+  cancellation and context propagation right *there* before starting.
   The CLI is built on the Charm stack (bubbletea/bubbles/lipgloss) at the
   user's explicit direction, recorded as ARCHITECTURE.md decision #17;
   dispatch and flags stay stdlib. 1.14 (all six run states) is now done
@@ -417,12 +423,42 @@ the run appears in Postgres with correct timestamps and state.
 
 Do these deliberately — they are the point of the phase.
 
-- [ ] **1.22** Kill the supervisor mid-run, restart it. The reconciler behaves correctly.
-- [ ] **1.23** Kill the API mid-poll. Runs continue unaffected.
-- [ ] **1.24** Submit 20 runs at once. All complete, none run twice.
-- [ ] **1.25** No leaked containers: `podman ps -a` is clean after everything finishes.
+- [x] **1.22** Kill the supervisor mid-run, restart it. The reconciler behaves correctly.
+      Run as five scenarios, one per reconciler branch:
+      **A** SIGKILL, container already exited → adopted, real outcome
+      recorded (not `lost`). **B** SIGKILL, container genuinely still
+      running → adopted live, waited the full 40.5s, `succeeded`, and the
+      timeout clock was *not* reset. **C** SIGKILL + container removed by
+      hand → `lost`. **D** container created but never started → `lost`
+      and the stale container removed. **E** graceful SIGTERM → run left
+      `running` and the container untouched, adopted on restart. The
+      advisory lock was reacquired immediately after every SIGKILL, so a
+      hard crash does not lock the supervisor out of restarting.
+- [x] **1.23** Kill the API mid-poll. Runs continue unaffected.
+      `kill -9` on the API while the CLI was polling: the CLI failed fast
+      with a legible `connection refused` and exit 1 rather than hanging,
+      the supervisor never noticed, and the run completed and was recorded
+      normally *with no API process running at all*. Restarting the API
+      showed the finished run intact. Decision #6 (separate processes
+      sharing only Postgres) actually paying out.
+- [x] **1.24** Submit 20 runs at once. All complete, none run twice.
+      20 concurrent submissions, each with a distinct expected exit code:
+      all 20 reached a terminal state with exactly the exit code its argv
+      asked for. "None run twice" checked three ways – each run appears
+      exactly once in the supervisor's claim log, the 20 runs hold 20
+      distinct `container_id`s, and no `container_id` is shared by any two
+      runs anywhere in the table. Also confirmed the mechanism that
+      guarantees this across processes: a second supervisor refuses to
+      start on the advisory lock.
+- [x] **1.25** No leaked containers: `podman ps -a` is clean after everything finishes.
+      Clean after all of the above – only the persistent `postgres`
+      container, nothing carrying a `run_id` label, zero non-terminal runs,
+      and no terminal run missing a `finished_at`.
 
 **Exit check:** all of 1.22–1.25 pass. Do not move on until they do.
+**→ Passed.** Phase 1e also surfaced three real defects; see the session
+log. That is what the phase is for – all four checks passing untouched on
+the first attempt would have meant they were too shallow.
 
 ---
 
@@ -986,7 +1022,8 @@ Worked on: Phase 1d (the CLI). 1.18 (hand-written API client); 1.19
 (`cli run`) — plus a genuine `internal/podman` bug that 1.19's verification
 surfaced, see below; 1.20 (`cli runs list` / `runs get`); 1.21 (config file
 + precedence) — **Phase 1d complete**; 1.14 (all six run states) — the last
-open item in 1c, so **Phases 1a-1d are now all complete**.
+open item in 1c; then Phase 1e in full (1.22-1.25), which passes.
+**PHASE 1 IS COMPLETE.**
 Decision up front, at the user's explicit direction: **the CLI is built on
 the Charm stack** — `bubbletea` for anything interactive, with `bubbles` and
 `lipgloss` as needed. That is a real dependency choice for a project that has
@@ -1133,8 +1170,35 @@ Completed:
     exercises the same guard without reaching outside its own row. **Any
     test that claims work from a shared queue is a test that interferes
     with every other test.**
-Broken / unresolved: nothing.
-Next action: Phase 1e, "prove it" (1.22-1.25). Deliberately, not quickly.
+  - Phase 1e (1.22-1.25): all four pass — see the task entries for what was
+    actually exercised. Worth saying plainly: **1e was not a formality.**
+    Three real defects fell out of it, none of which any amount of code
+    reading had found:
+    1. **`container_id` was NULL for the whole life of a run.** It was only
+       written by `FinishRun`, so `GET /runs/{id}` on a *running* run
+       reported `containerId: null` - no way to reach the container of a
+       run still in progress, which is precisely when you want it. Fixed
+       with `SetRunContainerID`, called right after `CreateContainer`; the
+       CLI now shows a short container id too (and the summary's label
+       column had to widen from 9 to 10 to fit "container").
+    2. **Graceful shutdown logged `claim: context canceled` as an error.**
+       An ordinary SIGTERM looked like a fault in the logs. The claim loop
+       now suppresses it when `ctx.Err() != nil`.
+    3. **`ContainerSummary.State`'s doc comment was wrong.** It claimed
+       libpod reports "stopped" rather than Docker's "exited". Probing all
+       three states directly showed libpod actually reports `created`,
+       `running` and **`exited`**. The code was fine - the reconciler only
+       special-cases "created" - but the comment would have misled the next
+       person into writing `== "stopped"`.
+  - Phase 1e, demonstrated (not a defect, but now proven rather than
+    assumed): **reconciliation blocks the claim loop.** A run submitted
+    while an adoption was in flight sat `queued` for 31 seconds until the
+    adopted run finished. `reconcile.go` already documents this; 1e turned
+    it into a measurement. With the default 3600s timeout, one adopted
+    long run can hold the whole queue for an hour. Worth revisiting when
+    concurrency arrives - it is the most likely thing to bite in real use.
+Broken / unresolved: nothing. **Phase 1 is complete.**
+Next action: Phase 2 (log capture and streaming), starting at 2.1.
 Notes to future me:
   - `DESCENDENCE_URL` / `DESCENDENCE_TOKEN` are the CLI's env vars, chosen
     here in 1.18 (the client's tests read them) and formalised in 1.21.

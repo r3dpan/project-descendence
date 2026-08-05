@@ -135,9 +135,11 @@ func (c *Client) KillContainer(ctx context.Context, id string) error {
 type ContainerSummary struct {
 	ID     string            `json:"Id"`
 	Labels map[string]string `json:"Labels"`
-	// e.g. "created" (never started), "running", "stopped" (exited) -
-	// confirmed by probing the real API; libpod does not use Docker's
-	// "exited" spelling here.
+	// "created" (never started), "running", or "exited" - confirmed by
+	// probing the real API with a container in each of those states (task
+	// 1e). Treat this list as indicative rather than exhaustive: the
+	// reconciler only special-cases "created" and adopts anything else, so
+	// a state not seen here still behaves sensibly.
 	State string `json:"State"`
 }
 

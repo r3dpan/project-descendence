@@ -351,3 +351,25 @@ func (q *Queries) ListRuns(ctx context.Context, arg ListRunsParams) ([]Run, erro
 	}
 	return items, nil
 }
+
+const setRunContainerID = `-- name: SetRunContainerID :exec
+UPDATE runs
+SET container_id = $2
+WHERE id = $1
+  AND state = 'running'
+`
+
+type SetRunContainerIDParams struct {
+	ID          int64       `json:"id"`
+	ContainerID pgtype.Text `json:"container_id"`
+}
+
+// Records the container as soon as it is created, rather than waiting for
+// FinishRun (found in Phase 1e: a running run showed containerId: null, so
+// there was no way to find the container of a run that was still going -
+// exactly when you most want it). Guarded on state so a run that has
+// somehow already finished is never touched.
+func (q *Queries) SetRunContainerID(ctx context.Context, arg SetRunContainerIDParams) error {
+	_, err := q.db.Exec(ctx, setRunContainerID, arg.ID, arg.ContainerID)
+	return err
+}

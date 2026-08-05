@@ -96,3 +96,14 @@ SELECT id, principal_id, state, idempotency_key, image_ref, argv,
        commit_sha, runtime_id, image_digest, params_json
 FROM runs
 WHERE state IN ('queued', 'running');
+
+-- name: SetRunContainerID :exec
+-- Records the container as soon as it is created, rather than waiting for
+-- FinishRun (found in Phase 1e: a running run showed containerId: null, so
+-- there was no way to find the container of a run that was still going -
+-- exactly when you most want it). Guarded on state so a run that has
+-- somehow already finished is never touched.
+UPDATE runs
+SET container_id = $2
+WHERE id = $1
+  AND state = 'running';

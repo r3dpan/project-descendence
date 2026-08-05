@@ -147,13 +147,21 @@ func renderRunSummary(run client.Run, interrupted bool) string {
 			return
 		}
 		b.WriteString("  ")
-		b.WriteString(styleLabel.Render(fmt.Sprintf("%-9s", label)))
+		// Wide enough for the longest label ("container") plus a space.
+		b.WriteString(styleLabel.Render(fmt.Sprintf("%-10s", label)))
 		b.WriteString(styleValue.Render(value))
 		b.WriteString("\n")
 	}
 
 	field("image", run.ImageRef)
 	field("argv", strings.Join(run.Argv, " "))
+	if run.ContainerID != nil && *run.ContainerID != "" {
+		// Short form, as podman itself prints it - enough to paste into
+		// `podman logs` or `podman inspect`, which is the whole reason for
+		// showing it.
+		id := *run.ContainerID
+		field("container", id[:min(12, len(id))])
+	}
 	if run.ExitCode != nil {
 		field("exit", fmt.Sprintf("%d", *run.ExitCode))
 	}
