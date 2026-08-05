@@ -798,3 +798,71 @@ Notes to future me:
     follow goroutine and its HTTP connection would outlive the screen for
     the rest of the run: the client-side version of the leak 2.7 fixed on
     the server.
+
+## 2026-08-05 (Phase 3)
+Worked on: all of Phase 3 (3.1-3.7) plus the exit check. Most of the session
+  went on deciding *what a job is* before writing anything, which was the
+  right call - the schema fell out of it in one pass instead of three.
+Completed: **Phase 3 is done.** Jobs are defined in git, discovered by a
+  scan, and a run pins the commit SHA it resolved to.
+  - **decision #23** - a job is a script's *interface*, authored in git; the
+    `jobs` table is a projection of it.
+  - **decision #24** - a script reaches its container as a tar over
+    `PUT /containers/{id}/archive`, not a bind mount.
+  - New packages: `internal/gitrepo` (go-git), `internal/manifest`,
+    `internal/jobsync`. New env var `GIT_REPO_DIR`.
+  - 7 new API paths, 9 new schemas, and `jobId`/`commitSha` finally exposed
+    on `Run` - columns that had existed unused since migration 00001.
+  - Lazy image pull, beyond the listed tasks: without it the first run of a
+    job on a fresh machine dies with an opaque "no such image".
+Broken / unresolved: nothing. Phase 3 complete.
+Next action: 4.1 (`runtimes` migration), then 4.2 (resolve the
+  Alpine-vs-Debian open question). Note that the manifest already *rejects*
+  `runtime:` with "not supported until Phase 4", so 4.x turns an error into
+  behaviour rather than inventing a format.
+Notes to future me:
+  - **The question "what is a job?" was worth three rounds of argument.**
+    The thin answer - "a job is a script plus a runtime" - makes git
+    pointless: it is a two-field join row with no authored content, and
+    everything that varies would live in Postgres anyway. The answer that
+    holds is that a job is everything *only correct relative to a particular
+    version of the script*: parameter contract, form layout, invocation.
+    Those must change in the same commit as the script or they lie about it,
+    and git is the only place that can express "these facts were true
+    together at abc123". If a later phase feels tempted to move job fields
+    into Postgres, re-read decision #23 first.
+  - **"Same script, three databases" is one job, not three.** I built a
+    whole instantiation model on that example before noticing that what
+    varies is a *parameter value* - which is Phase 6, or a schedule in
+    Phase 5. Two tables and a registration flow evaporated. Watch for this
+    shape again: if the thing that differs between two "jobs" is data rather
+    than definition, it is one job.
+  - **go-git's index outlives the in-memory worktree**, and this cost real
+    time twice. Attaching a fresh memfs worktree to a bare on-disk storer
+    leaves the *index* describing files the worktree does not have, so
+    `Checkout` reports unstaged changes and refuses. `Force: true` looks
+    like the fix and is worse - go-git then tries to delete the "stray"
+    files and fails pruning `"."`. Reset the index to empty instead. It is
+    also the truthful statement: the worktree is scratch space with no
+    history.
+  - **A sync must never write `enabled`.** Stated three times in the code
+    for a reason: it is one line away at all times, and the failure is
+    silent and delayed - a job you paused quietly runs again after the next
+    scan. There is a test.
+  - **An unreadable manifest is not an absent one.** Treating a parse error
+    as "the manifest is gone" would let a typo soft-delete a job and, since
+    names are unique among live jobs only, free its name. Reported and
+    skipped, always.
+  - **The blanket-timeout bug turned up for the fourth time**, exactly where
+    the last entry predicted - the new long-lived endpoint. Image pull
+    streams progress for as long as the download takes, so it went on
+    `longPollClient` from the first line. The pattern is now reliable enough
+    to treat as a checklist item rather than a lesson.
+  - Probing libpod with `curl` before writing Go paid again: the archive
+    endpoint creates its own intermediate directories and preserves mode
+    0755, which is what makes "no host staging directory at all" work. Both
+    facts would have been guesses otherwise.
+  - `flag` stops parsing at the first positional, so `jobs run hello -follow`
+    silently does not follow. Consistent with `descendence run`, but the
+    usage dump did not say why - the error now names the problem instead of
+    leaving the user hunting for a typo that is not there.

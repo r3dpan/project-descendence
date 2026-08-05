@@ -41,66 +41,58 @@ Update the marker on each task as it moves:
 
 > **Update this block every session.**
 
-- **Phase:** 2 — **complete** (2.1–2.9, exit check passed). Next up is
-  Phase 3 — jobs and git.
-- **Task:** Phases 0, 1 and 2 all done. A run's output is captured
-  completely, indexed, kept for 30 days, served as JSON pages and as a
-  live SSE stream that resumes cleanly after a disconnect; runs can be
-  cancelled whether or not they have started; the CLI can follow one live.
-- **Since Phase 2:** the CLI gained an **interactive application** (bare
-  `descendence` on a terminal), decision #22. Menu → runs → run detail →
-  live logs, plus a new-run form and cancel. Every flag command is
-  unchanged, and bare `descendence` without a terminal still prints usage
-  and exits 2 — the guard that keeps a script from meeting a TUI. Not a
-  numbered task; it was asked for directly.
-- **Next action:** 3.1 — the `repos` and `jobs` migration. Before starting,
-  re-read ARCHITECTURE.md §4.5 and §5, and note that Phase 3 is the first
-  one that makes `runs` rows refer to something outside themselves
-  (`job_id`, `commit_sha`), which is what the reproducibility principle
-  (§2.4) has been waiting for.
+- **Phase:** 3 — **complete** (3.1–3.7, exit check passed). Next up is
+  Phase 4 — runtimes and image building.
+- **Task:** Phases 0–3 all done. A job is now a *definition in git* -
+  a `<name>.job.yaml` beside its script - and running one pins the commit
+  SHA it resolved to, so any past run can be explained by checking that
+  SHA out. Scripts reach their container as a tar; nothing is written to
+  the host.
+- **Next action:** 4.1 — the `runtimes` migration. Before starting, note
+  that `jobs.image_ref` is deliberately **nullable** with a CHECK of
+  "image_ref IS NOT NULL OR runtime_id IS NOT NULL", so Phase 4 can add
+  runtime-backed jobs without altering a NOT NULL column - and that the
+  manifest already *rejects* a `runtime:` key with "not supported until
+  Phase 4", so implementing it means changing that error into behaviour
+  rather than inventing a format.
 - **Blocked on:** nothing
-- **Notes:** what Phase 2 leaves behind that later phases must not break:
+- **Notes:** what Phase 3 leaves behind that later phases must not break:
 
-  - **Log bodies are files, the index is Postgres** (ARCHITECTURE.md §4.1).
-    `RUN_LOG_DIR` must be set for *both* the api and the supervisor, and
-    must be the same directory — the supervisor is the sole writer, the
-    API only reads. That shared filesystem is what pins the two processes
-    to one host, and it is the first assumption that breaks under
-    multi-node (decision #19).
-  - **The invariant to not break:** flush the file, *then* write the index
-    row, *then* notify. The index row is what tells a reader those bytes
-    exist, so any other order publishes an offset pointing past the end of
-    the file. Stated in `runlog.Flush`, in `runlogs.sql`, and in
-    `capturePass`.
-  - **Captured output is not to be trusted without a completeness check.**
-    Two separate things silently dropped lines — journald's rate limiter
-    (decision #20) and libpod's follower cutting off at container exit
-    (decision #21) — and *neither produced an error anywhere*. Both are
-    fixed. The shape is the lesson: in this pipeline, failure looks like
-    less output, not like a failure.
-  - **Once a run is terminal, its log index is complete.** The supervisor
-    drains the capture before writing the terminal state, deliberately, so
-    a stream can end when the run ends without racing the last few lines.
-    Do not reorder that.
-  - **Notifications are lossy on purpose**, and only in the
-    supervisor→api direction. They carry watermarks, not log text, so a
-    dropped one costs latency and nothing else — which is why every
-    consumer must also poll on a slow timer. The api→supervisor direction
-    (cancellation) deliberately does *not* use them: a missed "stop this
-    run" is not a latency problem, so it polls a column instead (task 2.8).
-  - **Recapture is always from scratch**, never a resume at an offset —
-    for the reconciler adopting a run and for decision #21's second pass
-    alike. Safe because libpod replays the same bytes in the same order,
-    so the same lines come back with the same sequence numbers and
-    offsets. Only the capture timestamp changes.
-  - **A blanket `http.Client.Timeout` is wrong for any long-lived
-    response.** Three instances so far: podman's `/wait` (1.19), podman's
-    log follow (2.1), and the API client's log follow (2.9). Every new
-    long-lived endpoint needs its own timeout-free client, and the symptom
-    when it doesn't is always a misleading network error partway through.
+  - **A job is a script's interface, authored in git** (decision #23).
+    The `jobs` table is a *projection*, regenerable by re-scanning. The
+    single rule that keeps it honest: **a sync must never write
+    `enabled`.** It is the one column this installation owns rather than
+    the repository, and if a scan resets it, pausing a misbehaving job
+    becomes something the next scan silently undoes.
+  - **A vanished manifest soft-deletes.** `runs.job_id` is
+    `ON DELETE SET NULL`, so a hard delete would sever every past run
+    from the job it ran. Soft deletion also means a manifest that comes
+    back resurrects the *same* row, and its run history with it.
+  - **An unreadable manifest is not an absent one.** A parse failure is
+    reported and skipped, never destructive - otherwise a typo removes a
+    job and frees its globally-unique name for something else to claim.
+  - **Everything about a run is read at its pinned SHA, never at HEAD.**
+    Both the API (at create) and the supervisor (at execute) read the
+    manifest at `runs.commit_sha`. They cannot disagree because they pin
+    the same SHA, and the projection - which tracks HEAD - is never
+    consulted for what to execute. This is what §2.4 has been waiting for
+    since Phase 1.
+  - **`GIT_REPO_DIR` is a second shared directory**, with the roles
+    reversed from `RUN_LOG_DIR`: the **api writes** it, the supervisor
+    only reads a blob. Decision #19's warning about a shared filesystem
+    pinning both processes to one host now applies twice, and it is the
+    first thing that breaks under multi-node.
+  - **The in-memory worktree is load-bearing** and go-git is fussy about
+    it. The index lives in the on-disk storer and outlives the worktree,
+    so it must be reset to empty before each checkout - and `Force: true`
+    is *not* the fix, it fails differently (see 3.2).
+  - **Container argv is still an array, and now nobody names an
+    interpreter at all.** A job's argv is its script's own path at mode
+    0755; the shebang decides. Adding a language stays "write a script
+    with the right shebang", with no table in Go to update.
   - Runs within one supervisor process still execute strictly one at a
-    time. Unchanged by Phase 2, and still the most likely thing to bite in
-    real use (see 1e's note on reconciliation blocking the claim loop).
+    time. Unchanged by Phase 3, and still the most likely thing to bite
+    in real use.
 
 ---
 
@@ -652,19 +644,129 @@ instead of three.
 **Goal:** named, reusable jobs backed by version-controlled scripts.
 **Done when:** `cli job run backup-db` works, and the run records the commit SHA.
 
-- [ ] **3.1** Migration: `repos`, `jobs`. Add `job_id` and `commit_sha` to `runs`.
-- [ ] **3.2** Create and manage a bare git repo on disk by using `go-git` implementation of git.
-- [ ] **3.3** Define the sidecar manifest format (`<name>.job.yaml`) — start minimal:
+- [x] **3.1** Migration: `repos`, `jobs`. Add `job_id` and `commit_sha` to `runs`.
+      Half of this was already done: migration 00001 created all eight tables
+      and `runs` has carried `job_id`/`commit_sha` since. `00003` fleshes out
+      the two skeletons - `repos` gains `default_branch` and last-sync
+      reporting; `jobs` gains everything a manifest declares plus
+      `synced_commit_sha` and `deleted_at`. Two constraints worth noting:
+      `image_ref` is **nullable** with a CHECK of "image or runtime", so
+      Phase 4 adds runtimes without altering a NOT NULL column; and a
+      **partial** `UNIQUE (name) WHERE deleted_at IS NULL` makes names unique
+      among *live* jobs only, so a deleted job keeps its name without
+      blocking a new manifest from claiming it. `runs` only needed an index.
+- [x] **3.2** Create and manage a bare git repo on disk by using `go-git` implementation of git.
+      `internal/gitrepo`: `InitBare`, `Open`, `HeadCommit`, `ReadFile`,
+      `ListFiles`, `CommitFile`. No working tree anywhere - reads walk the
+      commit tree, and writes attach an **in-memory billy filesystem** as the
+      worktree over the on-disk bare object store, which is what makes 3.7
+      possible without checking anything out. Verified first, as planned,
+      since everything else depended on it.
+      **Two go-git behaviours cost real time**, both from the same root: the
+      *index* lives in the on-disk storer and outlives the in-memory
+      worktree, so a fresh (empty) worktree looks dirty against it and
+      `Checkout` refuses. `Force: true` swaps that for a worse failure -
+      go-git tries to delete the files it thinks are stray and walks into
+      pruning `"."`. The fix is to reset the index to empty before checking
+      out, which is also the honest statement: this worktree is scratch space
+      with no history of its own.
+      `InitBare` repoints HEAD at the requested default branch - go-git
+      defaults to `master`, and getting it wrong would make a repository with
+      manifests in it scan as empty.
+- [x] **3.3** Define the sidecar manifest format (`<name>.job.yaml`) — start minimal:
       name, script path, runtime, description.
-- [ ] **3.4** Scan a repo, parse manifests, sync into the `jobs` table.
-- [ ] **3.5** `POST /api/v1/jobs/{id}/runs` — resolve the current commit SHA, copy the
+      `internal/manifest`, on `go.yaml.in/yaml/v3` (the maintained
+      continuation of the archived `gopkg.in/yaml.v3`). **Specified whole,
+      implemented in part**: `apiVersion: descendence/v1` is required from the
+      first file, and `params`/`form`/`runtime` are part of the format but
+      **rejected with an error naming the phase** rather than accepted and
+      ignored. A manifest saying `runtime: python-3.12` while Alpine runs is
+      exactly this project's documented failure mode.
+      Two decisions inside the format: `script:` resolves **relative to the
+      manifest's own directory**, so a directory holding a manifest and its
+      script is a movable unit; and with no `command:`, argv is just the
+      script's path at mode 0755, so the **shebang** picks the interpreter and
+      the platform never learns what a language is.
+- [x] **3.4** Scan a repo, parse manifests, sync into the `jobs` table.
+      `internal/jobsync` + `POST /api/v1/repos/{id}/sync`. A full rebuild
+      every time, never a diff against a stored "last seen" - which would
+      make a half-failed sync invisible to the next one.
+      Two rules that are the whole point: **`enabled` is never written** (it
+      is the one fact this installation owns, so a sync must not undo a pause),
+      and **an unparseable manifest is reported and skipped, never deleted** -
+      it is still in the repository, so treating it as absent would let a typo
+      remove a job and free its globally-unique name.
+      Not transactional, deliberately: one bad manifest must not block every
+      other job from updating, and a scan is idempotent so re-running
+      converges. Returns 200 with the failures in the body for the same
+      reason - nine of ten manifests updating correctly is not a failed
+      request.
+- [x] **3.5** `POST /api/v1/jobs/{id}/runs` — resolve the current commit SHA, copy the
       script into the container, record the SHA on the run.
-- [ ] **3.6** Job CRUD endpoints + `cli job list/get/run`.
-- [ ] **3.7** Upload a script through the API → commit to the repo with the calling
+      The API resolves HEAD, reads the manifest **at that SHA** (not from the
+      projection, which tracks HEAD and may already describe something newer),
+      and writes image/argv/commit onto the run. The supervisor then re-reads
+      the same manifest at the same pinned SHA between `CreateContainer` and
+      `StartContainer`, and puts the script in as a tar - **decision #24**,
+      chosen over a bind mount so there is no per-run host directory to leak
+      when the supervisor is SIGKILLed mid-run.
+      Needed a **raw-body request path** in `internal/podman`, which had
+      JSON-encoded every body unconditionally since 1.9. Probed with `curl`
+      first, per the usual habit: a tar rooted at `/` creates its own
+      intermediate directories and preserves mode 0755.
+      Safe to take `manifest_path` from the projection because it is
+      immutable per job row - a job is keyed on (repo, manifest_path), so
+      *moving* a manifest soft-deletes one job and creates another.
+- [x] **3.6** Job CRUD endpoints + `cli job list/get/run`.
+      **"CRUD" turned out to be the wrong shape**, and the reason is decision
+      #23: a job is defined by its manifest, so the API has no endpoint that
+      creates, edits or deletes one. `GET /jobs`, `GET /jobs/{id}` and
+      `PATCH /jobs/{id}` - the last accepting **only `enabled`**, the single
+      field git does not own. Changing anything else means committing a
+      manifest (3.7). Plus repos: create, list, get, sync, files.
+      CLI is `jobs` and `repos` (plural, matching the existing `runs` rather
+      than PLAN's `cli job`): `jobs list|get|run|enable|disable`,
+      `repos list|create|sync|put`. `jobs run` reuses the whole of
+      `descendence run`'s tail, so a job-triggered run looks identical to any
+      other and propagates the script's exit code.
+      `api/openapi.yaml` gained 7 paths and 9 schemas, plus `jobId`/`commitSha`
+      on `Run` - columns that had existed since 00001 and were never exposed.
+      Also fixed a YAML indentation glitch that had merged `RunList.required`
+      into `RunLogLine`.
+- [x] **3.7** Upload a script through the API → commit to the repo with the calling
       principal as author.
+      `POST /api/v1/repos/{id}/files`, committing through the in-memory
+      worktree from 3.2, attributed to `<principal> <principal@descendence.local>`
+      - synthetic and marked as such, since a principal is a token and not a
+      mailbox. A sync runs immediately afterwards, so an uploaded job is
+      runnable when the call returns rather than when someone remembers to
+      scan. Body capped at 1MiB.
+      If the commit lands and the sync then fails, the error says so
+      explicitly rather than implying the upload failed - retrying an upload
+      that already succeeded would commit the file twice.
 
 **Exit check:** change a script, run it, and the new run's `commit_sha` differs from
 the previous one. You can check out any past SHA and see exactly what ran.
+**→ Passed**, through the real API and CLI against the real stack:
+
+- Uploaded `hello.sh` + `hello.job.yaml`, synced, ran: output captured,
+  `jobId` and `commitSha` recorded, `argv` was `["/run/job/hello.sh"]` with
+  no interpreter named anywhere.
+- Edited the script, ran again. The two runs carry **different**
+  `commit_sha`, and `git show <sha>:scripts/hello.sh` at each one returns
+  exactly the source that produced that run's output.
+- Exit codes propagate: a script exiting 3 gives `descendence jobs run` an
+  exit of 3; a run that failed because its script was missing exits 1.
+- A disabled job is refused with 409; `podman ps -a` clean afterwards, no
+  containers carrying a `run_id` label.
+
+**One addition beyond the listed tasks:** a lazy image pull. There was no
+image endpoint at all, so the first run of a job on a fresh machine died with
+an opaque "no such image" from container create. Now create is attempted,
+and on that specific error the image is pulled once and create retried. No
+digest resolution - that stays Phase 4. It is on `longPollClient`, which is
+the **fourth** instance of the blanket-timeout trap; HISTORY predicted it
+would show up in "whatever long-lived endpoint comes next", and it did.
 
 ---
 

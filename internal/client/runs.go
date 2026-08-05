@@ -39,7 +39,17 @@ type Run struct {
 	QueuedAt          time.Time  `json:"queuedAt"`
 	StartedAt         *time.Time `json:"startedAt"`
 	FinishedAt        *time.Time `json:"finishedAt"`
+
+	// Both nil for an ad-hoc run, both set for a job run. Together they are
+	// what makes a run explainable: check out CommitSHA and the job's
+	// manifest names exactly the script that executed.
+	JobID     *int64  `json:"jobId"`
+	CommitSHA *string `json:"commitSha"`
 }
+
+// IsJobRun reports whether this run came from a job rather than an ad-hoc
+// image and argv.
+func (r Run) IsJobRun() bool { return r.JobID != nil }
 
 // IsTerminal reports whether the run has reached a state it will never leave -
 // the condition `cli run` polls until (task 1.19).

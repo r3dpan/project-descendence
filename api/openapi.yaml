@@ -348,6 +348,400 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/Problem"
+  /api/v1/repos:
+    post:
+      operationId: createRepo
+      description: >
+        Create an empty bare repository for job definitions.
+
+
+        The repository is created on disk first and recorded second: a record
+        pointing at a directory that does not exist is a repository nothing can
+        read, whereas a directory with no record is merely orphaned.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RepoCreate"
+      responses:
+        "201":
+          description: The repository, now empty and with no commits
+          headers:
+            Location:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Repo"
+        "400":
+          description: The name is empty, too long, or contains characters that cannot be a directory name
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "401":
+          description: Missing, malformed, unknown, expired or revoked token
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "409":
+          description: A repository directory of that name already exists
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+    get:
+      operationId: listRepos
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: cursor
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+      responses:
+        "200":
+          description: Repositories ordered by name, keyset-paginated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RepoList"
+        "400":
+          description: Malformed cursor, or limit outside 1-200
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "401":
+          description: Missing, malformed, unknown, expired or revoked token
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+  /api/v1/repos/{id}:
+    get:
+      operationId: getRepo
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: The repository
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Repo"
+        "401":
+          description: Missing, malformed, unknown, expired or revoked token
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "404":
+          description: No repository with this id
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+  /api/v1/repos/{id}/sync:
+    post:
+      operationId: syncRepo
+      description: >
+        Rebuild the job list from the repository's manifests.
+
+
+        A full rebuild every time, never a diff against what was seen last:
+        every `*.job.yaml` at the default branch's HEAD is parsed and upserted,
+        and jobs whose manifest is gone are soft-deleted.
+
+
+        200 even when individual manifests failed. A scan of ten manifests
+        where one has a typo is not a failed request - nine jobs updated
+        correctly, and the response says which one did not and why. A manifest
+        that cannot be parsed is reported and skipped, never deleted: it is
+        still in the repository, the platform simply cannot read it.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: What the scan changed, including any manifests it could not read
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SyncResult"
+        "401":
+          description: Missing, malformed, unknown, expired or revoked token
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "404":
+          description: No repository with this id
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+  /api/v1/repos/{id}/files:
+    post:
+      operationId: createRepoFile
+      description: >
+        Commit one file into a repository, then sync.
+
+
+        This is what makes the API an *editor* for the files git owns, and it
+        is the only way to change a job's definition - there is no endpoint
+        that edits a job's manifest-derived fields. The commit is attributed to
+        the calling principal, so a script that arrived through the API is
+        traceable to a token the same way a run is.
+
+
+        A sync follows immediately, so a job uploaded this way is runnable when
+        the call returns rather than when someone remembers to scan.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RepoFileCreate"
+      responses:
+        "201":
+          description: The commit, and the sync that followed it
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RepoFileResult"
+        "400":
+          description: >
+            The path is empty, absolute, or escapes the repository root; or the
+            body is larger than 1MiB.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "401":
+          description: Missing, malformed, unknown, expired or revoked token
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "404":
+          description: No repository with this id
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+  /api/v1/jobs:
+    get:
+      operationId: listJobs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: cursor
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+      responses:
+        "200":
+          description: >
+            Live jobs ordered by name, keyset-paginated. Ordered by name rather
+            than by time because a job list is a catalogue, not a timeline -
+            the opposite of the runs list.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobList"
+        "400":
+          description: Malformed cursor, or limit outside 1-200
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "401":
+          description: Missing, malformed, unknown, expired or revoked token
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+  /api/v1/jobs/{id}:
+    get:
+      operationId: getJob
+      description: >
+        Returns the job, including one whose manifest has been removed - a run
+        pointing at a deleted job must still be explainable.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: The job
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Job"
+        "401":
+          description: Missing, malformed, unknown, expired or revoked token
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "404":
+          description: No job with this id
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+    patch:
+      operationId: patchJob
+      description: >
+        Enable or disable a job.
+
+
+        `enabled` is the only field of a job the API can change, because it is
+        the only one this installation owns rather than the repository. Every
+        other field comes from the manifest; to change one, commit the manifest
+        (POST /api/v1/repos/{id}/files) and sync.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/JobPatch"
+      responses:
+        "200":
+          description: The updated job
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Job"
+        "400":
+          description: Malformed body, or a field other than `enabled` was supplied
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "401":
+          description: Missing, malformed, unknown, expired or revoked token
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "404":
+          description: No live job with this id
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+  /api/v1/jobs/{id}/runs:
+    post:
+      operationId: createJobRun
+      description: >
+        Trigger a job.
+
+
+        The request carries no execution detail: what to run is the manifest's
+        business. The server resolves the repository's current commit, reads
+        the manifest *at that commit*, and records the resolved image, argv and
+        commit SHA onto the run - so the branch moving a moment later cannot
+        change what this run executes.
+
+
+        202 with a Location header, like every other way of creating a run.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "202":
+          description: >
+            Run accepted and queued, with jobId and commitSha already set. A
+            repeated Idempotency-Key returns the original run.
+          headers:
+            Location:
+              description: "/api/v1/runs/{id} of the created (or original, if replayed) run"
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Run"
+        "401":
+          description: Missing, malformed, unknown, expired or revoked token
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "404":
+          description: No job with this id
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "409":
+          description: >
+            The job cannot be run as it stands: it is disabled, its manifest
+            has been removed from the repository, the repository has no
+            commits, or the manifest is missing or invalid at the current
+            commit.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
 components:
   securitySchemes:
     bearerAuth:
@@ -474,6 +868,21 @@ components:
         finishedAt:
           type: [string, "null"]
           format: date-time
+        jobId:
+          description: >
+            The job this run came from, or null for an ad-hoc run created by
+            POST /api/v1/runs. A job may since have been removed from its
+            repository; the run still points at it, so that what ran remains
+            explainable.
+          type: [integer, "null"]
+        commitSha:
+          description: >
+            The exact commit the job's manifest and script were read from,
+            resolved when the run was created and never re-resolved. Together
+            with jobId this is what makes a past run reproducible: check this
+            commit out and you have precisely what executed. Null for an
+            ad-hoc run.
+          type: [string, "null"]
       required:
         - id
         - state
@@ -492,7 +901,8 @@ components:
           description: Opaque cursor for the next page. Absent (or null) on the last page.
           type: [string, "null"]
       required:
-        - items    RunLogLine:
+        - items
+    RunLogLine:
       type: object
       description: >
         One captured line of output. Sequence numbers are per run and dense
@@ -540,3 +950,246 @@ components:
       required:
         - items
         - runState
+    Repo:
+      type: object
+      description: >
+        A bare git repository holding job definitions. The api is its sole
+        writer; the supervisor only reads a script blob at a commit a run has
+        pinned.
+      properties:
+        id:
+          type: integer
+        name:
+          description: >
+            Unique, and used as the directory name under GIT_REPO_DIR, so it
+            is constrained to letters, digits, dots, dashes and underscores.
+          type: string
+        path:
+          description: Where the repository lives on disk.
+          type: string
+        kind:
+          type: string
+          enum: [local, external]
+        defaultBranch:
+          description: >
+            The branch a scan reads and a job run resolves against. Recorded
+            per repository rather than assumed globally.
+          type: string
+        remoteUrl:
+          description: Always null for a local repository. External repositories are deferred.
+          type: [string, "null"]
+        lastSyncedAt:
+          description: >
+            What the last scan saw. Reported for the operator's benefit and
+            never used as an input to the next scan, which always re-reads
+            HEAD - trusting a stored "last seen" would make a half-failed sync
+            invisible to the one after it.
+          type: [string, "null"]
+          format: date-time
+        lastSyncedCommitSha:
+          type: [string, "null"]
+      required:
+        - id
+        - name
+        - path
+        - kind
+        - defaultBranch
+    RepoCreate:
+      type: object
+      properties:
+        name:
+          type: string
+        defaultBranch:
+          description: Defaults to "main" when omitted.
+          type: string
+      required:
+        - name
+    RepoList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Repo"
+        nextCursor:
+          description: Opaque cursor for the next page. Absent (or null) on the last page.
+          type: [string, "null"]
+      required:
+        - items
+    RepoFileCreate:
+      type: object
+      properties:
+        path:
+          description: >
+            Where the file goes in the repository, relative to its root. May
+            not be absolute or escape the root.
+          type: string
+        content:
+          description: The file's contents. The whole request body is capped at 1MiB.
+          type: string
+        message:
+          description: Commit message. Defaults to "Update <path>".
+          type: string
+      required:
+        - path
+        - content
+    RepoFileResult:
+      type: object
+      properties:
+        path:
+          type: string
+        commitSha:
+          description: The commit this file was written as.
+          type: string
+        sync:
+          $ref: "#/components/schemas/SyncResult"
+      required:
+        - path
+        - commitSha
+    SyncResult:
+      type: object
+      description: >
+        What a scan did. Job names rather than ids, because a sync is something
+        an operator reads.
+      properties:
+        commitSha:
+          description: >
+            The commit the projection was rebuilt from. Empty when the
+            repository has no commits yet, which is not an error.
+          type: string
+        added:
+          type: array
+          items:
+            type: string
+        updated:
+          type: array
+          items:
+            type: string
+        removed:
+          description: >
+            Jobs whose manifest is no longer in the repository. They are
+            soft-deleted, not removed, so runs that used them stay explainable.
+          type: array
+          items:
+            type: string
+        errors:
+          description: >
+            Manifests that could not be read. Each is reported and skipped -
+            never fatal to the scan, and never destructive to the job it names,
+            since an unreadable manifest is still present in the repository.
+          type: array
+          items:
+            type: object
+            properties:
+              path:
+                type: string
+              message:
+                type: string
+            required:
+              - path
+              - message
+      required:
+        - commitSha
+        - added
+        - updated
+        - removed
+        - errors
+    Job:
+      type: object
+      description: >
+        A job is a script's interface - what to run, how to invoke it, and
+        (from later phases) what parameters it takes and how they are
+        presented. It is authored as a `<name>.job.yaml` manifest in git,
+        versioned alongside the script it describes.
+
+
+        This resource is a **projection** of that manifest, rebuilt by a scan.
+        Every field below except `enabled` is owned by git and rewritten by the
+        next sync, which is why there is no endpoint that edits one: to change
+        a job, commit its manifest.
+      properties:
+        id:
+          type: integer
+        repoId:
+          type: integer
+        name:
+          description: Unique among live jobs, and how a job is addressed on the command line.
+          type: string
+        description:
+          type: [string, "null"]
+        manifestPath:
+          description: >
+            Where the manifest lives in the repository. Immutable for a given
+            job: a job is keyed on (repository, manifest path), so moving a
+            manifest soft-deletes one job and creates another.
+          type: string
+        scriptPath:
+          description: >
+            Repository-root-relative, resolved from the manifest's own
+            directory - a manifest and its script are a unit that can be moved
+            or copied together.
+          type: string
+        command:
+          description: >
+            Null in the usual case, meaning argv is the script's own path and
+            its shebang chooses the interpreter. Set only when the manifest
+            overrides the invocation.
+          type: [array, "null"]
+          items:
+            type: string
+        imageRef:
+          description: >
+            A plain OCI reference, used as-is. Nullable because Phase 4
+            introduces runtimes as the alternative to naming an image
+            directly; in this phase a manifest must name one.
+          type: [string, "null"]
+        timeoutSeconds:
+          description: Null when the manifest does not say, in which case the platform default applies.
+          type: [integer, "null"]
+        enabled:
+          description: >
+            The one field git does not own. A sync never changes it, so
+            pausing a misbehaving job is not something the next scan undoes.
+          type: boolean
+        syncedCommitSha:
+          description: Which commit this row was built from.
+          type: string
+        deletedAt:
+          description: >
+            Set when the manifest has been removed from the repository. Such a
+            job cannot be run and does not appear in listings, but the record
+            survives so that runs which used it remain explainable. Restoring
+            the manifest resurrects this same job, with its run history.
+          type: [string, "null"]
+          format: date-time
+      required:
+        - id
+        - repoId
+        - name
+        - manifestPath
+        - scriptPath
+        - enabled
+        - syncedCommitSha
+    JobList:
+      type: object
+      properties:
+        items:
+          description: Live jobs only, ordered by name.
+          type: array
+          items:
+            $ref: "#/components/schemas/Job"
+        nextCursor:
+          description: Opaque cursor for the next page. Absent (or null) on the last page.
+          type: [string, "null"]
+      required:
+        - items
+    JobPatch:
+      type: object
+      description: >
+        The only mutation the API performs on a job. Everything else about a
+        job is defined by its manifest in git.
+      properties:
+        enabled:
+          type: boolean
+      required:
+        - enabled

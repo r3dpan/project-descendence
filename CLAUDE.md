@@ -44,9 +44,12 @@ Config is environment only; see `.env.sample`.
 ## Invariants worth not breaking
 
 - **api and supervisor never talk to each other.** They communicate only through
-  Postgres (SQL, `LISTEN`/`NOTIFY`, advisory lock) and the shared `RUN_LOG_DIR`.
-  Both processes must be given the *same* log directory; the supervisor is its sole
-  writer, the API only reads.
+  Postgres (SQL, `LISTEN`/`NOTIFY`, advisory lock) and two shared directories.
+  Both processes must be given the *same* paths for each:
+  - `RUN_LOG_DIR` — the supervisor is its sole writer, the API only reads.
+  - `GIT_REPO_DIR` — the *other way round*: the API is sole writer (creates
+    repos, commits, scans), the supervisor only reads one blob at a run's
+    pinned commit SHA.
 - **Log write ordering: flush the file → insert the index row → notify.** The index
   row is what tells a reader those bytes exist, so any other order publishes an
   offset pointing past the end of the file.
@@ -64,6 +67,16 @@ Config is environment only; see `.env.sample`.
 - Only one supervisor may run at a time; a Postgres advisory lock enforces it.
 - Runs are async: `POST` returns `202` with a `Location` header. Never block an HTTP
   request on a script finishing.
+- **Git owns job definitions; `jobs` is a projection** (decision #23). No endpoint
+  creates, edits or deletes a job — you commit a manifest and re-sync. The one
+  exception is `enabled`, and **a sync must never write it**, or pausing a job
+  becomes something the next scan undoes.
+- **A vanished manifest soft-deletes its job**, never hard-deletes: `runs.job_id` is
+  `ON DELETE SET NULL`, so removing the row would sever past runs from what they ran.
+  An *unparseable* manifest is reported and skipped — it is present, just unreadable.
+- **A job run reads everything at its pinned `commit_sha`, never at HEAD.** Both the
+  API (at create) and the supervisor (at execute) do; the projection tracks HEAD and
+  is never consulted for what to execute.
 
 ## Conventions
 
@@ -85,12 +98,15 @@ Integration tests skip themselves rather than fail when their dependency is abse
 not mean much on its own — check what actually ran.
 
 - Some tests sleep past a request timeout on purpose (they exist to catch the
-  "blanket `http.Client.Timeout` truncates a long poll" bug, which has landed twice).
+  "blanket `http.Client.Timeout` truncates a long poll" bug, which has landed four times).
   They are behind `testing.Short()`.
 - **Do not run `go test ./internal/store` against a database a live supervisor is
   polling** — it claims the tests' throwaway runs. Any test that claims work from a
   shared queue interferes with every other test, in both directions.
-- Long-polling endpoints use `longPollClient`, not `httpClient`.
+- Long-polling endpoints use `longPollClient` in `internal/podman`; the equivalent in
+  `internal/client` is `streamClient`. Either way, **never** let a blanket
+  `http.Client.Timeout` cover a long-lived response — that bug has landed four times
+  (podman `/wait`, podman log follow, the API client's log follow, image pull).
 
 ## Local gotchas
 

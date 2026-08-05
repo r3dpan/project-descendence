@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/r3dpan/project-descendence/internal/gitrepo"
 	"github.com/r3dpan/project-descendence/internal/logstream"
 	"github.com/r3dpan/project-descendence/internal/podman"
 	"github.com/r3dpan/project-descendence/internal/store"
@@ -19,12 +20,8 @@ import (
 // then remove the container. Every exit path writes a terminal state - a run
 // never returns from here still "running" (except when the supervisor
 // itself is shutting down; see waitFinishAndRemove).
-func executeRun(ctx context.Context, queries *store.Queries, podmanClient *podman.Client, logDir string, run store.Run) {
-	containerID, err := podmanClient.CreateContainer(ctx, podman.CreateContainerParams{
-		RunID:   run.ID,
-		Image:   run.ImageRef,
-		Command: run.Argv,
-	})
+func executeRun(ctx context.Context, queries *store.Queries, podmanClient *podman.Client, repoStore *gitrepo.Store, logDir string, run store.Run) {
+	containerID, err := createContainerPullingIfNeeded(ctx, podmanClient, run)
 	if err != nil {
 		finishRun(ctx, queries, run.ID, store.StateFailed, nil, "", fmt.Sprintf("creating container: %v", err))
 		return
@@ -41,6 +38,16 @@ func executeRun(ctx context.Context, queries *store.Queries, podmanClient *podma
 		log.Printf("run %d: failed recording container %s: %v", run.ID, containerID, err)
 	}
 
+	// A job run's script exists only in git until this point (task 3.5). It
+	// goes in before the container starts, because the entrypoint is the
+	// script itself and starting first would race it against its own
+	// arrival. An ad-hoc run carries its own argv and this does nothing.
+	if err := materialiseScript(ctx, queries, podmanClient, repoStore, run, containerID); err != nil {
+		finishRun(ctx, queries, run.ID, store.StateFailed, nil, containerID, fmt.Sprintf("preparing script: %v", err))
+		removeContainer(podmanClient, run.ID, containerID)
+		return
+	}
+
 	if err := podmanClient.StartContainer(ctx, containerID); err != nil {
 		finishRun(ctx, queries, run.ID, store.StateFailed, nil, containerID, fmt.Sprintf("starting container: %v", err))
 		removeContainer(podmanClient, run.ID, containerID)
@@ -54,6 +61,42 @@ func executeRun(ctx context.Context, queries *store.Queries, podmanClient *podma
 	capture := startLogCapture(ctx, queries, podmanClient, logDir, run.ID, containerID)
 
 	waitFinishAndRemove(ctx, queries, podmanClient, run, containerID, capture)
+}
+
+// createContainerPullingIfNeeded creates a run's container, fetching the image
+// first if it turns out not to be here yet.
+//
+// Lazy rather than eager: pulling before every create would add a registry
+// round trip to every run for the sake of the first one. The image is pulled
+// only when create says it is missing, and only once - a second failure is the
+// run's failure, not something to keep retrying.
+//
+// No digest pinning happens here. Runs pin digests from Phase 4 (§4.3, tasks
+// 4.4/4.6); this exists so that the first run of a job on a fresh machine
+// works rather than dying with an opaque "no such image".
+func createContainerPullingIfNeeded(ctx context.Context, podmanClient *podman.Client, run store.Run) (string, error) {
+	params := podman.CreateContainerParams{
+		RunID:   run.ID,
+		Image:   run.ImageRef,
+		Command: run.Argv,
+	}
+
+	containerID, err := podmanClient.CreateContainer(ctx, params)
+	if err == nil {
+		return containerID, nil
+	}
+	if !podman.IsImageNotPresent(err) {
+		return "", err
+	}
+
+	log.Printf("run %d: image %s is not present locally, pulling it", run.ID, run.ImageRef)
+	if _, pullErr := podmanClient.PullImage(ctx, run.ImageRef); pullErr != nil {
+		// Report the pull failure: it is the actionable one. The original
+		// "no such image" only said the image was absent, which is now known.
+		return "", fmt.Errorf("image %s is not present locally and could not be pulled: %w", run.ImageRef, pullErr)
+	}
+
+	return podmanClient.CreateContainer(ctx, params)
 }
 
 // waitFinishAndRemove blocks until containerID exits (returning immediately

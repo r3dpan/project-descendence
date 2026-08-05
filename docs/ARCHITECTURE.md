@@ -1,7 +1,7 @@
 # Architecture
 
 **Project:** Script automation platform (working name: TBD)
-**Status:** Design agreed, not yet implemented
+**Status:** Phases 0-3 implemented; 4-7 designed, not yet built
 **Last updated:** 2026-08-05
 
 ---
@@ -60,47 +60,49 @@ unclear, check it against these.
 ## 3. System overview
 
 ```
-                     ┌──────────────┐
-                     │   CLI (Go)   │   ← primary client for now
-                     └──────┬───────┘
-                            │ HTTP + Bearer token
-                            ▼
-   ┌────────────────────────────────────────────┐        ┌──────────────────┐
-   │  cmd/api  — HTTP server                    │ reads  │  run log files   │
-   │  · auth middleware (principal resolution)  │───────►│  <RUN_LOG_DIR>/  │
-   │  · CRUD on jobs / runs / runtimes          │        │     <run_id>.log │
-   │  · SSE log streaming + subscriber fan-out  │        └────────▲─────────┘
-   │  · serves embedded SPA (much later)        │                 │
-   └───────────────────┬────────────────────────┘                 │
-                       │ SQL + LISTEN                             │
-                       ▼                                          │
-              ┌─────────────────┐                                 │
-              │   PostgreSQL    │  ← queue, state, history,       │
-              └─────────────────┘    coordination, log index,     │
-                       ▲             notification bus             │
-                       │ SQL + NOTIFY                             │
-                       │ (api and supervisor never talk directly) │
-   ┌───────────────────┴────────────────────────┐                 │
-   │  cmd/supervisor — single instance          │  writes         │
-   │  · claims queued runs                      │─────────────────┘
-   │  · scheduler (cron)                        │  (sole writer)
-   │  · container lifecycle                     │
-   │  · log capture (one attach per run)        │
-   │  · crash reconciliation                    │
-   │  · log retention sweep                     │
-   └───────┬─────────────────────┬──────────────┘
-           │ REST over UDS       │ shell out
-           ▼                     ▼
-   ┌───────────────┐      ┌─────────────┐
-   │ Podman socket │      │ git (bare   │
-   │ (rootless)    │      │ repos)      │
-   └───────┬───────┘      └─────────────┘
-           │ creates
-           ▼
-   ┌────────────────────────────────┐
-   │ ephemeral job containers       │
-   │ (python / powershell / bash…)  │
-   └────────────────────────────────┘
+                              ┌──────────────┐
+                              │   CLI (Go)   │   ← primary client for now
+                              └──────┬───────┘
+                                     │ HTTP + Bearer token
+                                     ▼
+ ┌──────────────────┐  writes  ┌────────────────────────────────────────────┐  reads   ┌──────────────────┐
+ │  bare git repos  │◄─────────│  cmd/api  — HTTP server                    │─────────►│  run log files   │
+ │  <GIT_REPO_DIR>/ │          │  · auth middleware (principal resolution)  │          │  <RUN_LOG_DIR>/  │
+ │    <name>.git    │          │  · CRUD on jobs / runs / runtimes          │          │    <run_id>.log  │
+ │                  │          │  · SSE log streaming + subscriber fan-out  │          │                  │
+ │  job definitions │          │  · scans repos, commits uploaded files     │          │                  │
+ │  and scripts     │          │  · serves embedded SPA (much later)        │          │                  │
+ └────────▲─────────┘          └───────────────────┬────────────────────────┘          └────────▲─────────┘
+          │                                        │ SQL + LISTEN                               │
+          │                                        ▼                                            │
+          │                               ┌─────────────────┐                                   │
+          │                               │   PostgreSQL    │ ← queue, state, history,          │
+          │                               └─────────────────┘   coordination, log index,        │
+          │                                        ▲            notification bus                │
+          │                                        │ SQL + NOTIFY                               │
+          │                                        │ (api and supervisor never talk directly)   │
+          │   reads one blob at    ┌───────────────┴────────────────────────┐                   │
+          │   a run's pinned SHA   │  cmd/supervisor — single instance      │  writes           │
+          └────────────────────────│  · claims queued runs                  │───────────────────┘
+                                   │  · scheduler (cron)                    │  (sole writer)
+                                   │  · container lifecycle                 │
+                                   │  · copies a job's script in, then runs │
+                                   │  · log capture (one attach per run)    │
+                                   │  · crash reconciliation                │
+                                   │  · log retention sweep                 │
+                                   └───────┬────────────────────────────────┘
+                                           │ REST over UDS
+                                           ▼
+                                   ┌───────────────┐
+                                   │ Podman socket │
+                                   │ (rootless)    │
+                                   └───────┬───────┘
+                                           │ creates
+                                           ▼
+                            ┌────────────────────────────────┐
+                            │ ephemeral job containers       │
+                            │ (python / powershell / bash…)  │
+                            └────────────────────────────────┘
 ```
 
 **Why api and supervisor are separate processes:** the API must stay stateless and
@@ -215,19 +217,65 @@ required, not optional.
 
 ### 4.5 Git
 
-Scripts live in bare git repositories on disk. We use the go-git golang library for inetracting with git.
+Scripts and job definitions live in bare git repositories on disk, under
+`GIT_REPO_DIR`, accessed with the go-git library (decision #8) — no shelling out.
 
 The important design consequence is not versioning but **content addressing**: a run
 record stores `(repo, commit_sha, image_digest, params)`, which makes any historical
 run fully explainable and repeatable.
 
-**Sidecar manifest.** Each script has a `<name>.job.yaml` beside it in the repo,
-declaring runtime, packages, parameter contract and (later) form layout. Consequences:
+**Who writes.** The **api is the sole writer** — it creates repositories, commits
+files into them (task 3.7) and scans them (3.4). The **supervisor only reads**, and
+narrowly: given a run's pinned commit SHA it reads one manifest and one script blob
+(3.5). This is the mirror image of `RUN_LOG_DIR`, and like it, both processes must be
+given the same path — a second shared directory, so decision #19's note about being
+pinned to one host now applies twice.
 
-- Git is the source of truth for job definitions; the API/UI are editors for those files.
+Nothing needs a working tree. Reads walk the commit's tree; writes attach an
+*in-memory* filesystem as the worktree over the on-disk object store, so a bare
+repository stays bare and no checkout ever reaches disk.
+
+**Sidecar manifest.** Each script has a `<name>.job.yaml` beside it, and that manifest
+*is* the job (decision #23). Format v1, with the rest of it specified and rejected
+until the phase that honours it:
+
+```yaml
+apiVersion: descendence/v1     # required; the format is versioned from the start
+name: backup-db                # unique among live jobs; how the job is addressed
+description: Nightly dump      # optional
+script: backup-db.sh           # relative to the *manifest's own directory*
+image: docker.io/library/alpine:3.20
+# command: ["sh", "/run/job/backup-db.sh"]   # optional; default is the shebang
+# timeoutSeconds: 1800                       # optional; platform default otherwise
+
+# Part of the format, rejected with an error naming the phase until then:
+# runtime:  Phase 4      params:  Phase 6      form:  Phase 7
+```
+
+Three rules worth stating, because each one is a decision rather than a detail:
+
+- **`script:` resolves relative to the manifest, not the repository root.** That is
+  what "sidecar" means: a directory holding a manifest and its script is a unit that
+  can be moved, copied as the start of the next job, or vendored from elsewhere
+  without rewriting paths inside it.
+- **Invocation is the shebang.** The script is delivered at mode 0755 and argv is
+  just its path, so the platform never needs a table of languages. `command:`
+  overrides it.
+- **An unknown key is an error, and a known-but-unimplemented key is a *different*
+  error naming the phase.** Accepting `runtime:` and silently running something else
+  is this system's characteristic failure mode — see the Phase 2 entries in HISTORY.
+
+Consequences of the manifest living in git:
+
+- Git is the source of truth for job definitions; the API/UI are editors for those
+  files. The `jobs` table is a projection of them (decision #23).
 - "Pull from an external repo" becomes the same code path as the local library —
   external repos simply bring their own manifests.
 - Script bodies never need to be stored in Postgres.
+
+**Delivery into the container.** A job's script is read from git and unpacked into
+its container as a tar over `PUT /libpod/containers/{id}/archive`, between create and
+start (decision #24).
 
 ### 4.6 Secrets
 
@@ -331,8 +379,15 @@ Not final — refine during Phase 1–3. Included so the shape is visible.
 
 ```
 principals    id, kind(user|token), name, token_hash, scopes[], created_at
-repos         id, name, path, kind(local|external), remote_url
-jobs          id, repo_id, manifest_path, name, runtime_id, enabled
+repos         id, name, path, kind(local|external), remote_url, default_branch,
+              last_synced_at, last_synced_commit_sha
+jobs          id, repo_id, manifest_path, name, runtime_id, enabled,
+              description, script_path, command[], image_ref, timeout_seconds,
+              synced_commit_sha, synced_at, deleted_at
+              -- a projection of the manifests a scan found (decision #23).
+              -- `enabled` is the only column git does not own; everything
+              -- else is rewritten by the next sync. deleted_at marks a
+              -- manifest that has gone, keeping past runs explainable.
 runtimes      id, name, base_image, sys_packages, lang_manifest,
               image_digest, build_status, built_at
 runs          id, job_id, principal_id, state, idempotency_key,
@@ -365,7 +420,7 @@ Recording *why*, because in three months the reasoning will be gone.
 | 5 | Postgres as queue and lock | Already required; avoids Redis/broker | Scale far beyond a homelab |
 | 6 | api and supervisor as separate processes | API restartable without disturbing jobs; exactly one scheduler | Never |
 | 7 | Sidecar manifest in git | Git as source of truth; unifies local and external repos | Never |
-| 8 | Use git via go-git library | Need fine-grained in-process control |
+| 8 | Use git via go-git library | Need fine-grained in-process control; no subprocess, no git binary to depend on | Bare-repo operations outgrow what go-git does well |
 | 9 | Podman native secrets | Native tooling; `shell` driver is the upgrade path | Need real encryption at rest sooner |
 | 10 | JSON params file + per-runtime shim | Keeps core language-agnostic | Never |
 | 11 | Handwritten OpenAPI spec as contract | Handwritten handlers; free CLI client | Never |
@@ -380,6 +435,8 @@ Recording *why*, because in three months the reasoning will be gone.
 | 20 | **Every container is created with the `k8s-file` log driver, explicitly — never the host default** | The host default here is `journald`, which rate-limits: 10000 messages per 30 seconds as shipped, after which it discards the remainder *and the rest of the window*. Measured, not theorised — a 20000-line script reliably lost ~2500 lines, a second run started inside the same window lost **all** of its output, and the follow stream then never terminated, leaking the capture goroutine. Nothing reported an error at any layer, because from journald's point of view nothing went wrong. No care further down the pipeline can recover a line the log driver dropped, so this one line of container config is load-bearing for the entire logs feature. `k8s-file` writes a per-container file with no limiter, which podman deletes with the container — after the supervisor has taken its own durable copy | The host default stops being journald *and* the replacement is known-lossless; or a run's output grows large enough that an unbounded per-container file is a disk risk, at which point `max-size` is the knob |
 | 21 | **A run's output is captured twice: followed live, then re-read authoritatively once the container has exited.** The second read is counted, not written, and only replaces the first if the first came up short | Following is the only way to see output while a run is happening, and a followed stream cannot be trusted to be complete: libpod stops the follower the moment the container exits, without draining what the container had already written. Measured repeatedly at 2600-7100 lines missing from a 20000-line script, worse under load, and the stream ends *cleanly* every time — there is no error to notice, only a shorter log than the run produced. So the follow provides latency and the post-exit read provides truth. Recapturing is a full redo rather than a merge, which is only safe because libpod replays the same bytes in the same order: the same lines get the same sequence numbers and the same offsets, exactly the property the reconciler's adoption path already depends on. Only the capture timestamp changes. The check itself is a line count, so a complete capture — the normal case — pays one extra read and no writes | libpod gains a way to follow a stream to a guaranteed end, or the second read stops being cheap relative to the run |
 | 22 | **The CLI is both a set of commands and an interactive application.** Bare `descendence` on a terminal opens a navigable app (menu → runs → detail → live logs, plus a new-run form); every flag command keeps working unchanged, and bare `descendence` *without* a terminal still prints usage and exits 2 | Two different jobs, and neither substitutes for the other. Exploring — what ran, what did it print, stop that one — is navigation, and doing it through one-shot commands means retyping run ids and re-deriving context every time. Automation is the opposite: it needs exit codes that propagate, output that pipes, and `-detach` that composes, which §2 principle 3 makes a goal rather than a nicety. So the app is an addition, not a replacement. The TTY guard is what keeps them from colliding: a script that runs `descendence` to check the install must never find itself talking to a full-screen app it cannot answer. Narrower than it looks next to #17 — dispatch and flag parsing are still stdlib `flag`, still no cobra; this adds an entry point, not a framework | The app and the commands start disagreeing about what an operation means, or the app grows past what one person maintains by hand |
+| 23 | **A job is a script's *interface*, authored in git; the `jobs` table is a projection of it.** Git holds identity, description, script path, image, invocation and (later) the parameter contract and form layout. Postgres holds a pointer plus `enabled`, schedules and run history | The test is "would this field still be true if someone else cloned the repo into their own installation?" — yes means git, no means Postgres. A job is everything that is only correct *relative to a particular version of the script*: change what a script accepts and its parameter contract, form and invocation must all change in the same commit or they are lying about it. Git can express "these facts were true together at `abc123`"; Postgres cannot. The thin reading — a job as "this script plus that runtime" — was rejected precisely because it would be a two-field join row with no authored content, where versioning is ceremony. What makes it fat is the manifest being the form builder's output (§7.8 calls that the largest single piece of the project). This narrows §2 principle 2 for one table, so it is written down rather than left as drift: the projection is *regenerable by re-scanning*, which is the same status principle 2 already grants systemd units and built images. Consequences: `enabled` is the only column a sync must never write, or pausing a job becomes something the next scan undoes; a vanished manifest soft-deletes, because `runs.job_id` is ON DELETE SET NULL and a hard delete would sever every past run from what it ran; and "same script, three databases" is one job with a parameter, not three jobs | Job definitions ever need to be edited by something that cannot commit — at which point the API grows a manifest *renderer*, and the cost is that it cannot round-trip a hand-written file's comments or unknown keys |
+| 24 | **A job's script is delivered into its container as a tar over `PUT /libpod/containers/{id}/archive`**, between create and start — not bind-mounted from the host | A bare repository has no working tree, so a bind mount would first need the blob materialised into a per-run host directory: created before create, removed after the container is gone, and swept by the reconciler when the supervisor is SIGKILLed mid-run — which Phase 1e proved happens. The tar path has no on-disk state to leak at all: blob → `archive/tar` in memory → HTTP. It also hands podman no host path, which matters because a mount source is resolved in *podman's* namespace rather than the supervisor's — identical today, and not identical if the supervisor is ever a Quadlet container or the socket becomes remote. Finally, a tar header states uid/gid/mode outright, where a bind mount inherits host ownership squashed through the user namespace and breaks for any image that does not run as root. Cost was a raw-body request path in the podman client, which until now JSON-encoded every body unconditionally. Delivery is *before* start because the container filesystem exists from creation, and doing it after would race the entrypoint against the file it is meant to execute | Runs need more than a couple of small files in the container, or something must be shared *back* out of it |
 
 ---
 

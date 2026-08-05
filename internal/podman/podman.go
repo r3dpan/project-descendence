@@ -64,20 +64,32 @@ func (c *Client) do(ctx context.Context, method, path string, body any) (*http.R
 // of the request timeout without every other endpoint losing it.
 func (c *Client) doWith(ctx context.Context, httpClient *http.Client, method, path string, body any) (*http.Response, error) {
 	var reader io.Reader
+	contentType := ""
 	if body != nil {
 		encoded, err := json.Marshal(body)
 		if err != nil {
 			return nil, fmt.Errorf("podman: encoding request body: %w", err)
 		}
 		reader = bytes.NewReader(encoded)
+		contentType = "application/json"
 	}
 
-	req, err := http.NewRequestWithContext(ctx, method, "http://d/"+apiVersion+path, reader)
+	return c.doRaw(ctx, httpClient, method, path, contentType, reader)
+}
+
+// doRaw sends a body libpod does not want as JSON, which until task 3.5 was
+// nothing at all - every endpoint this client used took JSON or took no body.
+// The archive endpoint takes a tar stream, so the encoding had to become the
+// caller's decision rather than something doWith did unconditionally.
+//
+// contentType may be empty for a request with no body.
+func (c *Client) doRaw(ctx context.Context, httpClient *http.Client, method, path, contentType string, body io.Reader) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, method, "http://d/"+apiVersion+path, body)
 	if err != nil {
 		return nil, err
 	}
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
 	}
 
 	return httpClient.Do(req)

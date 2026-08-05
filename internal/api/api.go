@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 
+	"github.com/r3dpan/project-descendence/internal/gitrepo"
 	"github.com/r3dpan/project-descendence/internal/logstream"
 	"github.com/r3dpan/project-descendence/internal/podman"
 	"github.com/r3dpan/project-descendence/internal/store"
@@ -26,10 +27,16 @@ type APIServer struct {
 	// finished. Fed by the Postgres listener, not by the supervisor directly
 	// - the two processes never talk (§3).
 	logEvents *logstream.Broker
+
+	// repos holds the bare git repositories that job definitions live in
+	// (§4.5). The API is their sole *writer* - it creates them, commits to
+	// them and scans them - which is the mirror image of logDir above, where
+	// the supervisor writes and the API reads.
+	repos *gitrepo.Store
 }
 
 // --- API server constructor ---
-func NewAPIServer(productName string, productBuild string, apiVersion string, queries *store.Queries, podmanClient *podman.Client, logDir string, logEvents *logstream.Broker) *APIServer {
+func NewAPIServer(productName string, productBuild string, apiVersion string, queries *store.Queries, podmanClient *podman.Client, logDir string, logEvents *logstream.Broker, repos *gitrepo.Store) *APIServer {
 	return &APIServer{
 		productName:  productName,
 		productBuild: productBuild,
@@ -40,6 +47,7 @@ func NewAPIServer(productName string, productBuild string, apiVersion string, qu
 
 		logDir:    logDir,
 		logEvents: logEvents,
+		repos:     repos,
 	}
 }
 

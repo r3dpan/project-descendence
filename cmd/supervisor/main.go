@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/r3dpan/project-descendence/internal/gitrepo"
 	"github.com/r3dpan/project-descendence/internal/podman"
 	"github.com/r3dpan/project-descendence/internal/store"
 )
@@ -55,6 +56,18 @@ func main() {
 		log.Fatal("RUN_LOG_DIR is not set")
 	}
 
+	// Job definitions live in bare git repositories (ARCHITECTURE.md §4.5).
+	// The api writes this directory and the supervisor only reads from it -
+	// the mirror image of RUN_LOG_DIR above - so, like that one, both
+	// processes must be given the same path. The supervisor's use of it is
+	// narrow: one manifest and one script blob, read at the commit SHA a run
+	// pinned when it was created.
+	repoDir := os.Getenv("GIT_REPO_DIR")
+	if repoDir == "" {
+		log.Fatal("GIT_REPO_DIR is not set")
+	}
+	repoStore := gitrepo.NewStore(repoDir)
+
 	log.Println("Reconciling non-terminal runs from a previous run")
 	reconcile(ctx, queries, podmanClient, logDir)
 
@@ -66,7 +79,7 @@ func main() {
 	go runPruneLoop(ctx, queries, logDir, retention)
 
 	log.Printf("Supervisor started, polling for queued runs every %s", pollInterval)
-	runClaimLoop(ctx, queries, podmanClient, logDir)
+	runClaimLoop(ctx, queries, podmanClient, repoStore, logDir)
 	log.Println("Supervisor shutting down")
 }
 
@@ -74,12 +87,12 @@ func main() {
 // executing it to completion before claiming the next - then waits for the
 // next tick (or shutdown). Runs within a single supervisor process execute
 // one at a time; nothing here bounds or parallelizes them yet.
-func runClaimLoop(ctx context.Context, queries *store.Queries, podmanClient *podman.Client, logDir string) {
+func runClaimLoop(ctx context.Context, queries *store.Queries, podmanClient *podman.Client, repoStore *gitrepo.Store, logDir string) {
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 
 	for {
-		claimAndExecuteAllQueued(ctx, queries, podmanClient, logDir)
+		claimAndExecuteAllQueued(ctx, queries, podmanClient, repoStore, logDir)
 
 		select {
 		case <-ctx.Done():
@@ -89,7 +102,7 @@ func runClaimLoop(ctx context.Context, queries *store.Queries, podmanClient *pod
 	}
 }
 
-func claimAndExecuteAllQueued(ctx context.Context, queries *store.Queries, podmanClient *podman.Client, logDir string) {
+func claimAndExecuteAllQueued(ctx context.Context, queries *store.Queries, podmanClient *podman.Client, repoStore *gitrepo.Store, logDir string) {
 	for {
 		run, err := queries.ClaimNextQueuedRun(ctx)
 		if err != nil {
@@ -104,6 +117,6 @@ func claimAndExecuteAllQueued(ctx context.Context, queries *store.Queries, podma
 		}
 
 		log.Printf("claimed run %d (image=%s argv=%v)", run.ID, run.ImageRef, run.Argv)
-		executeRun(ctx, queries, podmanClient, logDir, run)
+		executeRun(ctx, queries, podmanClient, repoStore, logDir, run)
 	}
 }

@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/r3dpan/project-descendence/internal/api"
+	"github.com/r3dpan/project-descendence/internal/gitrepo"
 	"github.com/r3dpan/project-descendence/internal/logstream"
 	"github.com/r3dpan/project-descendence/internal/podman"
 	"github.com/r3dpan/project-descendence/internal/store"
@@ -61,6 +62,17 @@ func main() {
 		log.Fatal("RUN_LOG_DIR is not set")
 	}
 
+	// Job definitions live in bare git repositories (ARCHITECTURE.md §4.5).
+	// The API is their sole writer - it creates them, commits to them and
+	// scans them - while the supervisor only reads a blob at a pinned commit.
+	// That is the mirror image of RUN_LOG_DIR above, and like it, both
+	// processes must be given the same path.
+	repoDir := os.Getenv("GIT_REPO_DIR")
+	if repoDir == "" {
+		log.Fatal("GIT_REPO_DIR is not set")
+	}
+	repoStore := gitrepo.NewStore(repoDir)
+
 	// One Postgres listener for the whole process, fanning run events out to
 	// however many clients are streaming (task 2.3). Its context is cancelled
 	// on shutdown so the connection is not left behind.
@@ -75,7 +87,7 @@ func main() {
 	descendenceMux := http.NewServeMux()
 
 	// Create new API server
-	descendenceAPI := api.NewAPIServer(productName, productBuild, apiVersion, queries, podmanClient, logDir, logEvents)
+	descendenceAPI := api.NewAPIServer(productName, productBuild, apiVersion, queries, podmanClient, logDir, logEvents, repoStore)
 
 	// Create api handlers
 	// Rule: the most specific pattern always wins
@@ -88,6 +100,20 @@ func main() {
 	descendenceMux.HandleFunc("GET /api/v1/runs", descendenceAPI.RequireAuth(descendenceAPI.ListRunsHandler))
 	descendenceMux.HandleFunc("GET /api/v1/runs/{id}/logs", descendenceAPI.RequireAuth(descendenceAPI.GetRunLogsHandler))
 	descendenceMux.HandleFunc("POST /api/v1/runs/{id}/cancel", descendenceAPI.RequireAuth(descendenceAPI.CancelRunHandler))
+
+	// Repositories and jobs (Phase 3). Note what is absent: nothing creates,
+	// edits or deletes a job. A job is defined by its manifest in git, so the
+	// write path for one is POST .../files (task 3.7) followed by a sync -
+	// PATCH exists only for `enabled`, the single field git does not own.
+	descendenceMux.HandleFunc("POST /api/v1/repos", descendenceAPI.RequireAuth(descendenceAPI.CreateRepoHandler))
+	descendenceMux.HandleFunc("GET /api/v1/repos", descendenceAPI.RequireAuth(descendenceAPI.ListReposHandler))
+	descendenceMux.HandleFunc("GET /api/v1/repos/{id}", descendenceAPI.RequireAuth(descendenceAPI.GetRepoHandler))
+	descendenceMux.HandleFunc("POST /api/v1/repos/{id}/sync", descendenceAPI.RequireAuth(descendenceAPI.SyncRepoHandler))
+	descendenceMux.HandleFunc("POST /api/v1/repos/{id}/files", descendenceAPI.RequireAuth(descendenceAPI.CreateRepoFileHandler))
+	descendenceMux.HandleFunc("GET /api/v1/jobs", descendenceAPI.RequireAuth(descendenceAPI.ListJobsHandler))
+	descendenceMux.HandleFunc("GET /api/v1/jobs/{id}", descendenceAPI.RequireAuth(descendenceAPI.GetJobHandler))
+	descendenceMux.HandleFunc("PATCH /api/v1/jobs/{id}", descendenceAPI.RequireAuth(descendenceAPI.PatchJobHandler))
+	descendenceMux.HandleFunc("POST /api/v1/jobs/{id}/runs", descendenceAPI.RequireAuth(descendenceAPI.CreateJobRunHandler))
 
 	// Create descedence server
 	descendenceServer := &http.Server{

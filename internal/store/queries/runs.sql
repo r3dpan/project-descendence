@@ -12,6 +12,39 @@ RETURNING id, principal_id, state, idempotency_key, image_ref, argv,
           cancel_requested_at, queued_at, started_at, finished_at, job_id,
           commit_sha, runtime_id, image_digest, params_json, logs_pruned_at;
 
+-- name: CreateJobRun :one
+-- Task 3.5. The same insert as CreateRun, plus the two columns that make a run
+-- explainable: which job it is, and the exact commit its definition and script
+-- were read from.
+--
+-- image_ref and argv are still written onto the run rather than looked up from
+-- the job at execution time, deliberately. A run records what it will do, not
+-- a pointer to somewhere that might say something different later - which is
+-- the same reason commit_sha is pinned here rather than resolved by the
+-- supervisor.
+INSERT INTO runs (principal_id, image_ref, argv, timeout_seconds, idempotency_key,
+                  job_id, commit_sha)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+ON CONFLICT (principal_id, idempotency_key) DO NOTHING
+RETURNING id, principal_id, state, idempotency_key, image_ref, argv,
+          timeout_seconds, container_id, exit_code, failure_reason,
+          cancel_requested_at, queued_at, started_at, finished_at, job_id,
+          commit_sha, runtime_id, image_digest, params_json, logs_pruned_at;
+
+-- name: ListRunsByJob :many
+-- Runs of one job, newest first, matching runs_job_id_idx. Same keyset shape
+-- as ListRuns.
+SELECT id, principal_id, state, idempotency_key, image_ref, argv,
+       timeout_seconds, container_id, exit_code, failure_reason,
+       cancel_requested_at, queued_at, started_at, finished_at, job_id,
+       commit_sha, runtime_id, image_digest, params_json, logs_pruned_at
+FROM runs
+WHERE job_id = sqlc.arg(job_id)::bigint
+  AND (sqlc.narg(cursor_queued_at)::timestamptz IS NULL
+       OR (queued_at, id) < (sqlc.narg(cursor_queued_at)::timestamptz, sqlc.narg(cursor_id)::bigint))
+ORDER BY queued_at DESC, id DESC
+LIMIT sqlc.arg(row_limit);
+
 -- name: GetRun :one
 SELECT id, principal_id, state, idempotency_key, image_ref, argv,
        timeout_seconds, container_id, exit_code, failure_reason,

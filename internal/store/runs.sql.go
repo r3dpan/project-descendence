@@ -95,6 +95,72 @@ func (q *Queries) ClaimNextQueuedRun(ctx context.Context) (Run, error) {
 	return i, err
 }
 
+const createJobRun = `-- name: CreateJobRun :one
+INSERT INTO runs (principal_id, image_ref, argv, timeout_seconds, idempotency_key,
+                  job_id, commit_sha)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+ON CONFLICT (principal_id, idempotency_key) DO NOTHING
+RETURNING id, principal_id, state, idempotency_key, image_ref, argv,
+          timeout_seconds, container_id, exit_code, failure_reason,
+          cancel_requested_at, queued_at, started_at, finished_at, job_id,
+          commit_sha, runtime_id, image_digest, params_json, logs_pruned_at
+`
+
+type CreateJobRunParams struct {
+	PrincipalID    int64       `json:"principal_id"`
+	ImageRef       string      `json:"image_ref"`
+	Argv           []string    `json:"argv"`
+	TimeoutSeconds int32       `json:"timeout_seconds"`
+	IdempotencyKey pgtype.Text `json:"idempotency_key"`
+	JobID          pgtype.Int8 `json:"job_id"`
+	CommitSha      pgtype.Text `json:"commit_sha"`
+}
+
+// Task 3.5. The same insert as CreateRun, plus the two columns that make a run
+// explainable: which job it is, and the exact commit its definition and script
+// were read from.
+//
+// image_ref and argv are still written onto the run rather than looked up from
+// the job at execution time, deliberately. A run records what it will do, not
+// a pointer to somewhere that might say something different later - which is
+// the same reason commit_sha is pinned here rather than resolved by the
+// supervisor.
+func (q *Queries) CreateJobRun(ctx context.Context, arg CreateJobRunParams) (Run, error) {
+	row := q.db.QueryRow(ctx, createJobRun,
+		arg.PrincipalID,
+		arg.ImageRef,
+		arg.Argv,
+		arg.TimeoutSeconds,
+		arg.IdempotencyKey,
+		arg.JobID,
+		arg.CommitSha,
+	)
+	var i Run
+	err := row.Scan(
+		&i.ID,
+		&i.PrincipalID,
+		&i.State,
+		&i.IdempotencyKey,
+		&i.ImageRef,
+		&i.Argv,
+		&i.TimeoutSeconds,
+		&i.ContainerID,
+		&i.ExitCode,
+		&i.FailureReason,
+		&i.CancelRequestedAt,
+		&i.QueuedAt,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.JobID,
+		&i.CommitSha,
+		&i.RuntimeID,
+		&i.ImageDigest,
+		&i.ParamsJson,
+		&i.LogsPrunedAt,
+	)
+	return i, err
+}
+
 const createRun = `-- name: CreateRun :one
 INSERT INTO runs (principal_id, image_ref, argv, timeout_seconds, idempotency_key)
 VALUES ($1, $2, $3, $4, $5)
@@ -371,6 +437,74 @@ type ListRunsParams struct {
 // in this DESC order" condition.
 func (q *Queries) ListRuns(ctx context.Context, arg ListRunsParams) ([]Run, error) {
 	rows, err := q.db.Query(ctx, listRuns, arg.CursorQueuedAt, arg.CursorID, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Run
+	for rows.Next() {
+		var i Run
+		if err := rows.Scan(
+			&i.ID,
+			&i.PrincipalID,
+			&i.State,
+			&i.IdempotencyKey,
+			&i.ImageRef,
+			&i.Argv,
+			&i.TimeoutSeconds,
+			&i.ContainerID,
+			&i.ExitCode,
+			&i.FailureReason,
+			&i.CancelRequestedAt,
+			&i.QueuedAt,
+			&i.StartedAt,
+			&i.FinishedAt,
+			&i.JobID,
+			&i.CommitSha,
+			&i.RuntimeID,
+			&i.ImageDigest,
+			&i.ParamsJson,
+			&i.LogsPrunedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRunsByJob = `-- name: ListRunsByJob :many
+SELECT id, principal_id, state, idempotency_key, image_ref, argv,
+       timeout_seconds, container_id, exit_code, failure_reason,
+       cancel_requested_at, queued_at, started_at, finished_at, job_id,
+       commit_sha, runtime_id, image_digest, params_json, logs_pruned_at
+FROM runs
+WHERE job_id = $1::bigint
+  AND ($2::timestamptz IS NULL
+       OR (queued_at, id) < ($2::timestamptz, $3::bigint))
+ORDER BY queued_at DESC, id DESC
+LIMIT $4
+`
+
+type ListRunsByJobParams struct {
+	JobID          int64              `json:"job_id"`
+	CursorQueuedAt pgtype.Timestamptz `json:"cursor_queued_at"`
+	CursorID       pgtype.Int8        `json:"cursor_id"`
+	RowLimit       int32              `json:"row_limit"`
+}
+
+// Runs of one job, newest first, matching runs_job_id_idx. Same keyset shape
+// as ListRuns.
+func (q *Queries) ListRunsByJob(ctx context.Context, arg ListRunsByJobParams) ([]Run, error) {
+	rows, err := q.db.Query(ctx, listRunsByJob,
+		arg.JobID,
+		arg.CursorQueuedAt,
+		arg.CursorID,
+		arg.RowLimit,
+	)
 	if err != nil {
 		return nil, err
 	}

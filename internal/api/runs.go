@@ -46,6 +46,13 @@ type runResponse struct {
 	QueuedAt          time.Time  `json:"queuedAt"`
 	StartedAt         *time.Time `json:"startedAt"`
 	FinishedAt        *time.Time `json:"finishedAt"`
+
+	// Both NULL for an ad-hoc run, both set for a job run. The columns have
+	// existed since migration 00001 but nothing wrote them until task 3.5;
+	// exposing them is what makes a run explainable, since the pair
+	// (job, commitSha) is enough to check out exactly what executed.
+	JobID     *int64  `json:"jobId"`
+	CommitSHA *string `json:"commitSha"`
 }
 
 type runListResponse struct {
@@ -115,6 +122,12 @@ func toRunResponse(run store.Run) runResponse {
 	}
 	if run.CancelRequestedAt.Valid {
 		resp.CancelRequestedAt = &run.CancelRequestedAt.Time
+	}
+	if run.JobID.Valid {
+		resp.JobID = &run.JobID.Int64
+	}
+	if run.CommitSha.Valid {
+		resp.CommitSHA = &run.CommitSha.String
 	}
 
 	return resp

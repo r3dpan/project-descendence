@@ -153,6 +153,11 @@ func renderRunSummary(run client.Run, interrupted bool) string {
 		b.WriteString("\n")
 	}
 
+	// A job run says which commit it executed. That pair - job and commit -
+	// is what makes the run explainable months later, so it goes first.
+	if run.CommitSHA != nil {
+		field("commit", *run.CommitSHA)
+	}
 	field("image", run.ImageRef)
 	field("argv", strings.Join(run.Argv, " "))
 	if run.ContainerID != nil && *run.ContainerID != "" {

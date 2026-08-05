@@ -18,13 +18,21 @@ type Audit struct {
 }
 
 type Job struct {
-	ID           int64              `json:"id"`
-	RepoID       int64              `json:"repo_id"`
-	RuntimeID    pgtype.Int8        `json:"runtime_id"`
-	ManifestPath string             `json:"manifest_path"`
-	Name         string             `json:"name"`
-	Enabled      bool               `json:"enabled"`
-	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+	ID              int64              `json:"id"`
+	RepoID          int64              `json:"repo_id"`
+	RuntimeID       pgtype.Int8        `json:"runtime_id"`
+	ManifestPath    string             `json:"manifest_path"`
+	Name            string             `json:"name"`
+	Enabled         bool               `json:"enabled"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	Description     pgtype.Text        `json:"description"`
+	ScriptPath      string             `json:"script_path"`
+	Command         []string           `json:"command"`
+	ImageRef        pgtype.Text        `json:"image_ref"`
+	TimeoutSeconds  pgtype.Int4        `json:"timeout_seconds"`
+	SyncedCommitSha string             `json:"synced_commit_sha"`
+	SyncedAt        pgtype.Timestamptz `json:"synced_at"`
+	DeletedAt       pgtype.Timestamptz `json:"deleted_at"`
 }
 
 type Principal struct {
@@ -40,12 +48,15 @@ type Principal struct {
 }
 
 type Repo struct {
-	ID        int64              `json:"id"`
-	Name      string             `json:"name"`
-	Path      string             `json:"path"`
-	Kind      string             `json:"kind"`
-	RemoteUrl pgtype.Text        `json:"remote_url"`
-	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	ID                  int64              `json:"id"`
+	Name                string             `json:"name"`
+	Path                string             `json:"path"`
+	Kind                string             `json:"kind"`
+	RemoteUrl           pgtype.Text        `json:"remote_url"`
+	CreatedAt           pgtype.Timestamptz `json:"created_at"`
+	DefaultBranch       string             `json:"default_branch"`
+	LastSyncedAt        pgtype.Timestamptz `json:"last_synced_at"`
+	LastSyncedCommitSha pgtype.Text        `json:"last_synced_commit_sha"`
 }
 
 type Run struct {
