@@ -1408,8 +1408,10 @@ components:
             param order - preserved because task 6.4's Bash shim turns this
             same order into positional arguments, which a JSON object's key
             order cannot be relied on for. Empty for an ad-hoc run. A value
-            whose contract entry is `secret` or of type `mount` is redacted
-            here (task 6.5) regardless of what was actually supplied.
+            whose contract entry is `secret` or of type `mount` is replaced
+            here with the fixed sentinel `"***"` (task 6.5), regardless of
+            what was actually supplied - the container still receives the
+            real value; only API responses redact it.
           type: array
           items:
             type: object

@@ -382,6 +382,7 @@ func (s *APIServer) TriggerScheduleHandler(w http.ResponseWriter, r *http.Reques
 	}
 
 	resp := toRunResponse(run)
+	s.redactRunResponse(r.Context(), run, &resp)
 	w.Header().Set("Location", fmt.Sprintf("/api/v1/runs/%d", run.ID))
 	writeJSON(w, http.StatusAccepted, scheduleTriggerResponse{Run: &resp})
 }

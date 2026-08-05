@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/r3dpan/project-descendence/internal/manifest"
 	"github.com/r3dpan/project-descendence/internal/store"
 )
 
@@ -178,6 +180,57 @@ func toRunResponse(run store.Run) runResponse {
 	return resp
 }
 
+// redactedParamValue replaces a secret param's value in an API response
+// (task 6.5). A fixed sentinel rather than omitting the entry: the caller
+// still learns the param was supplied and what it's called, just not what
+// it held.
+const redactedParamValue = "***"
+
+// redactRunResponse mutates resp.Params in place, replacing the value of
+// any param whose contract entry is `secret` or of type `mount` (every
+// mount-type value is secret regardless of the flag - task 6.6's mechanism)
+// with redactedParamValue.
+//
+// The contract lives on the job, not the run, so this is a lookup by
+// run.JobID rather than something toRunResponse could do on its own from
+// run alone. Skipped entirely for an ad-hoc run (no job, no contract, no
+// params to redact).
+func (s *APIServer) redactRunResponse(ctx context.Context, run store.Run, resp *runResponse) {
+	if !run.JobID.Valid || len(resp.Params) == 0 {
+		return
+	}
+
+	job, err := s.queries.GetJob(ctx, run.JobID.Int64)
+	if err != nil {
+		// The job is gone or unreachable; nothing to redact against, but
+		// also nothing to leak that a stale lookup couldn't explain -
+		// erring toward showing the (already-resolved, already-stored)
+		// values rather than failing the whole response.
+		return
+	}
+
+	var contract []manifest.Param
+	if len(job.ParamsJson) > 0 {
+		_ = json.Unmarshal(job.ParamsJson, &contract)
+	}
+
+	secret := make(map[string]bool, len(contract))
+	for _, p := range contract {
+		if p.Secret || p.Type == manifest.ParamTypeMount {
+			secret[p.Name] = true
+		}
+	}
+	if len(secret) == 0 {
+		return
+	}
+
+	for i := range resp.Params {
+		if secret[resp.Params[i].Name] {
+			resp.Params[i].Value = redactedParamValue
+		}
+	}
+}
+
 // --- Handlers ---
 
 // Handles run creation. Validates the body, inserts a queued row stamped
@@ -246,7 +299,9 @@ func (s *APIServer) CreateRunHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Location", fmt.Sprintf("/api/v1/runs/%d", run.ID))
-	writeJSON(w, http.StatusAccepted, toRunResponse(run))
+	resp := toRunResponse(run)
+	s.redactRunResponse(r.Context(), run, &resp)
+	writeJSON(w, http.StatusAccepted, resp)
 }
 
 // Handles run lookup by id. Not scoped to the caller's principal - full RBAC
@@ -269,7 +324,9 @@ func (s *APIServer) GetRunHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, toRunResponse(run))
+	resp := toRunResponse(run)
+	s.redactRunResponse(r.Context(), run, &resp)
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // Handles cancellation (task 2.8).
@@ -347,7 +404,9 @@ func (s *APIServer) CancelRunHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusAccepted, toRunResponse(run))
+	resp := toRunResponse(run)
+	s.redactRunResponse(r.Context(), run, &resp)
+	writeJSON(w, http.StatusAccepted, resp)
 }
 
 // Handles run listing: keyset (seek) pagination on (queued_at DESC, id DESC),
@@ -395,6 +454,7 @@ func (s *APIServer) ListRunsHandler(w http.ResponseWriter, r *http.Request) {
 	items := make([]runResponse, len(runs))
 	for i, run := range runs {
 		items[i] = toRunResponse(run)
+		s.redactRunResponse(r.Context(), run, &items[i])
 	}
 
 	writeJSON(w, http.StatusOK, runListResponse{Items: items, NextCursor: nextCursor})

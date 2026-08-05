@@ -324,7 +324,9 @@ func (s *APIServer) CreateJobRunHandler(w http.ResponseWriter, r *http.Request) 
 	}
 
 	w.Header().Set("Location", fmt.Sprintf("/api/v1/runs/%d", run.ID))
-	writeJSON(w, http.StatusAccepted, toRunResponse(run))
+	resp := toRunResponse(run)
+	s.redactRunResponse(r.Context(), run, &resp)
+	writeJSON(w, http.StatusAccepted, resp)
 }
 
 // createJobRun is CreateJobRunHandler's run-creation logic (task 3.5,
