@@ -71,12 +71,22 @@ func main() {
 	log.Println("Reconciling non-terminal runs from a previous run")
 	reconcile(ctx, queries, podmanClient, logDir)
 
-	// The retention sweep (task 2.2) lives here rather than in the API
-	// because the advisory lock guarantees exactly one supervisor, and two
-	// processes deleting the same files is a race with nothing to gain.
+	// The retention sweep (task 2.2, extended at task 4.7 to also cover
+	// unused runtime images) lives here rather than in the API because the
+	// advisory lock guarantees exactly one supervisor, and two processes
+	// deleting the same files or images is a race with nothing to gain.
 	retention := logRetention()
-	log.Printf("Pruning run logs older than %s, every %s", retention, pruneInterval)
-	go runPruneLoop(ctx, queries, logDir, retention)
+	runtimeRetention := runtimeImageRetention()
+	log.Printf("Pruning run logs older than %s and unused runtime images older than %s, every %s", retention, runtimeRetention, pruneInterval)
+	go runPruneLoop(ctx, queries, podmanClient, logDir, retention, runtimeRetention)
+
+	// Runtime builds (task 4.4/4.5) are a second, parallel claim loop over a
+	// different table - see build.go's comment on why it isn't folded into
+	// runClaimLoop. Both loops run under the single advisory lock acquired
+	// above, so there is still exactly one supervisor doing either kind of
+	// work at a time.
+	log.Printf("Polling for pending runtime builds every %s", buildPollInterval)
+	go runBuildClaimLoop(ctx, queries, podmanClient)
 
 	log.Printf("Supervisor started, polling for queued runs every %s", pollInterval)
 	runClaimLoop(ctx, queries, podmanClient, repoStore, logDir)

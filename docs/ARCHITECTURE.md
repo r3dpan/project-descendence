@@ -376,10 +376,10 @@ than two rendering strategies.
 
 ## 5. Data model sketch
 
-Phases 0–3's tables (`principals`, `repos`, `jobs`, `runs`, `run_logs`) are built;
-this sketch of them is illustrative, not authoritative — the migrations in
+Phases 0–4's tables (`principals`, `repos`, `jobs`, `runs`, `run_logs`, `runtimes`)
+are built; this sketch of them is illustrative, not authoritative — the migrations in
 `migrations/` are the source of truth for exact columns and constraints.
-`runtimes`, `schedules` and `audit` are still Phase 4+ sketches, not yet built.
+`schedules` and `audit` are still Phase 5+ sketches, not yet built.
 
 ```
 principals    id, kind(user|token), name, token_hash, scopes[], created_at
@@ -392,12 +392,22 @@ jobs          id, repo_id, manifest_path, name, runtime_id, enabled,
               -- `enabled` is the only column git does not own; everything
               -- else is rewritten by the next sync. deleted_at marks a
               -- manifest that has gone, keeping past runs explainable.
-runtimes      id, name, base_image, sys_packages, lang_manifest,
-              image_digest, build_status, built_at
+runtimes      id, name, base_image, sys_packages, lang, lang_manifest, input_hash,
+              image_digest, build_status(pending|building|ready|failed),
+              build_error, built_at, image_pruned_at, created_at
+              -- unlike jobs, not a git projection: created and rebuilt
+              -- directly through the API (task 4.5). input_hash doubles as
+              -- the local image tag, so identical definitions dedupe.
+              -- image_pruned_at mirrors runs.logs_pruned_at's pattern - the
+              -- row survives a prune, only the image bytes go.
 runs          id, job_id, principal_id, state, idempotency_key,
-              commit_sha, image_digest, params_json,
+              commit_sha, runtime_id, image_digest, params_json,
               container_id, exit_code,
               queued_at, started_at, finished_at
+              -- runtime_id/image_digest are set only when the job named a
+              -- runtime rather than an image; resolved once at creation and
+              -- never re-resolved, so rebuilding the runtime afterwards
+              -- cannot change what an already-created run executes.
 run_logs      run_id, seq, stream(stdout|stderr), ts, byte_offset, byte_length
               -- index only, per decision #18/§4.1: log bodies live in files,
               -- not in Postgres. byte_offset/byte_length point into the file;
@@ -444,6 +454,8 @@ Recording *why*, because in three months the reasoning will be gone.
 | 22 | **The CLI is both a set of commands and an interactive application.** Bare `descendence` on a terminal opens a navigable app (menu → runs → detail → live logs, plus a new-run form); every flag command keeps working unchanged, and bare `descendence` *without* a terminal still prints usage and exits 2 | Two different jobs, and neither substitutes for the other. Exploring — what ran, what did it print, stop that one — is navigation, and doing it through one-shot commands means retyping run ids and re-deriving context every time. Automation is the opposite: it needs exit codes that propagate, output that pipes, and `-detach` that composes, which §2 principle 3 makes a goal rather than a nicety. So the app is an addition, not a replacement. The TTY guard is what keeps them from colliding: a script that runs `descendence` to check the install must never find itself talking to a full-screen app it cannot answer. Narrower than it looks next to #17 — dispatch and flag parsing are still stdlib `flag`, still no cobra; this adds an entry point, not a framework | The app and the commands start disagreeing about what an operation means, or the app grows past what one person maintains by hand |
 | 23 | **A job is a script's *interface*, authored in git; the `jobs` table is a projection of it.** Git holds identity, description, script path, image, invocation and (later) the parameter contract and form layout. Postgres holds a pointer plus `enabled`, schedules and run history | The test is "would this field still be true if someone else cloned the repo into their own installation?" — yes means git, no means Postgres. A job is everything that is only correct *relative to a particular version of the script*: change what a script accepts and its parameter contract, form and invocation must all change in the same commit or they are lying about it. Git can express "these facts were true together at `abc123`"; Postgres cannot. The thin reading — a job as "this script plus that runtime" — was rejected precisely because it would be a two-field join row with no authored content, where versioning is ceremony. What makes it fat is the manifest being the form builder's output (§7.8 calls that the largest single piece of the project). This narrows §2 principle 2 for one table, so it is written down rather than left as drift: the projection is *regenerable by re-scanning*, which is the same status principle 2 already grants systemd units and built images. Consequences: `enabled` is the only column a sync must never write, or pausing a job becomes something the next scan undoes; a vanished manifest soft-deletes, because `runs.job_id` is ON DELETE SET NULL and a hard delete would sever every past run from what it ran; and "same script, three databases" is one job with a parameter, not three jobs | Job definitions ever need to be edited by something that cannot commit — at which point the API grows a manifest *renderer*, and the cost is that it cannot round-trip a hand-written file's comments or unknown keys |
 | 24 | **A job's script is delivered into its container as a tar over `PUT /libpod/containers/{id}/archive`**, between create and start — not bind-mounted from the host | A bare repository has no working tree, so a bind mount would first need the blob materialised into a per-run host directory: created before create, removed after the container is gone, and swept by the reconciler when the supervisor is SIGKILLed mid-run — which Phase 1e proved happens. The tar path has no on-disk state to leak at all: blob → `archive/tar` in memory → HTTP. It also hands podman no host path, which matters because a mount source is resolved in *podman's* namespace rather than the supervisor's — identical today, and not identical if the supervisor is ever a Quadlet container or the socket becomes remote. Finally, a tar header states uid/gid/mode outright, where a bind mount inherits host ownership squashed through the user namespace and breaks for any image that does not run as root. Cost was a raw-body request path in the podman client, which until now JSON-encoded every body unconditionally. Delivery is *before* start because the container filesystem exists from creation, and doing it after would race the entrypoint against the file it is meant to execute | Runs need more than a couple of small files in the container, or something must be shared *back* out of it |
+| 25 | **Runtime base images are Debian, not Alpine** | PowerShell 7 ships official images built on Debian; PSResourceGet and the modules it installs are tested against glibc, and musl compatibility on Alpine is a known source of silent breakage for .NET-based runtimes. Python wheels also resolve more reliably against glibc — Alpine's musl forces source builds for packages that ship manylinux (glibc) wheels, which is slower and sometimes fails outright for packages with native extensions. Node was the only one of the three languages (§4.4) that would have preferred Alpine's size. One base family across all three languages was chosen over mixing, so the Containerfile template (§4.4) does not need a per-language base-image branch | Image size becomes a real constraint (homelab disk pressure, slow pulls) and outweighs the compatibility cost |
+| 26 | **Every PowerShell runtime's Containerfile sets `ENV DOTNET_SYSTEM_NET_DISABLEIPV6=1`** | Measured, not theorised, at task 4.6's exit check: on a network where IPv6 is routed but blackholed rather than rejected outright, `curl` and Python's `urllib` fall back to IPv4 in well under a second (Happy Eyeballs), but .NET's `HttpClient` — what `Install-PSResource`/`PowerShellGet` use to reach PSGallery — does not fall back nearly as fast, and hung past its own 100s internal timeout on every attempt, retries included, in this platform's development sandbox. A plain HTTPS `HEAD` request that hung past 100s completed in 0.8s with this one variable set, and nothing else tried (retry loops, `--network=host`, an older `Install-Module` code path) fixed it. Scoped to the PowerShell install step only — it is a .NET-specific workaround and irrelevant to `pip`/`npm`, which were unaffected | The host network's IPv6 path is fixed, or the target deployment host doesn't blackhole IPv6 in the same way and the variable is confirmed unnecessary there — safe to leave set either way, since it is a no-op where IPv6 works |
 
 ---
 
@@ -470,6 +482,6 @@ Unresolved. Resolve at the phase indicated.
 |---|---|
 | In-process cron vs. generated systemd timers | Phase 5 |
 | ~~Log retention: how long, and prune where (files vs Postgres)?~~ | **Resolved at task 2.2 — decision #18** |
-| Image prune policy — time-based, count-based, or reference-based? | Phase 4 |
+| ~~Image prune policy — time-based, count-based, or reference-based?~~ | **Resolved at task 4.7 — manual, API-triggered: explicit ids or an age threshold over unreferenced images, invoked either directly or via the same sweep cadence as decision #18's log retention** |
 | Does PowerShell's AST parser give usable parameter introspection? Prototype needed | Phase 6 |
-| Base image family — Alpine (small) vs Debian (compatible, esp. for PowerShell)? | Phase 4 |
+| ~~Base image family — Alpine (small) vs Debian (compatible, esp. for PowerShell)?~~ | **Resolved at task 4.2 — decision #25** |

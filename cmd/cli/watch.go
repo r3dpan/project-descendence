@@ -159,6 +159,9 @@ func renderRunSummary(run client.Run, interrupted bool) string {
 		field("commit", *run.CommitSHA)
 	}
 	field("image", run.ImageRef)
+	if run.ImageDigest != nil {
+		field("digest", *run.ImageDigest)
+	}
 	field("argv", strings.Join(run.Argv, " "))
 	if run.ContainerID != nil && *run.ContainerID != "" {
 		// Short form, as podman itself prints it - enough to paste into

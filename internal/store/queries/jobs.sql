@@ -10,9 +10,14 @@
 --
 -- deleted_at is cleared, which is how a manifest that comes back resurrects
 -- the *same* job row - and with it every past run that points at that id.
+--
+-- runtime_id is resolved by the caller (jobsync, task 4.6) from the
+-- manifest's `runtime:` name before this is called - a name is what git can
+-- express, but the FK is what the image_or_runtime CHECK and a run's
+-- creation actually need.
 INSERT INTO jobs (repo_id, manifest_path, name, description, script_path,
-                  command, image_ref, timeout_seconds, synced_commit_sha)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                  command, image_ref, timeout_seconds, synced_commit_sha, runtime_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 ON CONFLICT (repo_id, manifest_path) DO UPDATE
 SET name              = EXCLUDED.name,
     description       = EXCLUDED.description,
@@ -21,6 +26,7 @@ SET name              = EXCLUDED.name,
     image_ref         = EXCLUDED.image_ref,
     timeout_seconds   = EXCLUDED.timeout_seconds,
     synced_commit_sha = EXCLUDED.synced_commit_sha,
+    runtime_id        = EXCLUDED.runtime_id,
     synced_at         = now(),
     deleted_at        = NULL
 RETURNING id, repo_id, runtime_id, manifest_path, name, enabled, created_at,

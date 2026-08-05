@@ -107,3 +107,60 @@ func (c *Client) PullImage(ctx context.Context, reference string) (string, error
 
 	return imageID, nil
 }
+
+// ImageInspect is the subset of GET /libpod/images/{name}/json this codebase
+// uses: enough to resolve a tag to the digest a run pins (task 4.6).
+type ImageInspect struct {
+	ID          string   `json:"Id"`
+	RepoDigests []string `json:"RepoDigests"`
+}
+
+// InspectImage resolves nameOrID (a tag or an id) to its full record,
+// notably RepoDigests - a locally built image's repo digest, since nothing
+// pushed it, is scoped to this host's storage rather than a registry, but it
+// is still the stable, content-addressed identifier a run should pin rather
+// than a tag that a later build can silently move.
+func (c *Client) InspectImage(ctx context.Context, nameOrID string) (ImageInspect, error) {
+	if nameOrID == "" {
+		return ImageInspect{}, fmt.Errorf("podman: image name is empty")
+	}
+
+	resp, err := c.do(ctx, http.MethodGet, "/libpod/images/"+url.PathEscape(nameOrID)+"/json", nil)
+	if err != nil {
+		return ImageInspect{}, fmt.Errorf("podman: inspecting %s: %w", nameOrID, err)
+	}
+	defer resp.Body.Close()
+
+	if err := checkStatus(resp, "inspect image "+nameOrID, http.StatusOK); err != nil {
+		return ImageInspect{}, err
+	}
+
+	var inspect ImageInspect
+	if err := json.NewDecoder(resp.Body).Decode(&inspect); err != nil {
+		return ImageInspect{}, fmt.Errorf("podman: decoding inspect of %s: %w", nameOrID, err)
+	}
+	return inspect, nil
+}
+
+// DeleteImage removes an image from local storage (DELETE
+// /libpod/images/{name}), force=true so an image that still has a stopped
+// container referencing it (e.g. one the reconciler hasn't reaped yet) is
+// removed anyway - the prune sweep (task 4.7) already only selects images no
+// run has referenced recently, so force here is cleanup, not data loss.
+// A missing image is not an error: pruning is idempotent.
+func (c *Client) DeleteImage(ctx context.Context, nameOrID string) error {
+	if nameOrID == "" {
+		return fmt.Errorf("podman: image name is empty")
+	}
+
+	resp, err := c.do(ctx, http.MethodDelete, "/libpod/images/"+url.PathEscape(nameOrID)+"?force=true", nil)
+	if err != nil {
+		return fmt.Errorf("podman: deleting image %s: %w", nameOrID, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil
+	}
+	return checkStatus(resp, "delete image "+nameOrID, http.StatusOK)
+}

@@ -45,6 +45,12 @@ type Run struct {
 	// manifest names exactly the script that executed.
 	JobID     *int64  `json:"jobId"`
 	CommitSHA *string `json:"commitSha"`
+
+	// Both nil unless the job named a runtime rather than an image directly
+	// (task 4.6). Set once, at creation - rebuilding the runtime afterwards
+	// never changes ImageDigest on a run that already exists.
+	RuntimeID   *int64  `json:"runtimeId"`
+	ImageDigest *string `json:"imageDigest"`
 }
 
 // IsJobRun reports whether this run came from a job rather than an ad-hoc

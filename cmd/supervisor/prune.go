@@ -6,11 +6,14 @@ import (
 	"io/fs"
 	"log"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/r3dpan/project-descendence/internal/podman"
 	"github.com/r3dpan/project-descendence/internal/runlog"
+	"github.com/r3dpan/project-descendence/internal/runtimeprune"
 	"github.com/r3dpan/project-descendence/internal/store"
 )
 
@@ -66,17 +69,42 @@ func logRetention() time.Duration {
 	return retention
 }
 
-// runPruneLoop sweeps expired logs on startup and then hourly, until ctx is
-// cancelled. It runs in the supervisor rather than the API because the
-// supervisor holds the advisory lock (task 1.16), so there is exactly one of
-// it - and deleting the same files from two processes at once is a race
-// nobody needs.
-func runPruneLoop(ctx context.Context, queries *store.Queries, logDir string, retention time.Duration) {
+// Runtime image retention (task 4.7): the unattended half of the decision -
+// a manual POST /runtimes/prune covers "prune this now"; this sweep covers
+// "and also, unattended, reclaim anything nobody has used in a while" - on
+// the same hourly cadence as log retention, sharing runtimeprune's
+// "unused" rule with the manual endpoint so the two never disagree about
+// what qualifies.
+const defaultRuntimeImageRetention = 30 * 24 * time.Hour
+
+// runtimeImageRetention reads RUNTIME_IMAGE_RETENTION_DAYS (an integer count
+// of days) or falls back to the default. Optional, like RUN_LOG_RETENTION:
+// an unset value just means "the standard policy".
+func runtimeImageRetention() time.Duration {
+	raw := os.Getenv("RUNTIME_IMAGE_RETENTION_DAYS")
+	if raw == "" {
+		return defaultRuntimeImageRetention
+	}
+
+	days, err := strconv.Atoi(raw)
+	if err != nil || days <= 0 {
+		log.Fatalf("RUNTIME_IMAGE_RETENTION_DAYS %q must be a positive integer number of days", raw)
+	}
+	return time.Duration(days) * 24 * time.Hour
+}
+
+// runPruneLoop sweeps expired logs and unused runtime images on startup and
+// then hourly, until ctx is cancelled. It runs in the supervisor rather than
+// the API because the supervisor holds the advisory lock (task 1.16), so
+// there is exactly one of it - and deleting the same files or images from
+// two processes at once is a race nobody needs.
+func runPruneLoop(ctx context.Context, queries *store.Queries, podmanClient *podman.Client, logDir string, retention, runtimeRetention time.Duration) {
 	ticker := time.NewTicker(pruneInterval)
 	defer ticker.Stop()
 
 	for {
 		pruneExpiredLogs(ctx, queries, logDir, retention)
+		pruneUnusedRuntimeImages(ctx, queries, podmanClient, runtimeRetention)
 
 		select {
 		case <-ctx.Done():
@@ -84,6 +112,33 @@ func runPruneLoop(ctx context.Context, queries *store.Queries, logDir string, re
 		case <-ticker.C:
 		}
 	}
+}
+
+// pruneUnusedRuntimeImages deletes the image of every runtime that has gone
+// unused for longer than maxAge, per runtimeprune's shared "unused" rule.
+// The runtime row survives - only image_pruned_at and the image itself go -
+// matching pruneExpiredLogs' "row survives, bytes don't" pattern above.
+func pruneUnusedRuntimeImages(ctx context.Context, queries *store.Queries, podmanClient *podman.Client, maxAge time.Duration) {
+	candidates, err := runtimeprune.Candidates(ctx, queries, maxAge)
+	if err != nil {
+		if ctx.Err() == nil {
+			log.Printf("prune: listing unused runtime images: %v", err)
+		}
+		return
+	}
+	if len(candidates) == 0 {
+		return
+	}
+
+	var pruned int
+	for _, runtime := range candidates {
+		if err := runtimeprune.Prune(ctx, queries, podmanClient, runtime); err != nil {
+			log.Printf("prune: runtime %d (%s): %v", runtime.ID, runtime.Name, err)
+			continue
+		}
+		pruned++
+	}
+	log.Printf("prune: reclaimed %d runtime image(s) unused for more than %s", pruned, maxAge)
 }
 
 // pruneExpiredLogs deletes the output of runs that finished longer ago than

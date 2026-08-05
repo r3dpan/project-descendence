@@ -115,6 +115,12 @@ func main() {
 	descendenceMux.HandleFunc("PATCH /api/v1/jobs/{id}", descendenceAPI.RequireAuth(descendenceAPI.PatchJobHandler))
 	descendenceMux.HandleFunc("POST /api/v1/jobs/{id}/runs", descendenceAPI.RequireAuth(descendenceAPI.CreateJobRunHandler))
 
+	descendenceMux.HandleFunc("POST /api/v1/runtimes", descendenceAPI.RequireAuth(descendenceAPI.CreateRuntimeHandler))
+	descendenceMux.HandleFunc("GET /api/v1/runtimes", descendenceAPI.RequireAuth(descendenceAPI.ListRuntimesHandler))
+	descendenceMux.HandleFunc("GET /api/v1/runtimes/{id}", descendenceAPI.RequireAuth(descendenceAPI.GetRuntimeHandler))
+	descendenceMux.HandleFunc("POST /api/v1/runtimes/{id}/build", descendenceAPI.RequireAuth(descendenceAPI.BuildRuntimeHandler))
+	descendenceMux.HandleFunc("POST /api/v1/runtimes/prune", descendenceAPI.RequireAuth(descendenceAPI.PruneRuntimesHandler))
+
 	// Create descedence server
 	descendenceServer := &http.Server{
 		Addr:              port,

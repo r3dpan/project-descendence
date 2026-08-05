@@ -53,6 +53,15 @@ type runResponse struct {
 	// (job, commitSha) is enough to check out exactly what executed.
 	JobID     *int64  `json:"jobId"`
 	CommitSHA *string `json:"commitSha"`
+
+	// Both NULL unless the job named a runtime rather than an image directly
+	// (task 4.6). Set once, at creation, from the runtime's image digest at
+	// that moment - rebuilding the runtime afterwards changes runtimeId's
+	// row but never this run's imageDigest, which is what makes "what did
+	// this run actually execute" answerable independent of what the runtime
+	// looks like now.
+	RuntimeID   *int64  `json:"runtimeId"`
+	ImageDigest *string `json:"imageDigest"`
 }
 
 type runListResponse struct {
@@ -128,6 +137,12 @@ func toRunResponse(run store.Run) runResponse {
 	}
 	if run.CommitSha.Valid {
 		resp.CommitSHA = &run.CommitSha.String
+	}
+	if run.RuntimeID.Valid {
+		resp.RuntimeID = &run.RuntimeID.Int64
+	}
+	if run.ImageDigest.Valid {
+		resp.ImageDigest = &run.ImageDigest.String
 	}
 
 	return resp

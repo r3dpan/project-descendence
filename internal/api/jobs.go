@@ -14,6 +14,7 @@ import (
 
 	"github.com/r3dpan/project-descendence/internal/gitrepo"
 	"github.com/r3dpan/project-descendence/internal/manifest"
+	"github.com/r3dpan/project-descendence/internal/runtimeprune"
 	"github.com/r3dpan/project-descendence/internal/store"
 )
 
@@ -41,6 +42,7 @@ type jobResponse struct {
 	// case: argv is then the script's own path and its shebang decides.
 	Command         []string `json:"command"`
 	ImageRef        *string  `json:"imageRef"`
+	RuntimeID       *int64   `json:"runtimeId"`
 	TimeoutSeconds  *int32   `json:"timeoutSeconds"`
 	Enabled         bool     `json:"enabled"`
 	SyncedCommitSHA string   `json:"syncedCommitSha"`
@@ -76,6 +78,9 @@ func toJobResponse(job store.Job) jobResponse {
 	}
 	if job.ImageRef.Valid {
 		resp.ImageRef = &job.ImageRef.String
+	}
+	if job.RuntimeID.Valid {
+		resp.RuntimeID = &job.RuntimeID.Int64
 	}
 	if job.TimeoutSeconds.Valid {
 		resp.TimeoutSeconds = &job.TimeoutSeconds.Int32
@@ -282,9 +287,35 @@ func (s *APIServer) CreateJobRunHandler(w http.ResponseWriter, r *http.Request) 
 		writeProblem(w, http.StatusConflict, fmt.Sprintf("manifest is not valid at %s: %v", shortSHA(sha), err))
 		return
 	}
-	if parsed.ImageRef == "" {
-		writeProblem(w, http.StatusConflict, "manifest names no image to run in")
-		return
+
+	// Task 4.6: the manifest names either an image directly or a runtime -
+	// manifest.Parse already enforces exactly one is set. imageRef is what
+	// this run actually pins; runtimeID/imageDigest are provenance, set only
+	// on the runtime path.
+	imageRef := parsed.ImageRef
+	var runtimeID pgtype.Int8
+	var imageDigest pgtype.Text
+	if parsed.RuntimeName != "" {
+		runtime, err := s.queries.GetRuntimeByName(r.Context(), parsed.RuntimeName)
+		if err != nil {
+			writeProblem(w, http.StatusConflict, fmt.Sprintf("manifest names runtime %q, which is not defined", parsed.RuntimeName))
+			return
+		}
+		if runtime.BuildStatus != store.BuildStatusReady {
+			writeProblem(w, http.StatusConflict, fmt.Sprintf("runtime %q is not built yet (status %s); build it before running this job", runtime.Name, runtime.BuildStatus))
+			return
+		}
+		if runtime.ImagePrunedAt.Valid {
+			writeProblem(w, http.StatusConflict, fmt.Sprintf("runtime %q's image has been pruned; rebuild it before running this job", runtime.Name))
+			return
+		}
+		// Pinned here, at creation - never re-resolved later - so a rebuild
+		// of the runtime after this point cannot change what this run
+		// executes (ARCHITECTURE.md §2.4's reproducibility principle,
+		// applied to runtimes the same way it already applies to commits).
+		imageRef = runtimeprune.ImageTag(runtime)
+		runtimeID = pgtype.Int8{Int64: runtime.ID, Valid: true}
+		imageDigest = runtime.ImageDigest
 	}
 
 	timeoutSeconds := int32(defaultRunTimeoutSeconds)
@@ -299,12 +330,14 @@ func (s *APIServer) CreateJobRunHandler(w http.ResponseWriter, r *http.Request) 
 
 	run, err := s.queries.CreateJobRun(r.Context(), store.CreateJobRunParams{
 		PrincipalID:    principal.ID,
-		ImageRef:       parsed.ImageRef,
+		ImageRef:       imageRef,
 		Argv:           parsed.Argv(),
 		TimeoutSeconds: timeoutSeconds,
 		IdempotencyKey: idempotencyKey,
 		JobID:          pgtype.Int8{Int64: job.ID, Valid: true},
 		CommitSha:      pgtype.Text{String: sha, Valid: true},
+		RuntimeID:      runtimeID,
+		ImageDigest:    imageDigest,
 	})
 	if err != nil {
 		if err != pgx.ErrNoRows {

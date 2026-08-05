@@ -40,6 +40,28 @@ func TestParseValid(t *testing.T) {
 	}
 }
 
+// TestParseRuntime is the task 4.6 counterpart to TestParseValid: a manifest
+// naming a runtime instead of an image parses to a Manifest with RuntimeName
+// set and ImageRef empty.
+func TestParseRuntime(t *testing.T) {
+	src := `
+apiVersion: descendence/v1
+name: train-model
+script: train.py
+runtime: python-3.12-ml
+`
+	got, err := Parse("jobs/train.job.yaml", []byte(src))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if got.RuntimeName != "python-3.12-ml" {
+		t.Errorf("RuntimeName = %q, want python-3.12-ml", got.RuntimeName)
+	}
+	if got.ImageRef != "" {
+		t.Errorf("ImageRef = %q, want empty when runtime is set", got.ImageRef)
+	}
+}
+
 func TestParseOptionalFields(t *testing.T) {
 	src := `
 apiVersion: descendence/v1
@@ -138,9 +160,14 @@ func TestParseRejects(t *testing.T) {
 			wantText: "script is required",
 		},
 		{
-			name:     "missing image",
+			name:     "missing image and runtime",
 			src:      "apiVersion: descendence/v1\nname: j\nscript: j.sh\n",
-			wantText: "image is required",
+			wantText: "exactly one of image or runtime is required",
+		},
+		{
+			name:     "both image and runtime",
+			src:      "apiVersion: descendence/v1\nname: j\nscript: j.sh\nimage: alpine\nruntime: py312\n",
+			wantText: "cannot both be set",
 		},
 		{
 			name:     "absolute script path",
@@ -190,11 +217,6 @@ func TestParseRejects(t *testing.T) {
 // platform silently does not perform.
 func TestParseRejectsUnimplementedSections(t *testing.T) {
 	for _, tc := range []struct{ key, src, wantPhase string }{
-		{
-			key:       "runtime",
-			src:       "apiVersion: descendence/v1\nname: j\nscript: j.sh\nimage: alpine\nruntime: python-3.12\n",
-			wantPhase: "Phase 4",
-		},
 		{
 			key:       "params",
 			src:       "apiVersion: descendence/v1\nname: j\nscript: j.sh\nimage: alpine\nparams:\n  - name: db\n    type: string\n",

@@ -257,8 +257,8 @@ func (q *Queries) SoftDeleteJobsNotIn(ctx context.Context, arg SoftDeleteJobsNot
 
 const upsertJob = `-- name: UpsertJob :one
 INSERT INTO jobs (repo_id, manifest_path, name, description, script_path,
-                  command, image_ref, timeout_seconds, synced_commit_sha)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                  command, image_ref, timeout_seconds, synced_commit_sha, runtime_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 ON CONFLICT (repo_id, manifest_path) DO UPDATE
 SET name              = EXCLUDED.name,
     description       = EXCLUDED.description,
@@ -267,6 +267,7 @@ SET name              = EXCLUDED.name,
     image_ref         = EXCLUDED.image_ref,
     timeout_seconds   = EXCLUDED.timeout_seconds,
     synced_commit_sha = EXCLUDED.synced_commit_sha,
+    runtime_id        = EXCLUDED.runtime_id,
     synced_at         = now(),
     deleted_at        = NULL
 RETURNING id, repo_id, runtime_id, manifest_path, name, enabled, created_at,
@@ -284,6 +285,7 @@ type UpsertJobParams struct {
 	ImageRef        pgtype.Text `json:"image_ref"`
 	TimeoutSeconds  pgtype.Int4 `json:"timeout_seconds"`
 	SyncedCommitSha string      `json:"synced_commit_sha"`
+	RuntimeID       pgtype.Int8 `json:"runtime_id"`
 }
 
 // The write half of a scan (task 3.4).
@@ -297,6 +299,11 @@ type UpsertJobParams struct {
 //
 // deleted_at is cleared, which is how a manifest that comes back resurrects
 // the *same* job row - and with it every past run that points at that id.
+//
+// runtime_id is resolved by the caller (jobsync, task 4.6) from the
+// manifest's `runtime:` name before this is called - a name is what git can
+// express, but the FK is what the image_or_runtime CHECK and a run's
+// creation actually need.
 func (q *Queries) UpsertJob(ctx context.Context, arg UpsertJobParams) (Job, error) {
 	row := q.db.QueryRow(ctx, upsertJob,
 		arg.RepoID,
@@ -308,6 +315,7 @@ func (q *Queries) UpsertJob(ctx context.Context, arg UpsertJobParams) (Job, erro
 		arg.ImageRef,
 		arg.TimeoutSeconds,
 		arg.SyncedCommitSha,
+		arg.RuntimeID,
 	)
 	var i Job
 	err := row.Scan(

@@ -42,27 +42,33 @@ Update the marker on each task as it moves:
 
 > **Update this block every session.**
 
-- **Phase:** 3 — **complete** (3.1–3.7, exit check passed). Next up is
-  Phase 4 — runtimes and image building.
-- **Task:** Phases 0–3 all done. A job is now a *definition in git* -
-  a `<name>.job.yaml` beside its script - and running one pins the commit
-  SHA it resolved to, so any past run can be explained by checking that
-  SHA out. Scripts reach their container as a tar; nothing is written to
-  the host.
-- **Next action:** 4.1 — the `runtimes` migration. Before starting, note
-  that `jobs.image_ref` is deliberately **nullable** with a CHECK of
-  "image_ref IS NOT NULL OR runtime_id IS NOT NULL", so Phase 4 can add
-  runtime-backed jobs without altering a NOT NULL column - and that the
-  manifest already *rejects* a `runtime:` key with "not supported until
-  Phase 4", so implementing it means changing that error into behaviour
-  rather than inventing a format.
+- **Phase:** 4 — **complete** (4.1–4.8, exit check passed). Next up is
+  Phase 5 — scheduling.
+- **Task:** Phases 0–4 all done. Runtimes are curated base image + system
+  packages + one language's dependency manifest, rendered to a Containerfile
+  and built via the Podman API (`internal/runtimebuild`, `internal/podman`'s
+  `BuildImage`). A job manifest now honours `runtime: <name>` as the
+  alternative to `image:`; `CreateJobRunHandler` resolves the runtime's
+  current image digest at *run creation* and pins it onto the run
+  (`runs.runtime_id`/`image_digest`, now exposed via the API) - rebuilding a
+  runtime afterwards never changes what an already-created run executes,
+  verified directly this session (see HISTORY.md).
+- **Next action:** 5.1 — resolve the in-process-cron-vs-systemd-timers open
+  question (ARCHITECTURE.md §8) and record it as a decision, then 5.2's
+  `schedules` migration (already a skeleton table since migration 00001).
 - **Blocked on:** nothing
 - **Notes:** invariants live in CLAUDE.md's "Invariants worth not breaking" —
   that's the one place to check before touching jobs, git, or run execution.
   (The one fact from Phase 3 that isn't an invariant and has no other home:
   a supervisor process still executes runs strictly one at a time, which task
   1.15's HISTORY.md entry already flags as the most likely thing to bite once
-  concurrency or scheduling arrives.)
+  concurrency or scheduling arrives.) One more from Phase 4: this
+  environment's podman container network blackholes IPv6 rather than
+  rejecting it, so any .NET-based tool (PSResourceGet included) hangs until
+  its IPv6 attempt times out before falling back to IPv4 - `DOTNET_SYSTEM_NET_DISABLEIPV6=1`
+  is now baked into every PowerShell runtime's Containerfile for exactly this
+  reason (`internal/runtimebuild/render.go`). Worth remembering if a future
+  language's tooling shows the same "hangs for ~100s then works" symptom.
 
 ---
 
@@ -305,20 +311,54 @@ would show up in "whatever long-lived endpoint comes next", and it did.
 **Done when:** a Python job using `requests`, and a PowerShell job using a PSGallery
 module, both run successfully.
 
-- [ ] **4.1** Migration: `runtimes`. Add `runtime_id` and `image_digest` to `runs`.
-- [ ] **4.2** Choose base images (resolve the Alpine-vs-Debian open question — note
-      PowerShell compatibility pushes toward Debian).
-- [ ] **4.3** Containerfile template + renderer (see ARCHITECTURE.md §4.4).
-- [ ] **4.4** Build via the Podman API; tag with a hash of the inputs so identical
-      definitions dedupe.
-- [ ] **4.5** Builds are async: `POST /runtimes/{id}/build` returns 202; status is
-      polled. Reuse the run machinery if it fits.
-- [ ] **4.6** Resolve tag → digest after build; runs pin the **digest**.
-- [ ] **4.7** Prune policy for old images. Decide it, write it down, implement it.
-- [ ] **4.8** CLI `runtime list/create/build`.
+- [x] **4.1** Migration: `runtimes`. Add `runtime_id` and `image_digest` to `runs`.
+      The table and both columns existed as skeletons since migration 00001;
+      `00004_runtimes_build.sql` fleshed it out with `lang`, `input_hash`,
+      `build_error`, `image_pruned_at`, and the claim/prune indexes.
+- [x] **4.2** Choose base images. **Decision #25: Debian**, all three
+      languages — see ARCHITECTURE.md §6.
+- [x] **4.3** Containerfile template + renderer (`internal/runtimebuild`).
+- [x] **4.4** Build via the Podman API (`internal/podman.BuildImage`); tagged
+      with a hash of the inputs (`runtimebuild.InputHash`/`ImageTag`) so
+      identical definitions dedupe. Supervisor runs a second, parallel claim
+      loop (`cmd/supervisor/build.go`) alongside the run claim loop.
+- [x] **4.5** Builds are async: `POST /runtimes/{id}/build` returns 202;
+      `GET /runtimes/{id}` doubles as the poll target (`buildStatus` lives
+      directly on the row, no separate build resource). Creating a runtime
+      queues its first build automatically; the endpoint is for rebuilds.
+- [x] **4.6** Resolve tag → digest after build (`podman.InspectImage`); runs
+      pin the **digest** at creation (`CreateJobRunHandler`), never
+      re-resolved. Manifest's `runtime:` key implemented
+      (`internal/manifest`), resolved to a runtime row by `jobsync`.
+- [x] **4.7** Prune policy: **manual, API-triggered**
+      (`POST /runtimes/prune`, ids or an age threshold), plus the same
+      "unused" rule swept automatically alongside the log-retention sweep
+      (`RUNTIME_IMAGE_RETENTION_DAYS`, default 30). Shared logic in
+      `internal/runtimeprune` so the two paths can't disagree.
+- [x] **4.8** CLI `runtime list/get/create/build/prune`
+      (`cmd/cli/runtimes.go`, `internal/client/runtimes.go`).
 
 **Exit check:** both target jobs run; rebuilding a runtime does not change what an
 already-scheduled run executes.
+**→ Passed.** A `py-requests` (Python 3.12, `requests==2.32.3`) and a
+`ps-nameit` (PowerShell 7.4, PSGallery module `NameIT`) runtime were both
+created, built and run through real jobs (`py-check`, `ps-check`) against
+the live stack: `requests` imported and printed its version; `NameIT`
+imported and reported its version. `py-requests` was then rebuilt with a
+changed manifest, producing a genuinely different image digest
+(`sha256:3814d52d…` → `sha256:63db6b57…`); the earlier run's stored
+`imageDigest` was re-fetched via the API and was byte-for-byte unchanged,
+confirming a run's pinned digest survives a later rebuild by construction
+(nothing ever writes `runs.image_digest` after insert).
+
+One real environment finding, not a code defect but worth keeping: this
+sandbox's podman container network blackholes IPv6 rather than rejecting
+it, so PSGallery's `Install-PSResource` (built on .NET's `HttpClient`)
+hung for 100s+ per attempt until `DOTNET_SYSTEM_NET_DISABLEIPV6=1` was
+added to the rendered Containerfile — after which the same install
+completed in under a second. `curl`/Python's `urllib` were unaffected,
+which is what made this look like a PSGallery problem at first rather than
+a container-networking one.
 
 ---
 

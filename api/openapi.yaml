@@ -736,8 +736,217 @@ paths:
           description: >
             The job cannot be run as it stands: it is disabled, its manifest
             has been removed from the repository, the repository has no
-            commits, or the manifest is missing or invalid at the current
-            commit.
+            commits, the manifest is missing or invalid at the current
+            commit, or the manifest names a runtime that is not defined, not
+            yet built, or whose image has been pruned.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+  /api/v1/runtimes:
+    get:
+      operationId: listRuntimes
+      description: >
+        Runtimes, keyset-paginated by name - a catalogue, like jobs, not a
+        timeline.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: cursor
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+      responses:
+        "200":
+          description: Runtimes ordered by name
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RuntimeList"
+        "400":
+          description: Malformed cursor, or limit outside 1-200
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "401":
+          description: Missing, malformed, unknown, expired or revoked token
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+    post:
+      operationId: createRuntime
+      description: >
+        Define a runtime. Unlike a job, a runtime is not authored in git - it
+        is a built artifact, created and rebuilt directly through this API
+        (ARCHITECTURE.md §4.4).
+
+
+        Leaving the row's build status at its default of `pending` queues the
+        first build immediately; the supervisor's build claim loop picks it
+        up on its next tick. Poll GET /api/v1/runtimes/{id} for buildStatus.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RuntimeCreate"
+      responses:
+        "202":
+          description: Runtime created, its first build already queued
+          headers:
+            Location:
+              description: "/api/v1/runtimes/{id} of the created runtime"
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Runtime"
+        "400":
+          description: Malformed body, missing/invalid lang, or an unrenderable definition
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "401":
+          description: Missing, malformed, unknown, expired or revoked token
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "409":
+          description: A runtime with this name already exists
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+  /api/v1/runtimes/{id}:
+    get:
+      operationId: getRuntime
+      description: >
+        Returns the runtime. Also the poll target for an async build (task
+        4.5): buildStatus and buildError live directly on this row, so there
+        is no separate build resource.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: The runtime
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Runtime"
+        "401":
+          description: Missing, malformed, unknown, expired or revoked token
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "404":
+          description: No runtime with this id
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+  /api/v1/runtimes/{id}/build:
+    post:
+      operationId: buildRuntime
+      description: >
+        Queue a rebuild of an existing runtime. There is one build slot per
+        runtime - unlike runs, which queue freely - so a repeat call while a
+        build is pending or building is rejected rather than silently queuing
+        a second one.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "202":
+          description: Build queued
+          headers:
+            Location:
+              description: "/api/v1/runtimes/{id} of the runtime being built"
+              schema:
+                type: string
+        "401":
+          description: Missing, malformed, unknown, expired or revoked token
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "404":
+          description: No runtime with this id
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "409":
+          description: A build is already pending or building for this runtime
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+  /api/v1/runtimes/prune:
+    post:
+      operationId: pruneRuntimes
+      description: >
+        Reclaim runtime image storage (task 4.7). Exactly one of `ids`
+        (prune these specific runtimes now, regardless of age or use) or
+        `olderThanDays` (prune every built, not-yet-pruned runtime unused by
+        any run started in that window and by any live job) must be set.
+
+
+        The runtime row always survives - only the image is deleted and
+        imagePrunedAt is set, mirroring how run records outlive their pruned
+        logs. The supervisor's hourly sweep applies the same "unused" rule
+        automatically; this endpoint is the manual trigger for the same
+        policy, not a different one.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RuntimePrune"
+      responses:
+        "200":
+          description: >
+            What happened, per runtime: pruned, skipped (not built, or
+            already pruned), or errored (e.g. the image delete failed).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RuntimePruneResult"
+        "400":
+          description: Malformed body, or neither/both of ids and olderThanDays set
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "401":
+          description: Missing, malformed, unknown, expired or revoked token
           content:
             application/problem+json:
               schema:
@@ -882,6 +1091,16 @@ components:
             with jobId this is what makes a past run reproducible: check this
             commit out and you have precisely what executed. Null for an
             ad-hoc run.
+          type: [string, "null"]
+        runtimeId:
+          description: >
+            Set when the job named a runtime rather than an image directly
+            (task 4.6). Resolved once, at creation, from the runtime's
+            current image digest - rebuilding the runtime afterwards never
+            changes this run's imageDigest.
+          type: [integer, "null"]
+        imageDigest:
+          description: The runtime's image digest at the moment this run was created. Null for an ad-hoc run or a job that names an image directly.
           type: [string, "null"]
       required:
         - id
@@ -1139,10 +1358,18 @@ components:
             type: string
         imageRef:
           description: >
-            A plain OCI reference, used as-is. Nullable because Phase 4
-            introduces runtimes as the alternative to naming an image
-            directly; in this phase a manifest must name one.
+            A plain OCI reference, used as-is. Nullable: a manifest names
+            exactly one of `image:` or `runtime:` (task 4.6), so exactly one
+            of imageRef/runtimeId is set.
           type: [string, "null"]
+        runtimeId:
+          description: >
+            Set when the manifest names a runtime with `runtime:` instead of
+            an image directly. A run created from this job resolves the
+            runtime's current image digest at creation time and pins it -
+            rebuilding the runtime afterwards never changes what an
+            already-created run executes.
+          type: [integer, "null"]
         timeoutSeconds:
           description: Null when the manifest does not say, in which case the platform default applies.
           type: [integer, "null"]
@@ -1193,3 +1420,141 @@ components:
           type: boolean
       required:
         - enabled
+    Runtime:
+      type: object
+      description: >
+        A built container image: curated base image, system packages, and
+        one language's dependency manifest (ARCHITECTURE.md §4.4). Unlike a
+        job, this is not authored in git - every field is owned by Postgres
+        directly and changed only through this API.
+      properties:
+        id:
+          type: integer
+        name:
+          description: Unique. How a job manifest's `runtime:` key addresses this row.
+          type: string
+        baseImage:
+          type: string
+        sysPackages:
+          type: array
+          items:
+            type: string
+        lang:
+          type: string
+          enum: [python, powershell, node]
+        langManifest:
+          description: >
+            The language ecosystem's own manifest format verbatim -
+            requirements.txt for python, a PSResourceGet file for
+            powershell, package.json for node. Null means no language
+            dependencies, just the base image and system packages.
+          type: [string, "null"]
+        inputHash:
+          description: >
+            Hash of (baseImage, sysPackages, lang, langManifest). Doubles as
+            the local image tag, so two runtimes with identical inputs
+            dedupe onto the same built image even under different names.
+          type: string
+        buildStatus:
+          type: string
+          enum: [pending, building, ready, failed]
+        imageDigest:
+          description: Set once buildStatus reaches ready.
+          type: [string, "null"]
+        buildError:
+          description: Set when buildStatus is failed.
+          type: [string, "null"]
+        builtAt:
+          type: [string, "null"]
+          format: date-time
+        imagePruned:
+          description: >
+            True once the image has been reclaimed (task 4.7). The row
+            survives regardless - what was built, from which inputs, when,
+            stays answerable - but a job naming this runtime cannot run
+            until it is rebuilt.
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - name
+        - baseImage
+        - sysPackages
+        - lang
+        - inputHash
+        - buildStatus
+        - imagePruned
+        - createdAt
+    RuntimeList:
+      type: object
+      properties:
+        items:
+          description: Runtimes ordered by name.
+          type: array
+          items:
+            $ref: "#/components/schemas/Runtime"
+        nextCursor:
+          description: Opaque cursor for the next page. Absent (or null) on the last page.
+          type: [string, "null"]
+      required:
+        - items
+    RuntimeCreate:
+      type: object
+      properties:
+        name:
+          type: string
+        baseImage:
+          description: Optional; defaults to a curated image for `lang` (decision #25, Debian-based).
+          type: string
+        sysPackages:
+          type: array
+          items:
+            type: string
+        lang:
+          type: string
+          enum: [python, powershell, node]
+        langManifest:
+          description: See Runtime.langManifest. Optional.
+          type: string
+      required:
+        - name
+        - lang
+    RuntimePrune:
+      type: object
+      description: Exactly one of `ids` or `olderThanDays` must be set.
+      properties:
+        ids:
+          description: Prune these specific runtimes now, regardless of age or use.
+          type: array
+          items:
+            type: integer
+        olderThanDays:
+          description: >
+            Prune every built, not-yet-pruned runtime unused by any run
+            started within this many days and by any live job.
+          type: integer
+          minimum: 0
+    RuntimePruneResult:
+      type: object
+      properties:
+        pruned:
+          description: Names of runtimes whose image was deleted by this call.
+          type: array
+          items:
+            type: string
+        skipped:
+          description: "Names with a reason, e.g. \"not built\" or \"already pruned\"."
+          type: array
+          items:
+            type: string
+        errors:
+          description: "Names with a reason the delete itself failed."
+          type: array
+          items:
+            type: string
+      required:
+        - pruned
+        - skipped
+        - errors

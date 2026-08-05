@@ -10,13 +10,13 @@
 //
 // # The format is specified whole and implemented in parts
 //
-// `params`, `form` and `runtime` belong to the format now and are the reason
-// the format exists at all, but nothing honours them until Phases 6, 7 and 4
-// respectively. They are therefore **rejected with an error naming the phase**
-// rather than accepted and ignored. A manifest that says `runtime: python-3.12`
-// and quietly runs Alpine would be this project's documented failure mode -
-// "this system's failure mode is silence" (HISTORY, Phase 2) - and the whole
-// point of an interface is that it does not lie about the script.
+// `params` and `form` belong to the format now and are part of the reason it
+// exists at all, but nothing honours them until Phases 6 and 7 respectively.
+// They are therefore **rejected with an error naming the phase** rather than
+// accepted and ignored, so a manifest never describes behaviour the platform
+// will not perform - "this system's failure mode is silence" (HISTORY, Phase
+// 2). `runtime` was the third member of this list until task 4.6; it is now
+// implemented, as the alternative to naming an image directly with `image:`.
 package manifest
 
 import (
@@ -78,9 +78,16 @@ type Manifest struct {
 	// own directory. See resolveScriptPath.
 	ScriptPath string
 
-	// ImageRef is a plain OCI reference, used as-is. Phase 4 introduces
-	// runtimes as the alternative to naming an image directly.
+	// ImageRef is a plain OCI reference, used as-is. Exactly one of ImageRef
+	// and RuntimeName is set (task 4.6) - the manifest names either an image
+	// directly or a runtime, never both and never neither.
 	ImageRef string
+
+	// RuntimeName identifies a runtime by name (task 4.6). The caller
+	// resolves it to a runtime row and its built image; this package knows
+	// nothing about runtimes existing or being built, the same way it knows
+	// nothing about which commit a script lives at.
+	RuntimeName string
 
 	// Command overrides the default invocation. Nil - the usual case -
 	// means the script is delivered executable and argv is just its path,
@@ -118,6 +125,7 @@ type file struct {
 	Description    string   `yaml:"description"`
 	Script         string   `yaml:"script"`
 	Image          string   `yaml:"image"`
+	Runtime        string   `yaml:"runtime"`
 	Command        []string `yaml:"command"`
 	TimeoutSeconds *int32   `yaml:"timeoutSeconds"`
 
@@ -126,9 +134,8 @@ type file struct {
 	// decoding them into anything specific would be inventing a schema that
 	// the phase which implements them has to live with. A zero Kind means
 	// the key was absent.
-	Runtime yaml.Node `yaml:"runtime"`
-	Params  yaml.Node `yaml:"params"`
-	Form    yaml.Node `yaml:"form"`
+	Params yaml.Node `yaml:"params"`
+	Form   yaml.Node `yaml:"form"`
 }
 
 // Error is a manifest that could not be used, carrying the path so that a
@@ -196,7 +203,6 @@ func validate(manifestPath string, raw *file) (*Manifest, error) {
 		phase   string
 		purpose string
 	}{
-		{"runtime", raw.Runtime, "Phase 4", "runtimes are built images; until then a manifest names an image directly with `image:`"},
 		{"params", raw.Params, "Phase 6", "the parameter contract is not yet enforced or passed to scripts"},
 		{"form", raw.Form, "Phase 7", "form layout is not yet rendered by anything"},
 	} {
@@ -225,11 +231,15 @@ func validate(manifestPath string, raw *file) (*Manifest, error) {
 		return nil, newError(manifestPath, "%v", err)
 	}
 
-	// Required in v1 because `runtime:` - the alternative - is not honoured
-	// yet. The database constraint is the weaker "image or runtime", which
-	// is what Phase 4 will relax this to.
-	if raw.Image == "" {
-		return nil, newError(manifestPath, "image is required; it is a plain OCI reference such as docker.io/library/alpine:3.20")
+	// Exactly one of image/runtime, matching the database's
+	// jobs_image_or_runtime_check (task 4.6) - "or" there, "exactly one"
+	// here, because the manifest is the one place close enough to the author
+	// to say which of the two they meant rather than silently preferring one.
+	switch {
+	case raw.Image != "" && raw.Runtime != "":
+		return nil, newError(manifestPath, "image and runtime cannot both be set; a job runs in exactly one of a plain image or a built runtime")
+	case raw.Image == "" && raw.Runtime == "":
+		return nil, newError(manifestPath, "exactly one of image or runtime is required; image is a plain OCI reference such as docker.io/library/alpine:3.20, runtime names a runtime defined through the API")
 	}
 
 	if raw.Command != nil && len(raw.Command) == 0 {
@@ -250,6 +260,7 @@ func validate(manifestPath string, raw *file) (*Manifest, error) {
 		Description:    raw.Description,
 		ScriptPath:     scriptPath,
 		ImageRef:       raw.Image,
+		RuntimeName:    raw.Runtime,
 		Command:        raw.Command,
 		TimeoutSeconds: raw.TimeoutSeconds,
 	}, nil

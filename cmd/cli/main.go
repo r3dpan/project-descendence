@@ -30,6 +30,7 @@ Commands:
   runs    List runs, or show one in full
   jobs    List jobs, show one, trigger one, enable or disable one
   repos   Manage the git repositories that job definitions live in
+  runtime List, create and build runtimes; prune their images
   whoami  Show which principal the configured token resolves to
   config  Show where the URL and token are being read from
   ui      Open the interactive application explicitly
@@ -119,6 +120,8 @@ func run() int {
 		return cmdJobs(ctx, c, rest)
 	case "repos":
 		return cmdRepos(ctx, c, rest)
+	case "runtime":
+		return cmdRuntime(ctx, c, rest)
 	case "whoami":
 		return cmdWhoAmI(ctx, c)
 	case "config":

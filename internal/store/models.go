@@ -92,15 +92,19 @@ type RunLog struct {
 }
 
 type Runtime struct {
-	ID           int64              `json:"id"`
-	Name         string             `json:"name"`
-	BaseImage    string             `json:"base_image"`
-	SysPackages  []string           `json:"sys_packages"`
-	LangManifest pgtype.Text        `json:"lang_manifest"`
-	ImageDigest  pgtype.Text        `json:"image_digest"`
-	BuildStatus  string             `json:"build_status"`
-	BuiltAt      pgtype.Timestamptz `json:"built_at"`
-	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+	ID            int64              `json:"id"`
+	Name          string             `json:"name"`
+	BaseImage     string             `json:"base_image"`
+	SysPackages   []string           `json:"sys_packages"`
+	LangManifest  pgtype.Text        `json:"lang_manifest"`
+	ImageDigest   pgtype.Text        `json:"image_digest"`
+	BuildStatus   string             `json:"build_status"`
+	BuiltAt       pgtype.Timestamptz `json:"built_at"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	Lang          string             `json:"lang"`
+	InputHash     string             `json:"input_hash"`
+	BuildError    pgtype.Text        `json:"build_error"`
+	ImagePrunedAt pgtype.Timestamptz `json:"image_pruned_at"`
 }
 
 type Schedule struct {

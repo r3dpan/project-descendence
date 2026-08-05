@@ -70,6 +70,62 @@ func TarFile(filePath string, mode int64, content []byte) (*bytes.Buffer, error)
 	return &buffer, nil
 }
 
+// ArchiveFile is one entry for TarFiles: a path relative to the archive
+// root, its mode, and its content.
+type ArchiveFile struct {
+	Path    string
+	Mode    int64
+	Content []byte
+}
+
+// TarFiles builds a multi-file tar archive in memory, the same way TarFile
+// builds a one-file one. Used for a build context (task 4.4): a rendered
+// Containerfile plus the language manifest it COPYs in, packed together so
+// the build never touches the host filesystem, matching TarFile/PutArchive's
+// reasoning for job script delivery (decision #24).
+func TarFiles(files []ArchiveFile) (*bytes.Buffer, error) {
+	var buffer bytes.Buffer
+	writer := tar.NewWriter(&buffer)
+
+	for _, file := range files {
+		if file.Path == "" {
+			return nil, fmt.Errorf("podman: archive file path is empty")
+		}
+		if path.IsAbs(file.Path) {
+			return nil, fmt.Errorf("podman: archive file path %q must be relative to the archive root", file.Path)
+		}
+		if file.Path != path.Clean(file.Path) {
+			return nil, fmt.Errorf("podman: archive file path %q is not in canonical form", file.Path)
+		}
+		for _, segment := range strings.Split(file.Path, "/") {
+			if segment == ".." {
+				return nil, fmt.Errorf("podman: archive file path %q escapes the archive root", file.Path)
+			}
+		}
+
+		header := &tar.Header{
+			Name:     file.Path,
+			Mode:     file.Mode,
+			Size:     int64(len(file.Content)),
+			ModTime:  time.Now(),
+			Uid:      0,
+			Gid:      0,
+			Typeflag: tar.TypeReg,
+		}
+		if err := writer.WriteHeader(header); err != nil {
+			return nil, fmt.Errorf("podman: writing tar header for %s: %w", file.Path, err)
+		}
+		if _, err := writer.Write(file.Content); err != nil {
+			return nil, fmt.Errorf("podman: writing tar body for %s: %w", file.Path, err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		return nil, fmt.Errorf("podman: finishing tar archive: %w", err)
+	}
+
+	return &buffer, nil
+}
+
 // PutArchive unpacks a tar stream inside a container at destPath
 // (PUT /libpod/containers/{id}/archive).
 //

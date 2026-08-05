@@ -97,8 +97,8 @@ func (q *Queries) ClaimNextQueuedRun(ctx context.Context) (Run, error) {
 
 const createJobRun = `-- name: CreateJobRun :one
 INSERT INTO runs (principal_id, image_ref, argv, timeout_seconds, idempotency_key,
-                  job_id, commit_sha)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
+                  job_id, commit_sha, runtime_id, image_digest)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 ON CONFLICT (principal_id, idempotency_key) DO NOTHING
 RETURNING id, principal_id, state, idempotency_key, image_ref, argv,
           timeout_seconds, container_id, exit_code, failure_reason,
@@ -114,17 +114,21 @@ type CreateJobRunParams struct {
 	IdempotencyKey pgtype.Text `json:"idempotency_key"`
 	JobID          pgtype.Int8 `json:"job_id"`
 	CommitSha      pgtype.Text `json:"commit_sha"`
+	RuntimeID      pgtype.Int8 `json:"runtime_id"`
+	ImageDigest    pgtype.Text `json:"image_digest"`
 }
 
-// Task 3.5. The same insert as CreateRun, plus the two columns that make a run
-// explainable: which job it is, and the exact commit its definition and script
-// were read from.
+// Task 3.5. The same insert as CreateRun, plus the columns that make a run
+// explainable: which job it is, the exact commit its definition and script
+// were read from, and - task 4.6, when the job names a runtime rather than
+// an image directly - which runtime and which digest of it.
 //
-// image_ref and argv are still written onto the run rather than looked up from
-// the job at execution time, deliberately. A run records what it will do, not
-// a pointer to somewhere that might say something different later - which is
-// the same reason commit_sha is pinned here rather than resolved by the
-// supervisor.
+// image_ref, runtime_id and image_digest are all written onto the run rather
+// than looked up from the job at execution time, deliberately. A run records
+// what it will do, not a pointer to somewhere that might say something
+// different later - the same reason commit_sha is pinned here rather than
+// resolved by the supervisor, and the reason rebuilding a runtime after this
+// insert cannot change what this run executes.
 func (q *Queries) CreateJobRun(ctx context.Context, arg CreateJobRunParams) (Run, error) {
 	row := q.db.QueryRow(ctx, createJobRun,
 		arg.PrincipalID,
@@ -134,6 +138,8 @@ func (q *Queries) CreateJobRun(ctx context.Context, arg CreateJobRunParams) (Run
 		arg.IdempotencyKey,
 		arg.JobID,
 		arg.CommitSha,
+		arg.RuntimeID,
+		arg.ImageDigest,
 	)
 	var i Run
 	err := row.Scan(

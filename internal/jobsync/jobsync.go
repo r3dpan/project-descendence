@@ -132,7 +132,23 @@ func Sync(ctx context.Context, queries *store.Queries, repoStore *gitrepo.Store,
 			continue
 		}
 
-		job, err := queries.UpsertJob(ctx, upsertParams(repo.ID, sha, manifestPath, parsed))
+		// A manifest naming a runtime (task 4.6) is resolved by name here,
+		// not left as a string for a handler to chase down later - the same
+		// "report and skip, don't guess" rule the package comment states for
+		// an unreadable manifest applies to one naming a runtime that does
+		// not exist.
+		var runtimeID pgtype.Int8
+		if parsed.RuntimeName != "" {
+			runtime, err := queries.GetRuntimeByName(ctx, parsed.RuntimeName)
+			if err != nil {
+				result.Errors = append(result.Errors, ManifestError{manifestPath,
+					fmt.Sprintf("runtime %q is not defined; create it first with POST /api/v1/runtimes", parsed.RuntimeName)})
+				continue
+			}
+			runtimeID = pgtype.Int8{Int64: runtime.ID, Valid: true}
+		}
+
+		job, err := queries.UpsertJob(ctx, upsertParams(repo.ID, sha, manifestPath, parsed, runtimeID))
 		if err != nil {
 			result.Errors = append(result.Errors, ManifestError{manifestPath, upsertErrorDetail(parsed.Name, err)})
 			continue
@@ -176,7 +192,7 @@ func Sync(ctx context.Context, queries *store.Queries, repoStore *gitrepo.Store,
 	return result, nil
 }
 
-func upsertParams(repoID int64, sha, manifestPath string, parsed *manifest.Manifest) store.UpsertJobParams {
+func upsertParams(repoID int64, sha, manifestPath string, parsed *manifest.Manifest, runtimeID pgtype.Int8) store.UpsertJobParams {
 	params := store.UpsertJobParams{
 		RepoID:          repoID,
 		ManifestPath:    manifestPath,
@@ -184,6 +200,7 @@ func upsertParams(repoID int64, sha, manifestPath string, parsed *manifest.Manif
 		ScriptPath:      parsed.ScriptPath,
 		Command:         parsed.Command,
 		SyncedCommitSha: sha,
+		RuntimeID:       runtimeID,
 	}
 	if parsed.Description != "" {
 		params.Description = pgtype.Text{String: parsed.Description, Valid: true}

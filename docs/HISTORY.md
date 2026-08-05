@@ -1406,3 +1406,85 @@ Notes to future me:
     CLAUDE.md invariants). Comfortably under the 200-line ceiling this
     session was asked to keep it under; worth checking again the next time
     something is added there.
+
+## 2026-08-05 (Phase 4)
+Worked on: all of Phase 4 (4.1-4.8) plus the exit check, in one session.
+Completed: **Phase 4 is done.** A runtime is a curated base image + system
+  packages + one language's dependency manifest, rendered to a Containerfile
+  and built via the Podman API; a job manifest can now name one with
+  `runtime: <name>` instead of `image: <ref>`, and a run pins the runtime's
+  image digest at creation time, never re-resolved.
+  - **decision #25** - runtime base images are Debian, not Alpine, across
+    all three languages (Python/PowerShell/Node), for glibc compatibility.
+  - **decision #26** - every PowerShell runtime's Containerfile sets
+    `ENV DOTNET_SYSTEM_NET_DISABLEIPV6=1`. Real finding, not theorised: see
+    below.
+  - New packages: `internal/runtimebuild` (Containerfile template + input
+    hashing), `internal/runtimeprune` (the "unused" rule shared by the
+    manual prune endpoint and the supervisor's automatic sweep). New
+    `internal/podman` methods: `BuildImage`, `InspectImage`, `DeleteImage`,
+    `TarFiles`. New supervisor loop: `cmd/supervisor/build.go`, a second
+    claim loop over `runtimes.build_status = 'pending'`, parallel to the
+    run claim loop rather than a generalization of it - the two claim
+    queries and execution steps didn't share enough to be worth an
+    interface with one implementation on each side.
+  - 5 new API paths (`runtimes` CRUD, `.../build`, `.../prune`), 5 new
+    schemas, and `runtimeId`/`imageDigest` finally exposed on `Run` -
+    columns that had existed unused since migration 00001, the same gap
+    `jobId`/`commitSha` had before Phase 3 exposed them.
+  - CLI: `descendence runtime list/get/create/build/prune`.
+  - **The exit check found a real manifest-format bug**: the Containerfile
+    template's `COPY manifest /tmp/manifest` (as sketched in ARCHITECTURE.md
+    §4.4) works for `pip install -r` and a renamed `npm install`, but
+    PSResourceGet's `-RequiredResourceFile` refuses any path without a
+    literal `.psd1` or `.json` extension. Fixed by making the COPY
+    destination per-language (`manifestDestPaths` in
+    `internal/runtimebuild/render.go`).
+  - **The exit check also found a real environment quirk, eventually traced
+    to a genuine root cause rather than worked around**: `Install-PSResource`
+    against PSGallery hung past its own 100s internal timeout on every
+    attempt, three retries included. `curl` and Python's `urllib` reached
+    the same host in under a second. The difference: `getent ahosts` on
+    this host resolves PSGallery's Azure Front Door name to an IPv6 address
+    first, and this environment's podman container network routes IPv6
+    without ever rejecting it - it is blackholed, so a caller has to wait
+    out a full OS-level connect timeout before falling back to IPv4. `curl`
+    and `urllib`'s IPv4 fallback is fast (Happy Eyeballs-like); .NET's
+    `HttpClient`, which PSResourceGet is built on, is not, and 100s wasn't
+    enough. `DOTNET_SYSTEM_NET_DISABLEIPV6=1` - a documented .NET env var -
+    fixed it outright: the same request that hung past 100s completed in
+    0.8s. Diagnosed with `getent ahosts`, `--network=host` (ruled out NAT
+    overhead specifically), and `--add-host` pinned to the resolved IPv4
+    address (confirmed the fix before finding the general one). A 3x retry
+    loop was tried first and reverted - the failure is consistent, not
+    transient, so retries only tripled the wasted time.
+  - Verified the digest-pinning claim directly rather than by code
+    inspection alone: created `py-requests` (Python 3.12,
+    `requests==2.32.3`), ran a job against it (`imageDigest` recorded as
+    `sha256:3814d52d…`), then rebuilt `py-requests` with a changed manifest
+    (`requests==2.31.0`, tried first as a separate `py-requests-v2` runtime
+    to see a genuinely different digest, then applied directly). The
+    rebuilt runtime resolved to `sha256:63db6b57…`; re-fetching the
+    original run afterward showed `imageDigest` unchanged at
+    `sha256:3814d52d…` - confirmed by construction too, since no query
+    anywhere writes `runs.image_digest` after the insert in `CreateJobRun`.
+Broken / unresolved: nothing found beyond what's listed above as fixed.
+Next action: Phase 5 - scheduling. Start by resolving the in-process-cron-
+  vs-systemd-timers open question (ARCHITECTURE.md §8) and recording it as
+  a decision; `schedules` is already a skeleton table since migration 00001.
+Notes to future me:
+  - The IPv6-blackhole finding is specific to *this* development sandbox
+    (WSL2 + rootless podman + netavark), not necessarily to wherever this
+    platform eventually runs for real. The fix is harmless either way
+    (`DOTNET_SYSTEM_NET_DISABLEIPV6=1` is a no-op where IPv6 actually
+    works), so it was left in rather than made conditional - but if a real
+    deployment host has working IPv6, this is a one-line thing to notice
+    and reconsider, not a permanent law.
+  - No `DELETE /runtimes/{id}` exists, on purpose - matches the "define
+    once, rebuild in place" model `input_hash` implies, and there was no
+    Phase-4 task asking for one. A scratch runtime created for this
+    session's digest-pinning proof (`py-requests-v2`) couldn't be deleted,
+    only pruned (its image reclaimed, the row left behind) - which is the
+    correct decision-#18-style behavior, not a workaround. If runtimes ever
+    need real deletion (e.g. an operator naming one wrong), that's a small,
+    separate addition, not a sign this session's design is incomplete.
