@@ -173,6 +173,73 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/Problem"
+  /api/v1/runs/{id}/logs:
+    get:
+      operationId: getRunLogs
+      description: >
+        A run's captured output, oldest first. Paginated by sequence number
+        rather than an opaque cursor: unlike the runs list, a log line's
+        position is meaningful and public - it is the same number an SSE
+        client sends back as Last-Event-ID to resume.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: after
+          in: query
+          description: >
+            Return lines strictly after this sequence number. Omit or pass 0
+            for the beginning of the run.
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+        - name: limit
+          in: query
+          description: Maximum lines to return.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 500
+      responses:
+        "200":
+          description: One page of the run's output.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunLogList"
+        "400":
+          description: Negative after, or limit outside 1-1000
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "401":
+          description: Missing, malformed, unknown, expired or revoked token
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "404":
+          description: No run with this id
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "410":
+          description: >
+            The run still exists, but its output has passed the retention
+            window and been deleted. Distinct from an empty 200, which means
+            the run genuinely printed nothing.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
 components:
   securitySchemes:
     bearerAuth:
@@ -307,4 +374,51 @@ components:
           description: Opaque cursor for the next page. Absent (or null) on the last page.
           type: [string, "null"]
       required:
+        - items    RunLogLine:
+      type: object
+      description: >
+        One captured line of output. Sequence numbers are per run and dense
+        from 1, covering both streams - they record the order output arrived,
+        which is not always the order the script printed it, since stdout and
+        stderr are buffered independently inside the container.
+      properties:
+        seq:
+          type: integer
+        stream:
+          type: string
+          enum: [stdout, stderr]
+        ts:
+          type: string
+          format: date-time
+        text:
+          description: The line without its terminating newline.
+          type: string
+      required:
+        - seq
+        - stream
+        - ts
+        - text
+    RunLogList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/RunLogLine"
+        nextAfter:
+          description: >
+            Pass as `after` to fetch the next page. Absent (or null) when the
+            page returned everything currently available - which is not the
+            same as the run being over, so check runState before concluding
+            there is nothing more to come.
+          type: [integer, "null"]
+        runState:
+          description: >
+            The run's state as of this response. Included so a client polling
+            for output does not need a second request to learn whether more
+            output is still possible.
+          type: string
+          enum: [queued, running, succeeded, failed, cancelled, lost]
+      required:
         - items
+        - runState

@@ -37,77 +37,55 @@ Update the marker on each task as it moves:
 
 > **Update this block every session.**
 
-- **Phase:** 1 — Vertical slice
-- **Task:** Phase 1a, `internal/podman` (1.9–1.11), 1.12, 1.13, 1.15, 1.16,
-  1.17 done. **PHASE 1 IS COMPLETE** — 1.1 through 1.25, including 1e's
-  exit check. The vertical slice works end to end and survives being
-  attacked: `descendence run ...` → API → Postgres → supervisor → Podman
-  container → exit code back in your shell, with crash recovery, timeouts,
-  single-scheduler enforcement and no container leaks, all demonstrated
-  rather than assumed.
-- **Next action:** Phase 2 — log capture and streaming (2.1-2.9). Start
-  with 2.1 (attach to container output in the supervisor). Note 2.8
-  (cancel) is owed a debt from 1.14: `cancelled` is defined, constrained,
-  rendered and tested everywhere but has no producer, deliberately, so 2.8
-  only has to add the transition. Read the Phase 2 warning about getting
-  cancellation and context propagation right *there* before starting.
-  The CLI is built on the Charm stack (bubbletea/bubbles/lipgloss) at the
-  user's explicit direction, recorded as ARCHITECTURE.md decision #17;
-  dispatch and flags stay stdlib. 1.14 (all six run states) is now done
-  after being deliberately deferred four times: the states live in
-  `internal/store/states.go`, `FinishRun` refuses to overwrite a terminal
-  state, and `cancelled` remains producerless on purpose because task 2.8
-  owns cancellation end to end.
+- **Phase:** 2 — Logs
+- **Task:** Phase 1 complete (1.1–1.25). **Phase 2: 2.1–2.4 done**; the
+  pipeline works end to end — a container's output is captured once,
+  written to a per-run file, indexed in Postgres, announced by `NOTIFY`,
+  fanned out to N subscribers in the API, and served paginated over HTTP.
+  Nothing is streaming *live* to a client yet: that is 2.5.
+- **Next action:** 2.5 — SSE on the same endpoint, selected by
+  `Accept: text/event-stream`. The machinery it needs already exists:
+  subscribe via `logstream.Broker`, read pages with the same
+  `readLogPage` the JSON path uses. **Read 2.5's `WriteTimeout` note
+  before writing the handler** — the server-wide 30s deadline will cut
+  every stream otherwise, and the fix is
+  `http.NewResponseController(w).SetWriteDeadline(time.Time{})` in that
+  handler only. Do not remove the server-wide timeout. Remember the slow
+  safety-net poll: notifications are lossy by design (see decision #19),
+  so a stream that trusts them alone will hang when one goes missing.
+  2.8 (cancel) is still owed a debt from 1.14: `cancelled` is defined,
+  constrained, rendered and tested everywhere but has no producer,
+  deliberately, so 2.8 only has to add the transition. Read the Phase 2
+  warning about getting cancellation and context propagation right
+  *there* before starting.
 - **Blocked on:** nothing
-- **Notes:** Phase 0, 1a, `internal/podman`, and the claim loop (1.12) all
-  done (see prior entries / commits). 1.13 closes the vertical slice's core
-  loop: `cmd/supervisor/execute.go` — `executeRun` creates the container,
-  starts it, waits, records the terminal state via `FinishRun`, removes the
-  container; every exit path (including a failed create/start/wait) writes a
-  terminal state, so a run can no longer get stuck `running` from an
-  infrastructure error the way it could before this task. Verified live: a
-  `queued` run submitted through the real API now reaches `succeeded` or
-  `failed` (with a correct `exit_code`) without any manual intervention,
-  including the bad-image infra-failure path, with zero leaked containers.
-  1.15's reconciler (`cmd/supervisor/reconcile.go`) runs once at startup,
-  before the claim loop: lists every container carrying a `run_id` label,
-  compares against non-terminal runs, adopts what's still alive or already
-  finished, marks the rest `lost` (and removes any stale never-started
-  container it finds). Verified live against four simulated crash scenarios -
-  see the session log for detail.
-  1.16's advisory lock (`cmd/supervisor/lock.go`, `acquireSingletonLock`) is
-  in place: a dedicated connection acquired from the pool and held for the
-  whole process lifetime, `pg_try_advisory_lock` on a fixed key
-  (`supervisorLockKey = 8817001`, session-level not transaction-scoped).
-  Fails to start (non-zero exit) rather than blocking if another instance
-  already holds it. Verified live: two supervisors at once → the second
-  refuses immediately with a clear message, the first is unaffected; after
-  graceful shutdown, the lock is free again immediately - confirmed by
-  starting a third one right after with no delay. Because of this, the
-  two-real-processes verification approach 1.12/1.15 used to prove
-  `SKIP LOCKED` no longer applies as-is - re-verifying that property later
-  would need two goroutines calling `ClaimNextQueuedRun` concurrently within
-  one process, or a deliberate lock bypass for the test, rather than two
-  separate `cmd/supervisor` processes.
-  1.17's timeout enforcement wraps `waitFinishAndRemove`'s `WaitContainer`
-  call in a `context.WithDeadline` computed from `run.StartedAt +
-  run.TimeoutSeconds` - not from when the wait starts, so an adopted run
-  (1.15) only gets whatever budget it had left, not a fresh clock. On
-  expiry: `KillContainer` (new, `POST .../kill`, libpod's default signal is
-  SIGKILL) then a fresh `WaitContainer` to confirm it actually stopped,
-  `state=failed`/`exit_code=NULL`/`failure_reason="exceeded timeout of Ns"`,
-  then remove. Distinguishes three cases via `errors.Is(waitCtx.Err(),
-  context.DeadlineExceeded)` vs `waitCtx.Err() != nil` (parent cancelled -
-  i.e. supervisor shutdown, not a timeout: leaves the run running for the
-  reconciler, touches nothing) vs neither (a genuine `WaitContainer` error,
-  handled as before). Verified live: a `sleep 30` with `timeoutSeconds: 3`
-  was killed and marked `failed` within ~3s, not 30s, no leaked container,
-  while a normal run with a generous timeout still succeeded normally in the
-  same session; separately, adopting a run whose `started_at` was set an
-  hour in the past with a 10s timeout killed it immediately on reconcile,
-  proving the deadline survives a restart rather than resetting.
-  Runs within one supervisor process still execute strictly one at a time -
-  no concurrency within a process yet, not asked for by 1.13.
+- **Notes:** Phase 1's notes are in the commits and the session log; the
+  block that used to live here has served its purpose. Phase 2 so far:
+
+  - **Log bodies are files, the index is Postgres** (ARCHITECTURE.md §4.1).
+    `RUN_LOG_DIR` must be set for *both* the api and the supervisor, and
+    must be the same directory — the supervisor is the sole writer, the
+    API only reads. That shared filesystem is a third channel the §3
+    diagram originally lacked, and it is what pins the two processes to one
+    host; it is the first assumption that breaks under multi-node
+    (decision #19).
+  - **The invariant to not break:** flush the file, *then* write the index
+    row, *then* notify. The index row is what tells a reader those bytes
+    exist, so any other order publishes an offset pointing past the end of
+    the file. Stated in `runlog.Flush`, in `runlogs.sql`, and in
+    `captureLogs`.
+  - **Notifications are lossy on purpose.** They carry watermarks, not log
+    text, so a dropped or missed one costs latency and nothing else. Every
+    consumer must therefore poll on a slow timer as well; a consumer that
+    trusts notifications alone will hang the first time the listener
+    reconnects.
+  - **Reconciler adoption recaptures from scratch** — libpod replays a
+    container's whole output on every follow, so `runlog.Create` truncates
+    the file and `DeleteRunLogs` clears the index together. Resuming at an
+    offset would need to guess where the dead supervisor stopped.
+  - Runs within one supervisor process still execute strictly one at a
+    time. Unchanged by Phase 2, and still the most likely thing to bite in
+    real use (see 1e's note on reconciliation blocking the claim loop).
 
 ---
 
@@ -468,14 +446,52 @@ the first attempt would have meant they were too shallow.
 **Done when:** `cli run --follow` streams output as it happens, and closing/reopening
 resumes without gaps.
 
-- [ ] **2.1** Attach to container output in the supervisor; write to a per-run file
+- [x] **2.1** Attach to container output in the supervisor; write to a per-run file
       with sequence numbers.
-- [ ] **2.2** Record log metadata (seq, stream, timestamp) in Postgres; keep bodies
+      `internal/podman.FollowContainerLogs` (libpod's multiplexed frame
+      format, probed rather than assumed: 8-byte header, 0x01 stdout /
+      0x02 stderr, big-endian length) plus `internal/runlog`, which splits
+      frames into lines itself — frame boundaries are *not* line
+      boundaries — carrying a partial line per stream. On `longPollClient`,
+      not the 10s one: the same bug shape as 1.19 would have silently
+      truncated the logs of every run over 10s. Sequence numbers are
+      arrival order, not emission order (stdout and stderr are buffered
+      separately inside the container); documented rather than papered
+      over. The supervisor waits for capture to drain before removing a
+      container, since `WaitContainer` returns while frames may still be
+      unread. New config: `RUN_LOG_DIR`.
+- [x] **2.2** Record log metadata (seq, stream, timestamp) in Postgres; keep bodies
       in files. Decide and write down the retention policy (open question in
       ARCHITECTURE.md §8).
-- [ ] **2.3** Fan-out: one attach per run, N subscribers. Bounded channels; drop slow
+      `run_logs` written with COPY, coalescing whatever is already queued
+      into one batch. The ordering rule is load-bearing: flush the file,
+      *then* publish the index rows, or a row points past EOF.
+      **Retention resolved — ARCHITECTURE.md decision #18:** run records
+      forever, run *output* for 30 days, swept hourly by the supervisor
+      (it holds the advisory lock, so there is exactly one sweeper).
+      Migration 00002 adds `runs.logs_pruned_at`, which is what lets the
+      API tell "printed nothing" from "output deleted". Per-run size cap
+      deliberately not built.
+- [x] **2.3** Fan-out: one attach per run, N subscribers. Bounded channels; drop slow
       consumers rather than blocking the writer.
-- [ ] **2.4** `GET /api/v1/runs/{id}/logs` — historical, paginated.
+      **The plan and ARCHITECTURE.md §4.2 both had this in the wrong
+      process.** The subscribers are HTTP clients and the supervisor serves
+      no HTTP, so fan-out lives in the *API* (`internal/logstream`); the
+      supervisor only emits a `NOTIFY` watermark. §4.2 corrected in place,
+      recorded as decision #19. Events are watermarks ("run 42 has output
+      through seq 900"), never log text — so dropping under load is safe,
+      a missed notification costs latency rather than correctness, and
+      payloads stay far inside NOTIFY's 8000-byte limit. Subscribers still
+      poll on a slow timer as the safety net.
+- [x] **2.4** `GET /api/v1/runs/{id}/logs` — historical, paginated.
+      Paginated by sequence number, not an opaque cursor: a log line's
+      position is public — it is the same number `Last-Event-ID` carries in
+      2.6 — so hiding it here and exposing it there would be incoherent.
+      Index from Postgres, bodies from the file, opened once per page.
+      Returns `runState` so a polling client needs no second request.
+      A pruned run is **410 Gone**, checked *before* reading: pruning
+      deletes the index rows too, so a pruned run is otherwise
+      indistinguishable from one that printed nothing.
 - [ ] **2.5** Same endpoint with `Accept: text/event-stream` → SSE. Emit `id:`,
       `event:`, `data:` with a blank line between messages; one `data:` line per
       output line. Call `Flush()` after every message.
@@ -1227,3 +1243,54 @@ Notes to future me:
     `http.Client.Timeout` is wrong for any long-polling endpoint.** Phase 2
     adds log streaming over the same socket, which will have exactly this
     shape — use `longPollClient` there too, not `httpClient`.
+
+### 2026-08-05 (Phase 2, part 1)
+Worked on: Phase 2 tasks 2.1-2.4 - the log pipeline from container to HTTP.
+Completed:
+  - 2.1: `internal/podman.FollowContainerLogs` + `internal/runlog`. Probed
+    the real libpod logs endpoint before writing anything, which paid for
+    itself three times: the frame format is Docker's 8-byte multiplexed
+    header (0x01 stdout / 0x02 stderr, big-endian length); `follow=true`
+    replays a container's *whole* output every time and returns promptly on
+    an already-exited container; and an unterminated trailing fragment does
+    arrive, so `printf done` is not lost. The second finding is what makes
+    reconciler adoption simple - recapture from scratch, no seam to get
+    wrong. Put it on `longPollClient`: the ordinary 10s client would have
+    silently truncated the logs of every run over 10s, the same bug shape as
+    1.19, so it gets the same deliberately-slow test.
+  - 2.2: `run_logs` written with COPY, batched by draining whatever is
+    already queued. Retention resolved (decision #18): runs forever, output
+    30 days, swept hourly by the supervisor. Migration 00002 adds
+    `logs_pruned_at`.
+  - 2.3: fan-out via LISTEN/NOTIFY. See "broken/unresolved" - the plan had
+    this in the wrong process.
+  - 2.4: `GET /api/v1/runs/{id}/logs`, paginated by seq. Verified live:
+    2000 lines over 7 pages, dense 1..2000, no gaps or repeats; a run that
+    printed nothing returns an empty 200 while a pruned run returns 410.
+Broken / unresolved:
+  - **The plan and ARCHITECTURE.md §4.2 both put log fan-out in the
+    supervisor. That is impossible** - the subscribers are HTTP clients and
+    the supervisor serves no HTTP, and §3 forbids the two processes talking.
+    Corrected §4.2 in place rather than leaving it wrong, and recorded the
+    real design as decision #19. Worth noticing that the error survived from
+    the original design document all the way to the task that implemented
+    it: the diagram in §3 was right (SQL only) and the prose in §4.2 was
+    wrong, and nobody reconciled them until the code forced it.
+  - Nothing else open. 2.5-2.9 not started.
+Next action: 2.5 (SSE). Read its `WriteTimeout` note in the task list first.
+Notes to future me:
+  - **A test I wrote was wrong before the code was.** The fan-out test
+    asserted that a "healthy" subscriber never drops events, with its reader
+    in a goroutine - and it failed, because a reader racing a tight publish
+    loop simply is not scheduled often enough. The buffer is small on
+    purpose; *any* subscriber momentarily behind loses events. That is fine
+    (events are watermarks) but it means "healthy" has to be defined as
+    "consumes each event before the next is published", which the test now
+    does. If a drop-semantics test ever starts flaking, this is why.
+  - `pkill -f 'go run ./cmd/supervisor'` matches the shell running it and
+    kills your own session. Build to a binary and `pkill -x supervisor`.
+  - Running `go test ./internal/store` against the *same* database a live
+    supervisor is polling means the supervisor claims the tests' throwaway
+    runs and fails them on an unpullable image. Harmless, but it is noise in
+    the supervisor log and the 1.14 lesson ("any test that claims work from a
+    shared queue interferes with every other test") applies in reverse too.

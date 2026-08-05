@@ -1,6 +1,7 @@
 package runlog
 
 import (
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -369,4 +370,146 @@ func TestLongLinesKeepTheirOffsets(t *testing.T) {
 	}
 
 	assertLinesAddressTheirText(t, dir, lines, []string{long, "short"})
+}
+
+// --- Reader ---
+
+// The round trip that the API depends on: whatever the writer reported as a
+// line's address must read back as exactly that line.
+func TestReaderReturnsExactlyTheWrittenLine(t *testing.T) {
+	writer, dir := newTestWriter(t)
+
+	lines, err := writer.Write(StreamStdout, []byte("first\nsecond\n"))
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	errLines, err := writer.Write(StreamStderr, []byte("on stderr\n"))
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if _, err := writer.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	reader, err := Open(dir, 42)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer reader.Close()
+
+	want := []string{"first", "second", "on stderr"}
+	for i, line := range append(lines, errLines...) {
+		got, err := reader.ReadLine(line.ByteOffset, line.ByteLength)
+		if err != nil {
+			t.Fatalf("ReadLine(seq %d): %v", line.Seq, err)
+		}
+		if got != want[i] {
+			t.Errorf("seq %d read back as %q, want %q", line.Seq, got, want[i])
+		}
+	}
+}
+
+// A run with no output yet has no file. That is the normal state of a queued
+// run, and of one whose logs the retention sweep deleted, so it must be
+// distinguishable from an I/O failure rather than lumped in with one.
+func TestOpenReportsAMissingFileDistinctly(t *testing.T) {
+	if _, err := Open(t.TempDir(), 404); !errors.Is(err, ErrNoLogFile) {
+		t.Errorf("Open on a missing file gave %v, want ErrNoLogFile", err)
+	}
+}
+
+// Reading a run that is still being written to is the whole point - a client
+// tailing a live run reads lines the supervisor is still appending after.
+func TestReaderSeesLinesWhileTheWriterIsStillOpen(t *testing.T) {
+	writer, dir := newTestWriter(t)
+	defer writer.Close()
+
+	lines, err := writer.Write(StreamStdout, []byte("while running\n"))
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := writer.Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+
+	reader, err := Open(dir, 42)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer reader.Close()
+
+	got, err := reader.ReadLine(lines[0].ByteOffset, lines[0].ByteLength)
+	if err != nil {
+		t.Fatalf("ReadLine: %v", err)
+	}
+	if got != "while running" {
+		t.Errorf("read %q, want %q", got, "while running")
+	}
+
+	// And a line appended after the reader was opened is visible too - the
+	// reader must not have snapshotted the file's length at open time.
+	later, err := writer.Write(StreamStdout, []byte("appended later\n"))
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := writer.Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+
+	got, err = reader.ReadLine(later[0].ByteOffset, later[0].ByteLength)
+	if err != nil {
+		t.Fatalf("ReadLine after append: %v", err)
+	}
+	if got != "appended later" {
+		t.Errorf("read %q, want %q", got, "appended later")
+	}
+}
+
+// An index row pointing past the end of the file means the flush-before-index
+// invariant has broken. Half a line presented as a whole one would be far
+// worse than a loud error.
+func TestReadLineRejectsAnOffsetPastTheEndOfTheFile(t *testing.T) {
+	writer, dir := newTestWriter(t)
+	if _, err := writer.Write(StreamStdout, []byte("short\n")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if _, err := writer.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	reader, err := Open(dir, 42)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer reader.Close()
+
+	if _, err := reader.ReadLine(0, 9999); err == nil {
+		t.Error("ReadLine accepted a length running past the end of the file, want an error")
+	}
+}
+
+func TestReadLineHandlesABlankLine(t *testing.T) {
+	writer, dir := newTestWriter(t)
+
+	lines, err := writer.Write(StreamStdout, []byte("\n"))
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if _, err := writer.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	reader, err := Open(dir, 42)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer reader.Close()
+
+	got, err := reader.ReadLine(lines[0].ByteOffset, lines[0].ByteLength)
+	if err != nil {
+		t.Fatalf("ReadLine on a blank line: %v", err)
+	}
+	if got != "" {
+		t.Errorf("blank line read back as %q, want empty", got)
+	}
 }
