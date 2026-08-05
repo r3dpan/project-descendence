@@ -1937,3 +1937,51 @@ Notes to future me:
     permanent until a proper user-management/RBAC pass exists. Don't try to
     seed-and-delete test *user* principals the way earlier sessions did with
     plain token principals, once they've actually triggered a run.
+
+## 2026-08-06 (later still)
+Worked on: Phase 7 task 7.7 - job and runtime management in the web UI.
+Completed:
+  - Job: an Enable/Disable button on `JobList` (per row) and `JobDetail`,
+    both calling the existing `PATCH /api/v1/jobs/{id}` (`enabled` is still
+    the one field a sync never touches, decision #23 - no server change
+    needed, this task was purely wiring the UI to what already existed).
+  - `web/src/api/runtimes.ts` (list/get/create/build, mirroring
+    `internal/client/runtimes.go`), a `RuntimeList` page (table plus a "new
+    runtime" form for `RuntimeCreate`) and a `RuntimeDetail` page (full
+    build state, a Rebuild button, polling `GET /api/v1/runtimes/{id}` every
+    2s while `buildStatus` is non-terminal - there is no SSE equivalent for
+    builds the way there is for run logs).
+  - Fixed a real bug surfaced by this work in `web/src/api/client.ts`'s
+    shared `request()`: it assumed every successful response has a JSON
+    body and only special-cased 204. `buildRuntime`'s 202 has an empty body
+    (`Location` header only, per its own openapi.yaml description) and
+    would have thrown a JSON-parse error the first time anything called it.
+    Fixed by reading the body as text first and only parsing non-empty
+    responses - same fix covers any future empty-body 2xx, not just this one.
+  - Found and fixed unrelated pre-existing spec drift while reading
+    `buildRuntime`'s contract to write the client: `api/openapi.yaml` said
+    its 202 has no content, but `BuildRuntimeHandler` (task 4.5, unmodified
+    this session) has always returned a small `{id, buildStatus}` body.
+    Confirmed live before touching the spec. Fixed the doc, not the
+    (correct, working) handler.
+Broken / unresolved: nothing outstanding.
+Next action: Phase 7.8 (form builder) is the last item in Phase 7 - its own
+session, per PLAN.md's own note to ship YAML editing with a rendered preview
+before drag-and-drop.
+Notes to future me:
+  - Verified every new request shape live before trusting the React code:
+    `PATCH /api/v1/jobs/29` (toggle on, toggle back off - job's original
+    disabled state restored), `POST /api/v1/runtimes` with a real python
+    runtime (reached `ready` with a real image digest via the actual
+    supervisor build-claim loop, not mocked), `POST
+    /api/v1/runtimes/5/build` (a genuine rebuild, also reached `ready`),
+    and `POST /api/v1/runtimes/prune` both while a build was in flight
+    (correctly skipped, not errored) and after (pruned, row survived with
+    `imagePruned: true`).
+  - A runtime build of a fresh Python base image took ~2.5 minutes in this
+    sandbox (mostly the base image pull) - don't assume a stuck "building"
+    status is broken within the first minute; check the supervisor log
+    (`claimed runtime build N`) before suspecting a bug.
+  - `ui-test-runtime` (id 5) is intentionally left in the dev DB with
+    `imagePruned: true` - that's the runtime equivalent of the leftover
+    `webui-716` test principal from 7.6, not something to "fix" later.

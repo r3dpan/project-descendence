@@ -42,24 +42,29 @@ Update the marker on each task as it moves:
 
 > **Update this block every session.**
 
-- **Phase:** 7 — **in progress**. 7.1–7.6 done and verified live (read-only
-  web UI plus trigger runs: local-account cookie login, embedded same-origin
-  SPA, run list/detail, live logs via native `EventSource`, a jobs list and a
-  per-job trigger form generated from its param contract). 7.7–7.8 (job/runtime
-  management, the form builder) remain - see Phase 7's own task list for
-  what shipped and how.
-- **Next action:** Phase 7.7 - job/runtime management UI (enable/disable a
-  job, view/trigger a runtime build). 7.8 (form builder) is its own session
-  per PLAN.md's original note: ship YAML editing with a rendered preview
-  before drag-and-drop.
+- **Phase:** 7 — **in progress**. 7.1–7.7 done and verified live: read-only
+  web UI (local-account cookie login, embedded same-origin SPA, run
+  list/detail, live logs via native `EventSource`), triggering runs (a jobs
+  list and a per-job form generated from its param contract), and job/runtime
+  management (enable/disable a job; a runtimes list with a create-runtime
+  form and a detail view with a Rebuild button that polls build status).
+  Only 7.8 (the form builder) remains - see Phase 7's own task list for what
+  shipped and how.
+- **Next action:** Phase 7.8, its own session per PLAN.md's original note:
+  ship YAML editing with a rendered preview before drag-and-drop. Nothing
+  else is outstanding in Phase 7.
 - **Blocked on:** nothing.
-- **Notes carried from 7.6:** the dev Postgres instance now has a
+- **Notes carried from 7.6/7.7:** the dev Postgres instance has a
   `kind='user'` principal named `webui-716` that cannot be cleaned up like
   the session's other seeded test principals were - it owns runs 245/246
   (`runs.principal_id` is `ON DELETE RESTRICT`, unlike `job_id`'s `SET
   NULL`), so deleting it would mean deleting run history rather than a
   no-op. Harmless to leave; a real RBAC/user-management pass (§7, still
-  deferred) is the actual fix, not a one-off DELETE.
+  deferred) is the actual fix, not a one-off DELETE. Separately, a
+  `ui-test-runtime` runtime row (created and pruned during 7.7's live
+  verification) also still exists with `imagePruned: true` - by design
+  (runtimes rows survive a prune the same way `runs.logs_pruned_at` does,
+  decision in ARCHITECTURE.md §5), not leftover mess.
 - **Phase 6 summary** (complete, 6.1–6.7, exit check passed): Jobs take typed, validated parameters end to end. The manifest's
   `params:` block (name/type/required/default/secret) is real
   (`internal/manifest`, `internal/manifest/params.go`); submitted values are
@@ -557,7 +562,20 @@ covers 7.1–7.5 (a read-only vertical slice); 7.6–7.8 are a later session.
       success the new run's id navigates straight to `/runs/{id}`, reusing
       7.5's live-log view to watch it. A small top nav (`web/src/Layout.tsx`:
       Runs | Jobs | Sign out) now wraps every authenticated route.
-- [ ] **7.7** Job and runtime management.
+- [x] **7.7** Job and runtime management. Job: an Enable/Disable button on
+      both `JobList` (per-row) and `JobDetail`, calling the existing
+      `PATCH /api/v1/jobs/{id}` (`enabled` is still the only field this
+      endpoint can touch - decision #23). Runtime: new `web/src/api/runtimes.ts`
+      (mirroring `internal/client/runtimes.go`), a `RuntimeList` page (table
+      plus a "new runtime" form posting `RuntimeCreate`) and a `RuntimeDetail`
+      page showing full build state with a Rebuild button
+      (`POST /api/v1/runtimes/{id}/build`) that polls `GET
+      /api/v1/runtimes/{id}` every 2s while `buildStatus` is non-terminal -
+      there's no SSE equivalent for builds the way there is for run logs, so
+      this is plain polling, not `EventSource`. `web/src/api/client.ts`'s
+      `request()` was fixed alongside this: it assumed every 2xx response
+      decodes as JSON, which broke on `buildRuntime`'s empty-body 202 - now
+      reads the body as text first and only parses non-empty ones.
 - [ ] **7.8** Form builder — the largest single piece. Consider shipping YAML editing
       with a rendered preview before building drag-and-drop.
 
@@ -595,6 +613,23 @@ Test"}]` (the mount param correctly absent from `params_json`, per task 6.6).
 correctly. The embedded production build was rebuilt afterward and serves
 `/jobs` and `/jobs/69` with `200` and the SPA shell, alongside the existing
 `/`, `/login`, `/runs/42` routes.
+
+**7.7 exit check**: verified against the real stack by issuing the exact requests
+the new UI code makes. `PATCH /api/v1/jobs/29` toggled `enabled` true then back
+to false, matching `JobList`/`JobDetail`'s toggle handler exactly.
+`POST /api/v1/runtimes` with `{"name":"ui-test-runtime","lang":"python",
+"langManifest":"requests==2.32.3"}` (the shape `RuntimeList`'s create form
+submits) returned `202` with the new runtime `pending`; the supervisor's real
+build claim loop picked it up and it reached `ready` with a real image digest.
+`POST /api/v1/runtimes/5/build` (the Rebuild button's call) queued a genuine
+rebuild that also reached `ready` - confirming `buildRuntime`'s empty-body 202
+response is handled correctly by the fixed `request()`. `POST
+/api/v1/runtimes/prune` with `{"ids":[5]}` was rejected while a build was still
+in flight (a real 200 with the runtime reported `"skipped"`, not an error) and
+succeeded once the build was terminal, matching the one-build-slot-per-runtime
+rule (task 4.5) and confirming the row survives a prune with `imagePruned`
+alone flipping. The embedded production build serves `/runtimes` and
+`/runtimes/5` with `200`.
 
 ---
 
