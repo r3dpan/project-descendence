@@ -1776,3 +1776,64 @@ Notes to future me:
     `params:` at task 6.1, both the same shape (raw node → typed field,
     remove from the unimplemented-keys loop). Worth reaching for again if
     `form:` (Phase 7) fits the same mold.
+
+## 2026-08-06 (Phase 6.7 — PowerShell AST introspection prototype)
+
+Did: the last piece of Phase 6, picked up where the previous session left
+off. Genuinely a spike, per its own task wording - no production code
+changed, no dependency added; the only durable output is decision #28 in
+ARCHITECTURE.md §6 and the resolved §8 row.
+
+Ran `[System.Management.Automation.Language.Parser]::ParseFile` inside
+`mcr.microsoft.com/powershell:7.4-debian-12` (no bare `pwsh` in this dev
+environment) against a hand-written five-parameter sample script covering a
+mandatory string, an explicitly-non-mandatory typed int with a default, a
+switch, a mandatory string with `[ValidateSet(...)]`, and a plain optional
+string with a default - plus a script with no `param()` block and one that
+doesn't parse at all.
+
+Findings, all confirmed live rather than assumed:
+  - Name, static type, and `ValidateSet` values all come straight off the
+    AST with no surprises.
+  - **First attempt at detecting `Mandatory` was wrong, caught by the test
+    script itself.** Checking whether a `Parameter` attribute has a
+    `Mandatory` *named argument at all* is not the same as checking its
+    *value* - `[Parameter(Mandatory = $false)]` has the argument present,
+    and a naive presence check reported that parameter as mandatory. Fixed
+    by reading `NamedArgumentAst.ExpressionOmitted` (the bare `-Mandatory`
+    shorthand for `$true`) or comparing the argument expression's own
+    source text against `'$true'`. Exactly the kind of thing this
+    project's own manifest package would call a silent-wrongness bug if it
+    shipped, so worth writing down even though nothing here shipped.
+  - `DefaultValue` is the default's raw *source text*, not an evaluated
+    value - fine for a literal (`"default-tag"`, `1`), but a script whose
+    default is any non-literal expression has nothing this platform could
+    turn into a manifest default without actually executing script code,
+    which is exactly what "best-effort, never a runtime dependency" rules
+    out.
+  - Type mapping onto this platform's four-value param contract (string /
+    number / bool / mount) is lossy both ways: `SwitchParameter` behaves as
+    `$false` by default but the AST carries no `DefaultValue` node saying
+    so, and anything outside those four (arrays, hashtables, custom types)
+    has no destination and must be skipped rather than guessed at.
+  - Robustness was the pleasant surprise: a script with no `param()` block
+    parses to a clean empty result, and a syntactically broken one fails
+    with `ParseFile`'s own error list and a non-zero exit - neither hangs
+    nor crashes the host process. A future caller can treat "introspection
+    didn't work for this script" as a normal, non-fatal outcome.
+
+Broken / unresolved: nothing - the whole point was finding out what breaks,
+and the answer (naive `Mandatory` detection, non-literal defaults) is now
+written down rather than waiting to be rediscovered when Phase 7 actually
+builds the form generator.
+Next action: Phase 6 is now fully complete. Phase 7 (Web UI) needs its own
+scoping session - re-read ARCHITECTURE.md §4.11 first (its own instruction),
+and treat it as "large, open-ended" rather than sized like the phases so
+far.
+Notes to future me:
+  - When Phase 7's form builder wants a "suggest fields for me" affordance
+    for a PowerShell script, decision #28 already has the two gotchas
+    solved (Mandatory evaluation, default-value literal-vs-expression) -
+    don't re-derive them, and keep the result advisory only: the manifest's
+    own `params:` contract stays authoritative, never something the
+    platform trusts without a human reviewing and committing it.

@@ -42,11 +42,8 @@ Update the marker on each task as it moves:
 
 > **Update this block every session.**
 
-- **Phase:** 6 — **6.1–6.6 complete**, exit check passed. 6.7 (optional
-  PowerShell AST introspection prototype) deliberately not attempted —
-  genuinely optional per its own task wording, session ended before it by
-  request. Next up is Phase 7 (Web UI) unless a future session picks up 6.7
-  first.
+- **Phase:** 6 — **complete** (6.1–6.7, exit check passed). Next up is
+  Phase 7 — Web UI.
 - **Task:** Jobs take typed, validated parameters end to end. The manifest's
   `params:` block (name/type/required/default/secret) is real
   (`internal/manifest`, `internal/manifest/params.go`); submitted values are
@@ -61,11 +58,14 @@ Update the marker on each task as it moves:
   (`runs.secret_params_json`) split out at resolution time, never assembled
   into `params_json` at all — the supervisor creates one Podman secret per
   mount param before container create and removes it alongside the container
-  on every exit path (`cmd/supervisor/execute.go`).
-- **Next action:** Phase 7 planning (re-read ARCHITECTURE.md §4.11 first,
-  per its own note), or Phase 6.7 if picked up first — prototype PowerShell
-  AST param introspection (`System.Management.Automation.Language.Parser`)
-  as a standalone spike, never wired into jobsync/manifest parsing.
+  on every exit path (`cmd/supervisor/execute.go`). 6.7's PowerShell AST
+  introspection prototype confirmed the technique works (decision #28) but
+  stayed a spike — no code from it merged, nothing wired into jobsync or
+  manifest parsing; revisit it when Phase 7's form builder wants a
+  best-effort "suggest the fields" affordance.
+- **Next action:** Phase 7 planning — re-read ARCHITECTURE.md §4.11 first,
+  per its own note, and scope it properly before starting; it's explicitly
+  "large, open-ended" in the phase table above, unlike every phase so far.
 - **Blocked on:** nothing
 - **Notes:** invariants live in CLAUDE.md's "Invariants worth not breaking" —
   that's the one place to check before touching jobs, git, or run execution.
@@ -472,10 +472,15 @@ PowerShell.
       container create, mounts it under `/run/job/secrets/<name>`, removes
       it alongside the container on every exit path. Verified live against
       the real stack (see HISTORY.md).
-- [!] **6.7** *Optional:* prototype PowerShell AST introspection (open question in
-      ARCHITECTURE.md §8). Deferred, not attempted this session — genuinely
-      optional per the task's own wording, and the operator asked to stop
-      after 6.6.
+- [x] **6.7** *Optional:* prototype PowerShell AST introspection (open question in
+      ARCHITECTURE.md §8, resolved as decision #28). `ParseFile` cleanly
+      extracts a `param()` block's names/types/`ValidateSet`; two real
+      gotchas found live (`Mandatory`'s value must be evaluated from its
+      expression AST, not detected by presence; `DefaultValue` is raw
+      source text, not a value — a non-literal default has nothing this
+      platform can safely produce without executing script code). Spike
+      only, per its own scope — no code merged, nothing wired into
+      jobsync or manifest parsing; the finding lives in ARCHITECTURE.md.
 
 **Exit check:** a parameter value containing `"; rm -rf /; #` is passed through
 literally and harmlessly. **→ Passed**, verified live — see HISTORY.md.
