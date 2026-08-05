@@ -23,7 +23,7 @@ import (
 // acceptable for now since nothing in this codebase runs runs concurrently
 // yet anyway, but worth revisiting if a long-running adopted run ever needs
 // to not hold up newly queued ones.
-func reconcile(ctx context.Context, queries *store.Queries, podmanClient *podman.Client) {
+func reconcile(ctx context.Context, queries *store.Queries, podmanClient *podman.Client, logDir string) {
 	containers, err := podmanClient.ListContainersByRunIDLabel(ctx)
 	if err != nil {
 		log.Printf("reconcile: listing containers: %v", err)
@@ -65,11 +65,17 @@ func reconcile(ctx context.Context, queries *store.Queries, podmanClient *podman
 			// rather than leaving it behind.
 			log.Printf("reconcile: run %d's container %s was created but never started, marking lost", run.ID, container.ID)
 			finishRun(ctx, queries, run.ID, store.StateLost, nil, container.ID, "supervisor restarted before the container started")
-			removeContainer(podmanClient, run.ID, container.ID)
+			removeContainer(nil, podmanClient, run.ID, container.ID)
 
 		default:
 			log.Printf("reconcile: adopting run %d (container %s, state %s)", run.ID, container.ID, container.State)
-			waitFinishAndRemove(ctx, queries, podmanClient, run, container.ID)
+			// Recapture the output from scratch rather than trying to resume
+			// where the dead supervisor stopped: libpod replays the whole of
+			// a container's output on every follow, so starting over is both
+			// complete and free of a seam that could duplicate or drop lines
+			// (see runlog.Create on why the file is truncated).
+			capture := startLogCapture(ctx, podmanClient, logDir, run.ID, container.ID)
+			waitFinishAndRemove(ctx, queries, podmanClient, run, container.ID, capture)
 		}
 	}
 }

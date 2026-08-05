@@ -47,11 +47,19 @@ func main() {
 	}
 	podmanClient := podman.NewClient(podmanSocket)
 
+	// Log bodies live in files, not Postgres (ARCHITECTURE.md §4.1). The
+	// supervisor writes them; the API reads the same directory, so the two
+	// must be pointed at the same path.
+	logDir := os.Getenv("RUN_LOG_DIR")
+	if logDir == "" {
+		log.Fatal("RUN_LOG_DIR is not set")
+	}
+
 	log.Println("Reconciling non-terminal runs from a previous run")
-	reconcile(ctx, queries, podmanClient)
+	reconcile(ctx, queries, podmanClient, logDir)
 
 	log.Printf("Supervisor started, polling for queued runs every %s", pollInterval)
-	runClaimLoop(ctx, queries, podmanClient)
+	runClaimLoop(ctx, queries, podmanClient, logDir)
 	log.Println("Supervisor shutting down")
 }
 
@@ -59,12 +67,12 @@ func main() {
 // executing it to completion before claiming the next - then waits for the
 // next tick (or shutdown). Runs within a single supervisor process execute
 // one at a time; nothing here bounds or parallelizes them yet.
-func runClaimLoop(ctx context.Context, queries *store.Queries, podmanClient *podman.Client) {
+func runClaimLoop(ctx context.Context, queries *store.Queries, podmanClient *podman.Client, logDir string) {
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 
 	for {
-		claimAndExecuteAllQueued(ctx, queries, podmanClient)
+		claimAndExecuteAllQueued(ctx, queries, podmanClient, logDir)
 
 		select {
 		case <-ctx.Done():
@@ -74,7 +82,7 @@ func runClaimLoop(ctx context.Context, queries *store.Queries, podmanClient *pod
 	}
 }
 
-func claimAndExecuteAllQueued(ctx context.Context, queries *store.Queries, podmanClient *podman.Client) {
+func claimAndExecuteAllQueued(ctx context.Context, queries *store.Queries, podmanClient *podman.Client, logDir string) {
 	for {
 		run, err := queries.ClaimNextQueuedRun(ctx)
 		if err != nil {
@@ -89,6 +97,6 @@ func claimAndExecuteAllQueued(ctx context.Context, queries *store.Queries, podma
 		}
 
 		log.Printf("claimed run %d (image=%s argv=%v)", run.ID, run.ImageRef, run.Argv)
-		executeRun(ctx, queries, podmanClient, run)
+		executeRun(ctx, queries, podmanClient, logDir, run)
 	}
 }
