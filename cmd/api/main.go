@@ -136,6 +136,7 @@ func main() {
 	descendenceMux.HandleFunc("GET /api/v1/repos/{id}", descendenceAPI.RequireAuth(descendenceAPI.GetRepoHandler))
 	descendenceMux.HandleFunc("POST /api/v1/repos/{id}/sync", descendenceAPI.RequireAuth(descendenceAPI.SyncRepoHandler))
 	descendenceMux.HandleFunc("POST /api/v1/repos/{id}/files", descendenceAPI.RequireAuth(descendenceAPI.CreateRepoFileHandler))
+	descendenceMux.HandleFunc("GET /api/v1/repos/{id}/files/{path...}", descendenceAPI.RequireAuth(descendenceAPI.GetRepoFileHandler))
 	descendenceMux.HandleFunc("GET /api/v1/jobs", descendenceAPI.RequireAuth(descendenceAPI.ListJobsHandler))
 	descendenceMux.HandleFunc("GET /api/v1/jobs/{id}", descendenceAPI.RequireAuth(descendenceAPI.GetJobHandler))
 	descendenceMux.HandleFunc("PATCH /api/v1/jobs/{id}", descendenceAPI.RequireAuth(descendenceAPI.PatchJobHandler))

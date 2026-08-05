@@ -604,6 +604,58 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/Problem"
+  /api/v1/repos/{id}/files/{path}:
+    get:
+      operationId: getRepoFile
+      description: >
+        Read one file's content at the repository's current HEAD (task 7.8).
+
+
+        The read counterpart to createRepoFile - for a client editing a
+        manifest that already exists rather than only ever writing a new one.
+        Always HEAD, never an arbitrary commit: there is no history browser
+        here, only "what would I be changing if I committed now."
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: path
+          in: path
+          required: true
+          description: >
+            Repository-root-relative path. May contain slashes (this is a Go
+            1.22 mux `{path...}` wildcard server-side, not a single segment).
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The file's content as of HEAD, and the commit it was read at
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RepoFileGet"
+        "400":
+          description: The path is absolute or escapes the repository root
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "401":
+          description: Missing, malformed, unknown, expired or revoked token
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "404":
+          description: No repository with this id, no commits yet, or no such file at HEAD
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
   /api/v1/jobs:
     get:
       operationId: listJobs
@@ -1647,6 +1699,21 @@ components:
           type: string
       required:
         - path
+        - content
+    RepoFileGet:
+      type: object
+      description: One file's content as read at the repository's HEAD (task 7.8).
+      properties:
+        path:
+          type: string
+        commitSha:
+          description: The commit this content was read at.
+          type: string
+        content:
+          type: string
+      required:
+        - path
+        - commitSha
         - content
     RepoFileResult:
       type: object

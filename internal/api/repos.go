@@ -68,6 +68,12 @@ type repoFileResponse struct {
 	Sync      *jobsync.Result `json:"sync"`
 }
 
+type repoFileGetResponse struct {
+	Path      string `json:"path"`
+	CommitSHA string `json:"commitSha"`
+	Content   string `json:"content"`
+}
+
 func toRepoResponse(repo store.Repo) repoResponse {
 	resp := repoResponse{
 		ID:            repo.ID,
@@ -302,6 +308,57 @@ func (s *APIServer) CreateRepoFileHandler(w http.ResponseWriter, r *http.Request
 
 	w.Header().Set("Location", fmt.Sprintf("/api/v1/repos/%d", repo.ID))
 	writeJSON(w, http.StatusCreated, response)
+}
+
+// GetRepoFileHandler reads one file's content at the repository's current
+// HEAD (task 7.8) - the read counterpart CreateRepoFileHandler never needed
+// until a client wanted to *edit* a manifest rather than only ever write a
+// brand new one.
+//
+// Always HEAD, never an arbitrary SHA: this is for an author opening the
+// current manifest to change it, not for inspecting history, so there is no
+// reason to expose more than the one commit anything can currently act on.
+func (s *APIServer) GetRepoFileHandler(w http.ResponseWriter, r *http.Request) {
+	repo, ok := s.lookupRepo(w, r)
+	if !ok {
+		return
+	}
+
+	filePath := r.PathValue("path")
+	if filePath == "" {
+		writeProblem(w, http.StatusBadRequest, "path is required")
+		return
+	}
+
+	repository, err := s.repos.Open(repo.Name)
+	if err != nil {
+		writeProblem(w, http.StatusInternalServerError, fmt.Sprintf("failed opening repository %s", repo.Name))
+		return
+	}
+
+	sha, err := repository.HeadCommit(repo.DefaultBranch)
+	if err != nil {
+		if errors.Is(err, gitrepo.ErrNoCommits) {
+			writeProblem(w, http.StatusNotFound, "repository has no commits yet")
+			return
+		}
+		writeProblem(w, http.StatusInternalServerError, fmt.Sprintf("failed resolving HEAD: %v", err))
+		return
+	}
+
+	content, err := repository.ReadFile(sha, filePath)
+	if err != nil {
+		if errors.Is(err, gitrepo.ErrFileNotFound) {
+			writeProblem(w, http.StatusNotFound, fmt.Sprintf("no file %q at HEAD", filePath))
+			return
+		}
+		// A path that escapes the repository is the caller's mistake, the
+		// same way CreateRepoFileHandler treats it.
+		writeProblem(w, http.StatusBadRequest, fmt.Sprintf("failed reading %s: %v", filePath, err))
+		return
+	}
+
+	writeJSON(w, http.StatusOK, repoFileGetResponse{Path: filePath, CommitSHA: sha, Content: string(content)})
 }
 
 // lookupRepo resolves the {id} path value, answering 404 itself when it cannot.
