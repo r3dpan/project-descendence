@@ -2,6 +2,7 @@ import { useEffect, useState, type FormEvent } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { createJobRun, getJob, patchJob, type Job } from '../api/jobs'
 import { APIError } from '../api/client'
+import { ParamField } from '../paramField'
 
 export default function JobDetail() {
   const { id } = useParams<{ id: string }>()
@@ -110,31 +111,12 @@ export default function JobDetail() {
 
       <form onSubmit={handleSubmit}>
         {job.params.map((param) => (
-          <div key={param.name} style={{ marginTop: '0.5rem' }}>
-            <label htmlFor={`param-${param.name}`}>
-              {param.name}
-              {param.required && !param.default ? ' *' : ''} ({param.type})
-            </label>
-            <br />
-            {param.type === 'bool' ? (
-              <input
-                id={`param-${param.name}`}
-                type="checkbox"
-                checked={values[param.name] === 'true'}
-                onChange={(e) =>
-                  setValues((prev) => ({ ...prev, [param.name]: e.target.checked ? 'true' : 'false' }))
-                }
-              />
-            ) : (
-              <input
-                id={`param-${param.name}`}
-                type={param.secret || param.type === 'mount' ? 'password' : param.type === 'number' ? 'number' : 'text'}
-                value={values[param.name] ?? ''}
-                required={param.required && !param.default}
-                onChange={(e) => setValues((prev) => ({ ...prev, [param.name]: e.target.value }))}
-              />
-            )}
-          </div>
+          <ParamField
+            key={param.name}
+            param={param}
+            value={values[param.name] ?? ''}
+            onChange={(value) => setValues((prev) => ({ ...prev, [param.name]: value }))}
+          />
         ))}
 
         {error && (
