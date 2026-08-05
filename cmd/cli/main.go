@@ -20,7 +20,8 @@ import (
 const usage = `descendence - run scripts in containers, through the Descendence API
 
 Usage:
-  descendence <command> [flags] [arguments]
+  descendence                      Open the interactive application
+  descendence <command> [flags]    Run a single command
 
 Commands:
   run     Create a run and watch it until it finishes
@@ -29,6 +30,7 @@ Commands:
   runs    List runs, or show one in full
   whoami  Show which principal the configured token resolves to
   config  Show where the URL and token are being read from
+  ui      Open the interactive application explicitly
   help    Show this message
 
 Configuration, in order of precedence:
@@ -55,12 +57,23 @@ func main() {
 // main() would skip it.
 func run() int {
 	args := os.Args[1:]
-	if len(args) == 0 {
+
+	// Bare `descendence` opens the interactive application - but only on a
+	// terminal. Piped or redirected it prints usage and exits 2 exactly as it
+	// always did, because that is what a script checking whether the CLI is
+	// installed sees, and answering that with a TUI would hang it forever.
+	if len(args) == 0 && !isTTY(os.Stdout) {
 		fmt.Fprint(os.Stderr, usage)
 		return 2
 	}
 
-	command, rest := args[0], args[1:]
+	var command string
+	var rest []string
+	if len(args) > 0 {
+		command, rest = args[0], args[1:]
+	} else {
+		command = "ui"
+	}
 
 	switch command {
 	case "help", "-h", "--help":
@@ -86,6 +99,12 @@ func run() int {
 	c := client.New(cfg.baseURL, cfg.token)
 
 	switch command {
+	case "ui":
+		if !isTTY(os.Stdout) {
+			printError(errors.New("the interactive application needs a terminal; use the individual commands instead"))
+			return 2
+		}
+		return runUI(ctx, c, cfg)
 	case "run":
 		return cmdRun(ctx, c, rest)
 	case "logs":

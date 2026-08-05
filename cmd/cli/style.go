@@ -4,6 +4,7 @@ import (
 	"os"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/term"
 
 	"github.com/r3dpan/project-descendence/internal/client"
 )
@@ -43,10 +44,16 @@ func stateStyle(state string) lipgloss.Style {
 	}
 }
 
-// isTTY reports whether f is an interactive terminal. Used to decide
-// between the bubbletea view and plain line output - a CLI piped into
-// another program must not emit spinners and cursor movement.
+// isTTY reports whether f is an interactive terminal. Used to decide between
+// the bubbletea views and plain line output - a CLI piped into another program
+// must not emit spinners and cursor movement.
+//
+// This asks the terminal driver (an ioctl), rather than checking for a
+// character device as it did originally. The difference is not academic:
+// /dev/null *is* a character device, so the old test called it a terminal, and
+// `descendence > /dev/null` would try to open the full-screen application on
+// it. Harmless while this only chose between two ways of printing; not
+// harmless once it decides whether to launch an interactive app.
 func isTTY(f *os.File) bool {
-	info, err := f.Stat()
-	return err == nil && info.Mode()&os.ModeCharDevice != 0
+	return term.IsTerminal(f.Fd())
 }

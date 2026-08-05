@@ -47,6 +47,12 @@ Update the marker on each task as it moves:
   completely, indexed, kept for 30 days, served as JSON pages and as a
   live SSE stream that resumes cleanly after a disconnect; runs can be
   cancelled whether or not they have started; the CLI can follow one live.
+- **Since Phase 2:** the CLI gained an **interactive application** (bare
+  `descendence` on a terminal), decision #22. Menu → runs → run detail →
+  live logs, plus a new-run form and cancel. Every flag command is
+  unchanged, and bare `descendence` without a terminal still prints usage
+  and exits 2 — the guard that keeps a script from meeting a TUI. Not a
+  numbered task; it was asked for directly.
 - **Next action:** 3.1 — the `repos` and `jobs` migration. Before starting,
   re-read ARCHITECTURE.md §4.5 and §5, and note that Phase 3 is the first
   one that makes `runs` rows refer to something outside themselves

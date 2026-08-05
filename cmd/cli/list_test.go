@@ -31,13 +31,28 @@ func testListModel(runs []client.Run, nextCursor *string) listModel {
 	return newListModel(context.Background(), client.New("http://example.invalid", "t"), page, 0)
 }
 
+// key builds a KeyMsg from a name. Shared by every test in this package that
+// drives an Update; named keys have their own KeyType, anything else is typed
+// runes.
 func key(s string) tea.KeyMsg {
-	if s == "enter" {
-		return tea.KeyMsg{Type: tea.KeyEnter}
+	named := map[string]tea.KeyType{
+		"enter":     tea.KeyEnter,
+		"esc":       tea.KeyEsc,
+		"tab":       tea.KeyTab,
+		"up":        tea.KeyUp,
+		"down":      tea.KeyDown,
+		"left":      tea.KeyLeft,
+		"right":     tea.KeyRight,
+		"home":      tea.KeyHome,
+		"end":       tea.KeyEnd,
+		"backspace": tea.KeyBackspace,
+		"ctrl+c":    tea.KeyCtrlC,
 	}
-	if s == "down" {
-		return tea.KeyMsg{Type: tea.KeyDown}
+
+	if keyType, ok := named[s]; ok {
+		return tea.KeyMsg{Type: keyType}
 	}
+
 	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
 }
 

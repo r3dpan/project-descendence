@@ -751,3 +751,50 @@ Notes to future me:
   - Ctrl-C still stops watching rather than the run - now a choice, not a
     limitation. Detaching from something is not ending it, and a `logs`
     command that killed a job on Ctrl-C would make watching dangerous.
+
+## 2026-08-05 (interactive CLI)
+Worked on: turning the CLI into a navigable application, asked for directly
+  rather than as a plan task.
+Completed: `cmd/cli/ui*.go` - a bubbletea screen stack behind bare
+  `descendence`. Menu → runs (live-refreshing table) → run detail (with
+  cancel) → live log viewer, plus a new-run form, identity and config
+  screens. Recorded as decision #22.
+  Every flag command is untouched. Bare `descendence` *without* a terminal
+  still prints usage and exits 2.
+Broken / unresolved:
+  - **`isTTY` called /dev/null a terminal.** It tested for
+    `os.ModeCharDevice`, which /dev/null has, so `descendence > /dev/null`
+    would have tried to open a full-screen app on it. Harmless while the
+    check only chose between two ways of printing (its job since 1.19); not
+    harmless once it decides whether to launch an application. Now asks the
+    terminal driver via `charmbracelet/x/term.IsTerminal`.
+  - **The root model caught `errMsg` and quit.** Every screen has its own
+    handling that shows the error and carries on, and none of it could ever
+    run, because the root intercepted the message first - so a single failed
+    list refresh would have dropped the user back to their shell. The root
+    now forwards it like any other message. There is a test.
+Next action: unchanged - Phase 3, task 3.1.
+Notes to future me:
+  - **HISTORY's warning about TUI test harnesses was right, twice.** A pty
+    capture produced nothing readable (lipgloss queries the terminal
+    background and a harness has no answer), and a harness that executed
+    tea.Cmds recursively hung forever on `textinput.Blink`, which blocks on
+    a channel the real runtime feeds. Both cost real time. Test `Update`
+    and `View` directly; they are pure functions of (model, msg).
+  - Screens go back by emitting `popScreen` themselves rather than the root
+    intercepting `esc`. A screen with a focused text field needs `esc` to
+    mean something else, and only the screen knows that. `ctrl+c` is the
+    exception and is caught at the root unconditionally - an application you
+    cannot reliably leave is worse than no application.
+  - The runs list *merges* refreshes instead of replacing. Replacing every
+    two seconds would discard the pages the user had scrolled into and reset
+    their cursor. Merging is only correct because runs are ordered
+    queued_at DESC, so new ones always belong at the head.
+  - The log viewer stops following the moment you scroll up and resumes when
+    you return to the bottom, inferred from `viewport.AtBottom()` rather
+    than from which key was pressed - so it works for arrows, page keys and
+    the mouse wheel without enumerating them.
+  - Leaving the log viewer cancels its stream context. Without that, the
+    follow goroutine and its HTTP connection would outlive the screen for
+    the rest of the run: the client-side version of the leak 2.7 fixed on
+    the server.
