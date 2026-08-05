@@ -23,7 +23,7 @@ with weeks in between:
   learned, what was next.
 
 **End-of-task ritual (expected, not optional):** After finishing a task during a session
-/clean your context to get rid of unneccessary data in your context workload.
+/clear your context to get rid of unneccessary data in your context workload.
 
 **End-of-session ritual (expected, not optional):** update PLAN.md's
 "Current position" block and its task markers, and append an entry to HISTORY.md.
