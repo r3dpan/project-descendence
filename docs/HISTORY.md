@@ -1658,3 +1658,121 @@ Notes to future me:
     with hand-edited Postgres state the way earlier phases sometimes could,
     since the thing under test is systemd's own timer bookkeeping, not
     anything this codebase controls.
+
+## 2026-08-05 (Phase 6 — Parameters, 6.1–6.6)
+
+Did: 6.1 through 6.6, in order, each with its own commit so the session had
+clean stopping points throughout. 6.7 (optional PowerShell AST introspection
+prototype) deliberately not attempted - the operator asked to stop after 6.6,
+and it was already marked optional in PLAN.md.
+
+- **6.1.** `internal/manifest`'s `params:` block went from a rejected
+  yaml.Node placeholder to a real typed contract (name, type
+  string/number/bool/mount, required, default, secret). Types are a closed
+  set, matching this package's "unknown key is an error" posture. Also added
+  `jobs.params_json` (migration 00006) as a projection of the contract,
+  following `runtime_id`'s precedent (decision #23) - `GET /jobs/{id}` now
+  answers "what params does this job take" without reading git.
+- **6.2.** `manifest.ResolveParams` validates a submission against the
+  contract (unknown keys, missing-required, type coercion, defaults) and
+  returns what gets stored. `POST /jobs/{id}/runs` grew an optional
+  `{params: {...}}` body; CLI grew a repeatable `-param name=value` flag.
+  Every error is a 400, before anything is queued.
+- **6.3.** `cmd/supervisor/script.go`'s `materialiseScript` switched from
+  `podman.TarFile` to the already-existing `podman.TarFiles` (built for
+  exactly this by task 4.4, per its own doc comment) to deliver
+  `params.json` alongside the script in one archive.
+- **6.4.** Shim = wrapper argv, not a sourced library (confirmed with the
+  operator before building): `Manifest.Argv()` returns `[shim, script]`
+  instead of `[script]` when the job has params, names no explicit command,
+  and the script's extension is one a shim exists for (`.sh`/`.py`/`.ps1`).
+  Shims live in `internal/manifest/shims` (`go:embed`), delivered per-run
+  like the script itself rather than baked into a runtime image - the only
+  way it works uniformly for both `image:` and `runtime:` jobs. Mid-task
+  correction: `runs.params_json` had to change from a JSON *object* to an
+  ordered *array* of `{name, value}`, because the Bash shim turns contract
+  order into positional arguments and neither a JSON object's key order nor
+  Go's map iteration makes any promise about preserving it. Bash's shim
+  avoids writing a JSON parser entirely by reading a NUL-delimited
+  `params.argv` convenience file instead (`manifest.ParamsArgv`) -
+  `mapfile -d ''` handles arbitrary bytes with zero escaping.
+- **6.5.** Redaction is response-time, not storage-time: `toRunResponse`'s
+  `params` get a fixed `"***"` looked up against the job's contract
+  (`secret: true` or `type: mount`) at every one of the six call sites that
+  build a run response.
+- **6.6.** Podman secrets, entirely greenfield (no prior secrets code
+  anywhere). `internal/podman/secrets.go` adds `SecretCreate`/`SecretRemove`.
+  `ResolveParams` was changed to split mount-type values into a second
+  return (`secrets`), stored in a new `runs.secret_params_json` column
+  (migration 00007) - never assembled into `params_json` at all, closing the
+  gap 6.5's response-time redaction alone left open (a future response-
+  shaping bug could otherwise have exposed it). The supervisor creates one
+  secret per mount param before container create (`createRunSecrets`,
+  `cmd/supervisor/execute.go`), mounts it under `/run/job/secrets/<name>`,
+  and removes it alongside the container on every exit path -
+  `removeContainer` now takes the full `run` and re-derives secret names
+  from `run.SecretParamsJson` rather than requiring a caller to have kept a
+  list around, so cleanup works the same for normal execution and reconciler
+  adoption. `materialiseScript` rebuilds the container's `params.json` from
+  the contract (`manifest.MergeParamsForDelivery`) so a mount param's value
+  there is its mount path, never the plaintext - the plaintext is never even
+  read back out of Postgres by that code path.
+
+Broken / found and fixed within the session, not left behind:
+  - **The `secret_params_json`-out-of-every-RETURNING design backfired
+    immediately.** The idea was "no query returns it, so no handler can leak
+    it by accident" - but sqlc stops generating a single `store.Run` type
+    the moment different queries against the `runs` table select different
+    column sets, generating a `CreateJobRunRow`, `GetRunRow`,
+    `ListNonTerminalRunsRow` etc. instead, which broke every call site
+    across `cmd/supervisor` and `internal/api` that assumed `store.Run` was
+    universal. Fixed by selecting `secret_params_json` everywhere,
+    same as `params_json` - the real safety boundary was always the Go
+    response structs (`runResponse` has no field for the secret column, so
+    `encoding/json` cannot serialise what nothing ever assigned to it), not
+    which SQL columns a query selects. Worth remembering: prefer "the type
+    system can't express the leak" over "the query happens not to select
+    it" when both are available - the second is a convention, the first is
+    load-bearing.
+  - Podman's `POST /libpod/secrets/create` returns `200`, not `201`, on this
+    environment's podman version. `checkStatus` only accepted 201; the first
+    live mount-type run failed with an opaque "unexpected status 200 OK"
+    until both were allowed. A fourth entry in the "podman's real behavior
+    disagrees with the doc/assumption" list this project keeps hitting
+    (decisions #20/#21/#26), smaller than the others but the same shape.
+Verified live, end to end, against the real stack (api + supervisor
+processes, real Postgres, real Podman):
+  - Created a `greet-params-smoketest` job (Debian image, a `name` string
+    param and a `token` mount param) via `repos put`, confirmed its contract
+    round-tripped through `GET /jobs/{id}` and `descendence jobs get`.
+  - Ran it with `-param 'name=World"; rm -rf /; #' -param token=...`: the
+    injection-shaped value printed completely literally in the script's
+    output (argv array discipline, task 1.11's precedent, holding all the
+    way through the shim); the mount secret arrived as a file at
+    `/run/job/secrets/token` with the exact content submitted; `podman
+    secret ls` was empty again after the run finished.
+  - A second job with a plain string param marked `secret: true` (not
+    `mount`) confirmed the other redaction path: `GET /runs/{id}` showed
+    `"value": "***"` for it, while the mount-type param from the first job
+    didn't appear in `params` at all (it's not in `params_json` to begin
+    with) - `api/openapi.yaml` documents this as a deliberate distinction,
+    not an inconsistency.
+  - Cleaned up: both smoke-test processes stopped, `podman ps -a`/`podman
+    secret ls` both empty. The two smoke-test jobs themselves were left in
+    the `library` repo's git history - there is no delete-file endpoint
+    (git is append-only by design, decision #23), and this matches how
+    earlier phases' test jobs (`hello`, `ps-check`, `py-check`, `exits3`,
+    `broken`) already persist there.
+Next action: Phase 7 (Web UI) - re-read ARCHITECTURE.md §4.11 first, it says
+so itself. Or Phase 6.7 (PowerShell AST introspection spike) if picked up
+before Phase 7.
+Notes to future me:
+  - When a new column needs to *never* reach an API response, don't reach
+    for "keep it out of the query's column list" as the enforcement
+    mechanism - it fights sqlc's type generation and buys nothing a response
+    struct without the field doesn't already give you for free.
+  - The manifest package's "specify whole, implement in parts" pattern
+    (§ package comment) held up well a second time: `runtime:` at task 4.6,
+    `params:` at task 6.1, both the same shape (raw node → typed field,
+    remove from the unimplemented-keys loop). Worth reaching for again if
+    `form:` (Phase 7) fits the same mold.

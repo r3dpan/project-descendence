@@ -42,23 +42,30 @@ Update the marker on each task as it moves:
 
 > **Update this block every session.**
 
-- **Phase:** 5 — **complete** (5.1–5.7, exit check passed). Next up is
-  Phase 6 — parameters.
-- **Task:** Phases 0–5 all done. Scheduling fires jobs through generated
-  systemd (user) `.timer`/`.service` units (decision #27), not an in-process
-  cron loop — the supervisor renders/reloads them
-  (`internal/scheduling`, `internal/systemdunit`,
-  `cmd/supervisor/schedule.go`), and the api process's schedule CRUD stays a
-  plain Postgres write. A generated unit's `ExecStart` calls
-  `descendence schedule trigger <id>`, which hits
-  `POST /api/v1/schedules/{id}/trigger` (the first endpoint enforcing a
-  scope) — that endpoint applies the overlap policy and then reuses
-  `createJobRun`, the same run-creation logic `CreateJobRunHandler` was
-  refactored to share.
-- **Next action:** 6.1 — extend the manifest with the parameter contract
-  (name, type, required, default); see ARCHITECTURE.md §4.7 for the four
-  deliberately-separate concerns (contract / introspection / form / binding
-  map) before starting.
+- **Phase:** 6 — **6.1–6.6 complete**, exit check passed. 6.7 (optional
+  PowerShell AST introspection prototype) deliberately not attempted —
+  genuinely optional per its own task wording, session ended before it by
+  request. Next up is Phase 7 (Web UI) unless a future session picks up 6.7
+  first.
+- **Task:** Jobs take typed, validated parameters end to end. The manifest's
+  `params:` block (name/type/required/default/secret) is real
+  (`internal/manifest`, `internal/manifest/params.go`); submitted values are
+  resolved against it server-side (`manifest.ResolveParams`, called from
+  `createJobRun`) and stored on the run in contract order (`runs.params_json`
+  is a JSON *array* of `{name, value}`, not an object — Bash's positional-arg
+  shim needs an order guarantee a JSON object's keys don't give). A job with
+  params and no explicit `command:` routes its argv through a per-language
+  shim (`internal/manifest/shims`: Bash/Python/PowerShell) that re-invokes
+  the script with a native calling convention. `type: mount` params (Podman
+  secrets, ARCHITECTURE.md §4.6) get their own storage
+  (`runs.secret_params_json`) split out at resolution time, never assembled
+  into `params_json` at all — the supervisor creates one Podman secret per
+  mount param before container create and removes it alongside the container
+  on every exit path (`cmd/supervisor/execute.go`).
+- **Next action:** Phase 7 planning (re-read ARCHITECTURE.md §4.11 first,
+  per its own note), or Phase 6.7 if picked up first — prototype PowerShell
+  AST param introspection (`System.Management.Automation.Language.Parser`)
+  as a standalone spike, never wired into jobsync/manifest parsing.
 - **Blocked on:** nothing
 - **Notes:** invariants live in CLAUDE.md's "Invariants worth not breaking" —
   that's the one place to check before touching jobs, git, or run execution.
@@ -78,6 +85,20 @@ Update the marker on each task as it moves:
   generated schedule unit's `ExecStart` can name the CLI's absolute path
   instead of relying on `PATH` resolution, found the hard way when the first
   live-fired schedule failed with "Unable to locate executable 'descendence'".
+  From Phase 6: a first attempt at `runs.secret_params_json` (task 6.6) tried
+  to keep it out of every `RETURNING`/`SELECT` list as the safety mechanism
+  against an API response leaking a secret — this backfired immediately:
+  sqlc stops reusing a single `store.Run` type the moment different queries
+  against the same table select different column sets, and generates a
+  distinct `*Row` struct per query instead, breaking every call site that
+  assumed `store.Run` was universal. The actual safety boundary was always
+  the Go response structs (`runResponse` has no field for the secret column,
+  so `encoding/json` cannot serialise what nothing ever assigned to it) —
+  not which SQL columns a query happens to select. Fixed by selecting it
+  everywhere, like `params_json`, and let the type system do the enforcing.
+  Also: Podman's `POST /libpod/secrets/create` returns `200`, not `201`, on
+  this podman version — found by an unexplained "unexpected status 200 OK"
+  the first time a mount-type param actually ran.
 
 ---
 
@@ -424,20 +445,40 @@ schedule's unit files (and stopping its timer) on delete.
 **Done when:** `cli job run greet --param name=World` works across Python, Bash and
 PowerShell.
 
-- [ ] **6.1** Extend the manifest with the parameter contract (name, type, required,
-      default).
-- [ ] **6.2** Validate submitted params against the contract server-side; reject
-      clearly on mismatch.
-- [ ] **6.3** Mount params as JSON at `/run/job/params.json`.
-- [ ] **6.4** Write shims: Bash, Python, PowerShell.
-- [ ] **6.5** Store params on the run record for reproducibility — **redact anything
-      marked secret**.
-- [ ] **6.6** Wire Podman secrets as a parameter type (`type=mount`).
-- [ ] **6.7** *Optional:* prototype PowerShell AST introspection (open question in
-      ARCHITECTURE.md §8). Best-effort only — never a runtime dependency.
+- [x] **6.1** Extend the manifest with the parameter contract (name, type, required,
+      default). Also projects the contract onto a new `jobs.params_json`
+      column (decision #23's pattern) so `GET /jobs/{id}` can expose it.
+- [x] **6.2** Validate submitted params against the contract server-side; reject
+      clearly on mismatch. `POST /jobs/{id}/runs` takes an optional
+      `{params: {name: value}}` body; CLI gets `-param name=value`
+      (repeatable).
+- [x] **6.3** Mount params as JSON at `/run/job/params.json`.
+- [x] **6.4** Write shims: Bash, Python, PowerShell. Shim = wrapper argv
+      (`[shim, script]`, chosen by script extension), not a sourced
+      library — only enters argv when the job actually declares params.
+      `runs.params_json` is an ordered array of `{name, value}`, not an
+      object: Bash's positional-arg order needs a guarantee a JSON
+      object's key order (or Go map iteration) doesn't give.
+- [x] **6.5** Store params on the run record for reproducibility — **redact anything
+      marked secret**. Response-time redaction (fixed `"***"` sentinel),
+      looked up against the job's contract by `run.JobID`.
+- [x] **6.6** Wire Podman secrets as a parameter type (`type=mount`).
+      `manifest.ResolveParams` splits mount-type values into
+      `runs.secret_params_json` at resolution time — never assembled into
+      `params_json` to begin with, so there's nothing for an API response
+      to leak regardless of which SQL columns a query selects (the actual
+      safety boundary is that `runResponse` has no field for it).
+      Supervisor creates one Podman secret per mount param before
+      container create, mounts it under `/run/job/secrets/<name>`, removes
+      it alongside the container on every exit path. Verified live against
+      the real stack (see HISTORY.md).
+- [!] **6.7** *Optional:* prototype PowerShell AST introspection (open question in
+      ARCHITECTURE.md §8). Deferred, not attempted this session — genuinely
+      optional per the task's own wording, and the operator asked to stop
+      after 6.6.
 
 **Exit check:** a parameter value containing `"; rm -rf /; #` is passed through
-literally and harmlessly.
+literally and harmlessly. **→ Passed**, verified live — see HISTORY.md.
 
 ---
 
