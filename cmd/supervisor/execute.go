@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/r3dpan/project-descendence/internal/logstream"
 	"github.com/r3dpan/project-descendence/internal/podman"
 	"github.com/r3dpan/project-descendence/internal/store"
 )
@@ -159,7 +160,18 @@ func finishRun(ctx context.Context, queries *store.Queries, runID int64, state s
 	}
 	if rows == 0 {
 		log.Printf("run %d: not recording %q - the run was already in a terminal state", runID, state)
+		return
 	}
+
+	// Let anything streaming this run end promptly rather than waiting for a
+	// poll to notice the run is over (task 2.3). Only on a real transition -
+	// announcing a state this call did not actually write would tell
+	// subscribers the run ended twice.
+	notifyRunEvent(ctx, queries, logstream.Event{
+		RunID: runID,
+		Kind:  logstream.KindState,
+		State: state,
+	})
 }
 
 // removeContainer waits for the run's log capture to drain, then removes the

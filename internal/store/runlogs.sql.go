@@ -143,3 +143,25 @@ func (q *Queries) MarkRunLogsPruned(ctx context.Context, id int64) error {
 	_, err := q.db.Exec(ctx, markRunLogsPruned, id)
 	return err
 }
+
+const notifyRunEvent = `-- name: NotifyRunEvent :exec
+SELECT pg_notify($1::text, $2::text)
+`
+
+type NotifyRunEventParams struct {
+	Channel string `json:"channel"`
+	Payload string `json:"payload"`
+}
+
+// Wakes anything streaming a run in the API (task 2.3). pg_notify() rather
+// than a NOTIFY statement because the payload is a parameter here, not
+// something to be pasted into SQL text.
+//
+// api and supervisor never talk to each other (ARCHITECTURE.md §3), so this
+// is the whole channel between "the supervisor captured a line" and "a
+// browser sees it". The payload is a watermark, never log text: see
+// internal/logstream.
+func (q *Queries) NotifyRunEvent(ctx context.Context, arg NotifyRunEventParams) error {
+	_, err := q.db.Exec(ctx, notifyRunEvent, arg.Channel, arg.Payload)
+	return err
+}

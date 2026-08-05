@@ -53,3 +53,14 @@ LIMIT sqlc.arg(row_limit);
 -- the file are actually gone, so a crash mid-sweep leaves the run to be swept
 -- again rather than marking it done with its logs still on disk.
 UPDATE runs SET logs_pruned_at = now() WHERE id = $1;
+
+-- name: NotifyRunEvent :exec
+-- Wakes anything streaming a run in the API (task 2.3). pg_notify() rather
+-- than a NOTIFY statement because the payload is a parameter here, not
+-- something to be pasted into SQL text.
+--
+-- api and supervisor never talk to each other (ARCHITECTURE.md §3), so this
+-- is the whole channel between "the supervisor captured a line" and "a
+-- browser sees it". The payload is a watermark, never log text: see
+-- internal/logstream.
+SELECT pg_notify(@channel::text, @payload::text);

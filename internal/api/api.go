@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 
+	"github.com/r3dpan/project-descendence/internal/logstream"
 	"github.com/r3dpan/project-descendence/internal/podman"
 	"github.com/r3dpan/project-descendence/internal/store"
 )
@@ -17,10 +18,18 @@ type APIServer struct {
 
 	queries *store.Queries
 	podman  *podman.Client
+
+	// logDir is where the supervisor writes run output. The API only ever
+	// reads it (ARCHITECTURE.md §4.1, decision #19).
+	logDir string
+	// logEvents wakes streaming handlers when a run has more output or has
+	// finished. Fed by the Postgres listener, not by the supervisor directly
+	// - the two processes never talk (§3).
+	logEvents *logstream.Broker
 }
 
 // --- API server constructor ---
-func NewAPIServer(productName string, productBuild string, apiVersion string, queries *store.Queries, podmanClient *podman.Client) *APIServer {
+func NewAPIServer(productName string, productBuild string, apiVersion string, queries *store.Queries, podmanClient *podman.Client, logDir string, logEvents *logstream.Broker) *APIServer {
 	return &APIServer{
 		productName:  productName,
 		productBuild: productBuild,
@@ -28,6 +37,9 @@ func NewAPIServer(productName string, productBuild string, apiVersion string, qu
 
 		queries: queries,
 		podman:  podmanClient,
+
+		logDir:    logDir,
+		logEvents: logEvents,
 	}
 }
 

@@ -65,27 +65,29 @@ unclear, check it against these.
                      └──────┬───────┘
                             │ HTTP + Bearer token
                             ▼
-   ┌────────────────────────────────────────────┐
-   │  cmd/api  — HTTP server                    │
-   │  · auth middleware (principal resolution)  │
-   │  · CRUD on jobs / runs / runtimes          │
-   │  · SSE log streaming                       │
-   │  · serves embedded SPA (much later)        │
-   └───────────────────┬────────────────────────┘
-                       │ SQL only
-                       ▼
-              ┌─────────────────┐
-              │   PostgreSQL    │  ← queue, state, history, coordination
-              └─────────────────┘
-                       ▲
-                       │ SQL only  (api and supervisor never talk to each other)
-   ┌───────────────────┴────────────────────────┐
-   │  cmd/supervisor — single instance          │
-   │  · claims queued runs                      │
-   │  · scheduler (cron)                        │
+   ┌────────────────────────────────────────────┐        ┌──────────────────┐
+   │  cmd/api  — HTTP server                    │ reads  │  run log files   │
+   │  · auth middleware (principal resolution)  │───────►│  <RUN_LOG_DIR>/  │
+   │  · CRUD on jobs / runs / runtimes          │        │     <run_id>.log │
+   │  · SSE log streaming + subscriber fan-out  │        └────────▲─────────┘
+   │  · serves embedded SPA (much later)        │                 │
+   └───────────────────┬────────────────────────┘                 │
+                       │ SQL + LISTEN                             │
+                       ▼                                          │
+              ┌─────────────────┐                                 │
+              │   PostgreSQL    │  ← queue, state, history,       │
+              └─────────────────┘    coordination, log index,     │
+                       ▲             notification bus             │
+                       │ SQL + NOTIFY                             │
+                       │ (api and supervisor never talk directly) │
+   ┌───────────────────┴────────────────────────┐                 │
+   │  cmd/supervisor — single instance          │  writes         │
+   │  · claims queued runs                      │─────────────────┘
+   │  · scheduler (cron)                        │  (sole writer)
    │  · container lifecycle                     │
-   │  · log capture + fan-out                   │
+   │  · log capture (one attach per run)        │
    │  · crash reconciliation                    │
+   │  · log retention sweep                     │
    └───────┬─────────────────────┬──────────────┘
            │ REST over UDS       │ shell out
            ▼                     ▼
@@ -112,7 +114,7 @@ copies without duplicating job execution.
 
 ### 4.1 Postgres
 
-Serves four roles:
+Serves five roles:
 
 - **State store** — jobs, runs, runtimes, principals, audit.
 - **Work queue** — the supervisor claims runs with
@@ -121,6 +123,9 @@ Serves four roles:
 - **Coordination** — a Postgres *advisory lock* elects the single active scheduler
   if a second supervisor ever starts.
 - **Log index** — sequence numbers and metadata; the log *bodies* go to files.
+- **Notification bus** — `LISTEN`/`NOTIFY` carries "run 42 has more output" from the
+  supervisor to the API, so live streaming needs no channel between the two
+  processes (task 2.3, decision #19).
 
 No Redis, no Celery, no separate broker. At this scale Postgres is more than enough
 and it's one less thing to run.
@@ -131,9 +136,18 @@ The only component that touches Podman. Responsibilities:
 
 - Poll for queued runs, claim them, execute them.
 - Evaluate schedules and enqueue runs when due.
-- Attach to container output **once per run** and fan out to N subscribers
-  (multiple browsers/CLIs may tail the same run). Slow consumers get dropped or
-  bounded — never allowed to block the writer.
+- Attach to container output **once per run**, write it to that run's log file, and
+  index it in Postgres. One attach no matter how many clients are watching.
+
+  *Corrected at task 2.3.* This bullet used to say the supervisor also fans out to N
+  subscribers. It doesn't, and can't: the subscribers are HTTP clients, and the
+  supervisor serves no HTTP — api and supervisor never talk (§3). The supervisor
+  instead emits a `NOTIFY` watermark ("run 42 has output through sequence 900"), and
+  the **fan-out lives in the API** (`internal/logstream`), which holds one listening
+  connection for the whole process and broadcasts to however many subscribers a run
+  has. Slow consumers are dropped, never allowed to block: one listener goroutine
+  serves every run, so a single frozen client would otherwise stall log delivery for
+  everybody.
 - On startup: list containers by their `run_id` label and reconcile against runs in
   a non-terminal state. Without this, every crash leaves orphaned containers.
 
@@ -354,6 +368,7 @@ Recording *why*, because in three months the reasoning will be gone.
 | 16 | goose for migrations, not golang-migrate | Go-based migrations available for the Phase-1 bootstrap token (crypto/rand + SHA-256, not expressible in SQL); no dirty-flag state to force-clear after a failed migration; Postgres-only project makes golang-migrate's driver breadth irrelevant | Migrations ever need running by something that isn't Go |
 | 17 | CLI built on the Charm stack (`bubbletea`, `bubbles`, `lipgloss`), not plain `fmt.Println` | A run is a *live* thing — queued → running → terminal, on the order of seconds to an hour. Watching that is genuinely interactive, and a good TUI is the difference between a tool that gets used and one that doesn't. Deliberately narrower than #15's "hand-write it": rendering is not where this project's learning value is, and reimplementing a terminal renderer would be busywork, not education. Command dispatch and flag parsing stay stdlib (`flag`) — no cobra | The TUI outgrows bubbletea, or the CLI stops being the primary client |
 | 18 | **Log retention: run records forever, run *output* for 30 days.** Time-based, swept hourly by the supervisor, both halves (index rows and files) deleted together | The question an operator actually asks is "can I still see what last month's backup printed" — a question about time. Count-based answers it differently depending on how busy the month was; size-based lets one chatty job evict everyone else's history. The run row is the audit trail (what ran, when, under whose token, how it ended): small, structured, worth keeping forever. The output is the bulky part and the part whose value decays. The sweep lives in the supervisor because the advisory lock (#16 era, task 1.16) already guarantees exactly one of it. `runs.logs_pruned_at` exists so the API can tell "printed nothing" from "output deleted" — without it both look like an empty log, and the second silently lies | Disk pressure arrives before 30 days, i.e. a per-run size cap becomes necessary — deliberately not built, since it has not happened |
+| 19 | **Live logs travel by `LISTEN`/`NOTIFY`, and the API reads log files directly** (a shared directory the supervisor alone writes). Payloads are watermarks — "run 42 has output through seq 900" — never log text | The API serves SSE but the supervisor holds the output, and the two never talk (§3), so something has to bridge them. Postgres is already the coordination layer (#5), needs no new port or service discovery, and keeps the API stateless. Watermarks rather than payloads mean a dropped or missed notification costs latency, not correctness — so slow subscribers can be dropped freely and a listener reconnect needs no replay protocol; a slow safety-net poll covers the gap. This does add a third channel the §3 diagram originally lacked: a filesystem shared by both processes, which is what pins them to one host | Multi-node execution arrives (already deferred, §7) — the shared directory is the assumption that breaks first, and object storage or streaming bodies through Postgres would be the replacements |
 ---
 
 ## 7. Deliberately deferred

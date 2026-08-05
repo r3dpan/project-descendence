@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/r3dpan/project-descendence/internal/api"
+	"github.com/r3dpan/project-descendence/internal/logstream"
 	"github.com/r3dpan/project-descendence/internal/podman"
 	"github.com/r3dpan/project-descendence/internal/store"
 )
@@ -52,12 +53,29 @@ func main() {
 	}
 	podmanClient := podman.NewClient(podmanSocket)
 
+	// Where the supervisor writes run output. The API reads the same
+	// directory (never writes it), so both processes must be given the same
+	// path - see ARCHITECTURE.md decision #19.
+	logDir := os.Getenv("RUN_LOG_DIR")
+	if logDir == "" {
+		log.Fatal("RUN_LOG_DIR is not set")
+	}
+
+	// One Postgres listener for the whole process, fanning run events out to
+	// however many clients are streaming (task 2.3). Its context is cancelled
+	// on shutdown so the connection is not left behind.
+	listenCtx, stopListening := context.WithCancel(context.Background())
+	defer stopListening()
+
+	logEvents := logstream.NewBroker()
+	go logstream.Listen(listenCtx, databaseURL, logEvents)
+
 	// Create custom mux
 	// Needed for preventing usage of global mux
 	descendenceMux := http.NewServeMux()
 
 	// Create new API server
-	descendenceAPI := api.NewAPIServer(productName, productBuild, apiVersion, queries, podmanClient)
+	descendenceAPI := api.NewAPIServer(productName, productBuild, apiVersion, queries, podmanClient, logDir, logEvents)
 
 	// Create api handlers
 	// Rule: the most specific pattern always wins

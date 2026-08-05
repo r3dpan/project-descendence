@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/r3dpan/project-descendence/internal/logstream"
 	"github.com/r3dpan/project-descendence/internal/podman"
 	"github.com/r3dpan/project-descendence/internal/runlog"
 	"github.com/r3dpan/project-descendence/internal/store"
@@ -158,9 +159,23 @@ func indexLines(queries *store.Queries, runID int64, lines <-chan runlog.Line) {
 		// A fresh context deliberately: captured output should still be
 		// recorded when the supervisor is shutting down, exactly as a
 		// terminal state is (see finishRun).
-		if _, err := queries.InsertRunLogs(context.Background(), batch); err != nil {
+		ctx := context.Background()
+
+		if _, err := queries.InsertRunLogs(ctx, batch); err != nil {
 			log.Printf("run %d: recording %d log lines: %v", runID, len(batch), err)
+			batch = batch[:0]
+			return
 		}
+
+		// Announce only what is actually readable now - after the COPY, and
+		// after the file flush that preceded it. The watermark is the last
+		// sequence in the batch.
+		notifyRunEvent(ctx, queries, logstream.Event{
+			RunID: runID,
+			Kind:  logstream.KindLogs,
+			Seq:   batch[len(batch)-1].Seq,
+		})
+
 		batch = batch[:0]
 	}
 
@@ -184,6 +199,28 @@ func indexLines(queries *store.Queries, runID int64, lines <-chan runlog.Line) {
 	}
 
 	flush()
+}
+
+// notifyRunEvent tells anything streaming this run in the API that there is
+// something new to read (task 2.3).
+//
+// Best-effort by design. A notification that never arrives costs a subscriber
+// latency until its next safety-net poll, and nothing else - the index and
+// the file are already durable by the time this is called. Failing a run, or
+// even retrying, over a missed wake-up would be out of all proportion.
+func notifyRunEvent(ctx context.Context, queries *store.Queries, event logstream.Event) {
+	payload, err := event.Payload()
+	if err != nil {
+		log.Printf("run %d: encoding %s event: %v", event.RunID, event.Kind, err)
+		return
+	}
+
+	if err := queries.NotifyRunEvent(ctx, store.NotifyRunEventParams{
+		Channel: logstream.Channel,
+		Payload: payload,
+	}); err != nil {
+		log.Printf("run %d: publishing %s event: %v", event.RunID, event.Kind, err)
+	}
 }
 
 func toIndexRow(runID int64, line runlog.Line) store.InsertRunLogsParams {
