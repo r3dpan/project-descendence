@@ -29,9 +29,15 @@ RETURNING id, principal_id, state, idempotency_key, image_ref, argv,
 -- schedule_id (task 5.6) is NULL for every ordinary job-run request; only
 -- the schedule trigger endpoint supplies one, so this run can later answer
 -- "did this schedule's last fire finish yet" (GetLatestRunForSchedule).
+--
+-- params_json (task 6.2) is the request's submitted values already resolved
+-- against the job's contract - defaults applied, types coerced - never the
+-- raw submission. A schedule trigger has no submission of its own, so it
+-- always passes the contract's defaults-only resolution.
 INSERT INTO runs (principal_id, image_ref, argv, timeout_seconds, idempotency_key,
-                  job_id, commit_sha, runtime_id, image_digest, schedule_id)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                  job_id, commit_sha, runtime_id, image_digest, schedule_id,
+                  params_json)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 ON CONFLICT (principal_id, idempotency_key) DO NOTHING
 RETURNING id, principal_id, state, idempotency_key, image_ref, argv,
           timeout_seconds, container_id, exit_code, failure_reason,

@@ -370,7 +370,12 @@ func (s *APIServer) TriggerScheduleHandler(w http.ResponseWriter, r *http.Reques
 		}
 	}
 
-	run, problem := s.createJobRun(r.Context(), principal, job, "", &sched.ID)
+	// A schedule fire has no params submission of its own (task 6.2); the
+	// job's contract resolves to defaults only. A schedule that needs a
+	// required param with no default cannot be fired this way - the same
+	// place a run for such a job already fails today for an ad-hoc request
+	// with no submission.
+	run, problem := s.createJobRun(r.Context(), principal, job, "", &sched.ID, nil)
 	if problem != nil {
 		writeProblem(w, problem.status, problem.detail)
 		return

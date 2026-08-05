@@ -21,11 +21,12 @@ type Job struct {
 	ScriptPath   string  `json:"scriptPath"`
 	// Nil in the usual case, where argv is the script's own path and its
 	// shebang chooses the interpreter.
-	Command         []string `json:"command"`
-	ImageRef        *string  `json:"imageRef"`
-	TimeoutSeconds  *int32   `json:"timeoutSeconds"`
-	Enabled         bool     `json:"enabled"`
-	SyncedCommitSHA string   `json:"syncedCommitSha"`
+	Command         []string   `json:"command"`
+	ImageRef        *string    `json:"imageRef"`
+	TimeoutSeconds  *int32     `json:"timeoutSeconds"`
+	Params          []JobParam `json:"params"`
+	Enabled         bool       `json:"enabled"`
+	SyncedCommitSHA string     `json:"syncedCommitSha"`
 	// Set when the manifest has been removed from the repository. Such a job
 	// cannot be run, and is not returned by ListJobs - but it still exists,
 	// so the runs that used it stay explainable.
@@ -34,6 +35,16 @@ type Job struct {
 
 // IsDeleted reports whether the job's manifest has been removed from git.
 func (j Job) IsDeleted() bool { return j.DeletedAt != nil }
+
+// JobParam mirrors the JobParam schema - one entry of a job's parameter
+// contract (task 6.1).
+type JobParam struct {
+	Name     string  `json:"name"`
+	Type     string  `json:"type"`
+	Required bool    `json:"required"`
+	Default  *string `json:"default"`
+	Secret   bool    `json:"secret"`
+}
 
 type JobList struct {
 	Items      []Job   `json:"items"`
@@ -106,12 +117,22 @@ type CreateRepoFileParams struct {
 	Message string `json:"message,omitempty"`
 }
 
-// CreateJobRunParams carries no execution detail on purpose: what to run is
-// the manifest's business. IdempotencyKey is a header, not a body field, which
-// is why this is a separate struct from anything serialised.
+// CreateJobRunParams carries no execution detail beyond parameter values -
+// what to run is still the manifest's business. IdempotencyKey is a header,
+// not a body field, which is why it's not part of createJobRunBody below.
+//
+// Params holds raw strings, matching --param name=value on the command
+// line; the server, not this client, coerces them against the job's
+// contract (task 6.2) so both callers of this method agree on what counts
+// as a valid number or bool.
 type CreateJobRunParams struct {
 	JobID          int64
 	IdempotencyKey string
+	Params         map[string]string
+}
+
+type createJobRunBody struct {
+	Params map[string]string `json:"params,omitempty"`
 }
 
 // --- Methods ---
@@ -180,6 +201,9 @@ func (c *Client) CreateJobRun(ctx context.Context, params CreateJobRunParams) (R
 	if params.IdempotencyKey != "" {
 		options.header = http.Header{}
 		options.header.Set("Idempotency-Key", params.IdempotencyKey)
+	}
+	if len(params.Params) > 0 {
+		options.body = createJobRunBody{Params: params.Params}
 	}
 
 	var run Run

@@ -66,6 +66,11 @@ type runResponse struct {
 	// Set only for a run the schedule trigger endpoint created (task 5.6) -
 	// NULL for both ad-hoc and ordinary job runs.
 	ScheduleID *int64 `json:"scheduleId"`
+
+	// The job's contract resolved against what was submitted (task 6.2):
+	// defaults applied, types coerced. Empty (never nil, matching
+	// runs.params_json's NOT NULL DEFAULT '{}') for an ad-hoc run.
+	Params map[string]any `json:"params"`
 }
 
 type runListResponse struct {
@@ -116,6 +121,15 @@ func toRunResponse(run store.Run) runResponse {
 		Argv:           run.Argv,
 		TimeoutSeconds: run.TimeoutSeconds,
 		QueuedAt:       run.QueuedAt.Time,
+		Params:         map[string]any{},
+	}
+	if len(run.ParamsJson) > 0 {
+		// Written only by createJobRun (task 6.2), which only ever writes
+		// what manifest.ResolveParams already validated - a decode error
+		// here would mean that invariant broke, not something a caller can
+		// act on, so it's surfaced as empty rather than failing the whole
+		// response.
+		_ = json.Unmarshal(run.ParamsJson, &resp.Params)
 	}
 
 	if run.ContainerID.Valid {

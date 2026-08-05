@@ -706,6 +706,23 @@ paths:
           schema:
             type: integer
         - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        description: >
+          Optional (task 6.2). Omit entirely for a job with no required
+          params, or whose defaults are all acceptable. Values are raw
+          strings - the server coerces them against the job's parameter
+          contract (GET /api/v1/jobs/{id}'s `params`), so a caller never
+          needs to duplicate that typing itself.
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                params:
+                  type: object
+                  additionalProperties:
+                    type: string
       responses:
         "202":
           description: >
@@ -720,6 +737,15 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Run"
+        "400":
+          description: >
+            A submitted param is unknown to the job's contract, a required
+            param with no default is missing, or a value does not match its
+            declared type.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
         "401":
           description: Missing, malformed, unknown, expired or revoked token
           content:
@@ -1375,6 +1401,15 @@ components:
         scheduleId:
           description: Set only for a run POST /api/v1/schedules/{id}/trigger created (task 5.6). Null for both ad-hoc and ordinary job runs.
           type: [integer, "null"]
+        params:
+          description: >
+            The job's contract resolved against what was submitted (task
+            6.2): defaults applied, types coerced. Empty for an ad-hoc run.
+            A value whose contract entry is `secret` or of type `mount` is
+            redacted here (task 6.5) regardless of what was actually
+            supplied.
+          type: object
+          additionalProperties: true
       required:
         - id
         - state
@@ -1382,6 +1417,7 @@ components:
         - argv
         - timeoutSeconds
         - queuedAt
+        - params
     RunList:
       type: object
       properties:

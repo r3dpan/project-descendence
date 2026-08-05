@@ -24,9 +24,11 @@ Subcommands:
   disable <name|id>    Stop a job from being run
 
 Flags for run:
-  -follow       Stream the run's output instead of its state
-  -detach       Print the run id and exit without waiting
-  -key <s>      Idempotency-Key, so a retry cannot double-trigger
+  -follow            Stream the run's output instead of its state
+  -detach            Print the run id and exit without waiting
+  -key <s>           Idempotency-Key, so a retry cannot double-trigger
+  -param name=value  A parameter value, per the job's contract (repeatable).
+                      See "descendence jobs get <name>" for what a job accepts.
 
 A job is defined by its manifest in git, so there is no command here that
 edits one. Change a job by committing its manifest - see "descendence repos
@@ -194,6 +196,15 @@ func cmdJobsRun(ctx context.Context, c *client.Client, args []string) int {
 	follow := fs.Bool("follow", false, "stream output instead of state")
 	detach := fs.Bool("detach", false, "print the run id and exit")
 	key := fs.String("key", "", "Idempotency-Key")
+	params := map[string]string{}
+	fs.Func("param", "a parameter value, name=value (repeatable)", func(raw string) error {
+		name, value, ok := strings.Cut(raw, "=")
+		if !ok {
+			return fmt.Errorf("expected name=value, got %q", raw)
+		}
+		params[name] = value
+		return nil
+	})
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -211,6 +222,7 @@ func cmdJobsRun(ctx context.Context, c *client.Client, args []string) int {
 	run, err := c.CreateJobRun(ctx, client.CreateJobRunParams{
 		JobID:          job.ID,
 		IdempotencyKey: *key,
+		Params:         params,
 	})
 	if err != nil {
 		printError(err)
@@ -497,12 +509,40 @@ func renderJobSummary(job client.Job) string {
 	}
 	field("synced", shortSHA(job.SyncedCommitSHA))
 
+	if len(job.Params) > 0 {
+		b.WriteString("  ")
+		b.WriteString(styleLabel.Render(fmt.Sprintf("%-10s", "params")))
+		b.WriteString("\n")
+		for _, p := range job.Params {
+			b.WriteString("    ")
+			b.WriteString(styleValue.Render(p.Name))
+			b.WriteString(styleHint.Render(fmt.Sprintf(" (%s%s)", p.Type, paramSuffix(p))))
+			b.WriteString("\n")
+		}
+	}
+
 	if job.IsDeleted() {
 		b.WriteString(styleHint.Render("  its manifest is gone from the repository; past runs still refer to it"))
 		b.WriteString("\n")
 	}
 
 	return b.String()
+}
+
+// paramSuffix annotates a job's param listing (task 6.1's contract) with
+// what a caller needs to know before setting --param: whether it can be
+// omitted, and what it defaults to if so.
+func paramSuffix(p client.JobParam) string {
+	switch {
+	case p.Secret || p.Type == "mount":
+		return ", secret"
+	case p.Default != nil:
+		return fmt.Sprintf(", default %s", *p.Default)
+	case p.Required:
+		return ", required"
+	default:
+		return ", optional"
+	}
 }
 
 func valueOrDash(s *string) string {

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -86,6 +87,13 @@ type jobListResponse struct {
 type jobPatchRequest struct {
 	// A pointer so that {} is "change nothing" rather than "disable".
 	Enabled *bool `json:"enabled"`
+}
+
+// createJobRunRequest is the optional body of POST /api/v1/jobs/{id}/runs
+// (task 6.2). Raw strings, matching --param name=value on the command line
+// - manifest.ResolveParams coerces them against the job's contract.
+type createJobRunRequest struct {
+	Params map[string]string `json:"params"`
 }
 
 func toJobResponse(job store.Job) jobResponse {
@@ -297,9 +305,19 @@ func (s *APIServer) CreateJobRunHandler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// The body is optional (task 6.2): a job with no required params, or a
+	// caller happy with every default, sends no params at all. Only a
+	// present-but-malformed body is an error - an empty one just means "no
+	// params submitted", the same as omitting Idempotency-Key means "none".
+	var req createJobRunRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeProblem(w, http.StatusBadRequest, "malformed JSON body")
+		return
+	}
+
 	idempotencyKey := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
 
-	run, problem := s.createJobRun(r.Context(), principal, job, idempotencyKey, nil)
+	run, problem := s.createJobRun(r.Context(), principal, job, idempotencyKey, nil, req.Params)
 	if problem != nil {
 		writeProblem(w, problem.status, problem.detail)
 		return
@@ -318,8 +336,10 @@ func (s *APIServer) CreateJobRunHandler(w http.ResponseWriter, r *http.Request) 
 // trigger path never does - systemd fires a unit once per due window, and
 // the overlap policy, not idempotency, is what decides whether a second run
 // gets created). scheduleID is nil for an ordinary job-run request and set
-// only when the trigger handler calls this.
-func (s *APIServer) createJobRun(ctx context.Context, principal store.Principal, job store.Job, idempotencyKey string, scheduleID *int64) (store.Run, *problemError) {
+// only when the trigger handler calls this. submittedParams (task 6.2) is
+// nil for the trigger path too - a schedule fire has no submission of its
+// own, so the job's contract resolves to defaults only.
+func (s *APIServer) createJobRun(ctx context.Context, principal store.Principal, job store.Job, idempotencyKey string, scheduleID *int64, submittedParams map[string]string) (store.Run, *problemError) {
 	if job.DeletedAt.Valid {
 		return store.Run{}, &problemError{http.StatusConflict, fmt.Sprintf("job %q cannot be run: its manifest has been removed from the repository", job.Name)}
 	}
@@ -355,6 +375,19 @@ func (s *APIServer) createJobRun(ctx context.Context, principal store.Principal,
 	parsed, err := manifest.Parse(job.ManifestPath, rawManifest)
 	if err != nil {
 		return store.Run{}, &problemError{http.StatusConflict, fmt.Sprintf("manifest is not valid at %s: %v", shortSHA(sha), err)}
+	}
+
+	// Task 6.2: submitted values are resolved against the contract at the
+	// same pinned commit the manifest itself was just read at, so a param
+	// added or removed by a later commit can never be applied to a run
+	// pinned to an earlier one.
+	resolvedParams, err := manifest.ResolveParams(parsed.Params, submittedParams)
+	if err != nil {
+		return store.Run{}, &problemError{http.StatusBadRequest, err.Error()}
+	}
+	paramsJSON, err := json.Marshal(resolvedParams)
+	if err != nil {
+		return store.Run{}, &problemError{http.StatusInternalServerError, "failed encoding resolved params"}
 	}
 
 	// Task 4.6: the manifest names either an image directly or a runtime -
@@ -410,6 +443,7 @@ func (s *APIServer) createJobRun(ctx context.Context, principal store.Principal,
 		RuntimeID:      runtimeID,
 		ImageDigest:    imageDigest,
 		ScheduleID:     scheduleIDCol,
+		ParamsJson:     paramsJSON,
 	})
 	if err != nil {
 		if err != pgx.ErrNoRows {
