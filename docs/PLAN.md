@@ -522,7 +522,21 @@ resumes without gaps.
       after them the only way to report a 404 is to hang up.
       Verification found two real defects that had nothing to do with SSE;
       see decisions #20 and #21, and the session log.
-- [ ] **2.6** Honour `Last-Event-ID` on reconnect: replay from that sequence number.
+- [x] **2.6** Honour `Last-Event-ID` on reconnect: replay from that sequence number.
+      The header **overrides `?after`**, which matters more than it sounds:
+      an `EventSource` reconnects to the *same URL* by itself and cannot
+      rewrite the query string, so the `?after` it sends back is whatever
+      the stream was originally opened with. Honouring that would replay
+      the whole run on every reconnect, forever.
+      Resuming loses and repeats nothing because sequence numbers are
+      dense and monotonic within a run and `after` is exclusive - true
+      even across a recapture (decision #21), which reproduces the same
+      lines under the same numbers. A malformed header is a 400 rather
+      than a silent restart from the beginning: answering "resume where I
+      left off" with the entire run is the one thing the client did not
+      ask for.
+      Verified with nine forced disconnects mid-run: 150 lines received,
+      150 in the index, zero duplicates, dense 1..150, correct order.
 - [ ] **2.7** Exit the stream goroutine on `r.Context().Done()` — otherwise every
       closed client leaks a goroutine.
 - [ ] **2.8** `POST /api/v1/runs/{id}/cancel` — propagate cancellation, stop the

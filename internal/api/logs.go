@@ -99,6 +99,11 @@ func (s *APIServer) GetRunLogsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	after, ok = resumePosition(w, r, after)
+	if !ok {
+		return
+	}
+
 	run, err := s.queries.GetRun(r.Context(), runID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -161,6 +166,46 @@ func parseLogPageParams(w http.ResponseWriter, r *http.Request) (after int64, li
 	}
 
 	return after, limit, true
+}
+
+// resumePosition applies a reconnecting stream's Last-Event-ID, which
+// overrides ?after (task 2.6).
+//
+// The header has to win, and it is worth being explicit about why. A browser's
+// EventSource reconnects to the *same URL* by itself and adds the last id it
+// saw; it cannot rewrite the query string. So the ?after in that URL is still
+// whatever the client originally opened the stream with - usually 0 - and
+// honouring it would replay the entire run on every reconnect, forever.
+//
+// Resuming this way loses nothing and repeats nothing: sequence numbers are
+// dense and monotonic within a run, and `after` is exclusive, so the next line
+// after the last one delivered is exactly the next line. That holds even if
+// the supervisor recaptured the run in between (decision #21), because a
+// recapture reproduces the same lines under the same sequence numbers.
+//
+// Only meaningful for a stream, so a Last-Event-ID on the JSON path is
+// ignored rather than quietly changing which page comes back.
+func resumePosition(w http.ResponseWriter, r *http.Request, after int64) (int64, bool) {
+	if !wantsEventStream(r) {
+		return after, true
+	}
+
+	raw := r.Header.Get("Last-Event-ID")
+	if raw == "" {
+		return after, true
+	}
+
+	// Every id this endpoint issues is a sequence number, so anything else is
+	// a client error worth saying out loud. Silently starting from the
+	// beginning would answer "resume where I left off" by replaying the whole
+	// run, which is the one thing the client definitely did not ask for.
+	resume, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || resume < 0 {
+		writeProblem(w, http.StatusBadRequest, "Last-Event-ID must be a non-negative integer")
+		return 0, false
+	}
+
+	return resume, true
 }
 
 // wantsEventStream reports whether the client asked for SSE.

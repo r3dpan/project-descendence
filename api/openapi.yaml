@@ -195,6 +195,17 @@ paths:
           required: true
           schema:
             type: integer
+        - name: Last-Event-ID
+          in: header
+          description: >
+            Resume an event stream after this sequence number. Sent
+            automatically by EventSource on reconnect. Overrides `after`, which
+            on a reconnect still holds whatever the stream was originally
+            opened with - honouring it would replay the whole run every time.
+            Ignored on the JSON representation.
+          schema:
+            type: integer
+            minimum: 0
         - name: after
           in: query
           description: >
@@ -253,7 +264,9 @@ paths:
                 event: state
                 data: {"runState":"succeeded"}
         "400":
-          description: Negative after, or limit outside 1-1000
+          description: >
+            Negative after, limit outside 1-1000, or a non-numeric
+            Last-Event-ID
           content:
             application/problem+json:
               schema:
