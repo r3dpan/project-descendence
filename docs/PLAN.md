@@ -630,13 +630,3 @@ succeeded once the build was terminal, matching the one-build-slot-per-runtime
 rule (task 4.5) and confirming the row survives a prune with `imagePruned`
 alone flipping. The embedded production build serves `/runtimes` and
 `/runtimes/5` with `200`.
-
----
-
-## Learning notes
-
-Things worth reading *when you reach them*, not upfront. Learning in the abstract
-before you have a problem tends not to stick.
-
-| Topic | When | Where |
-|---|---|---|
