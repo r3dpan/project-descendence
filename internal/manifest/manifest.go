@@ -10,15 +10,14 @@
 //
 // # The format is specified whole and implemented in parts
 //
-// `params` and `form` belong to the format now and are part of the reason it
-// exists at all, but nothing honours them until Phases 6 and 7 respectively.
-// They are therefore **rejected with an error naming the phase** rather than
-// accepted and ignored, so a manifest never describes behaviour the platform
-// will not perform - "this system's failure mode is silence" (HISTORY, Phase
-// 2). `runtime` was the third member of this list until task 4.6, and
-// `params` the fourth until task 6.1; both are now implemented, the same way
-// - a typed field replaces the raw yaml.Node placeholder and its entry is
-// removed from the unimplemented-keys loop below.
+// Fields belonging to the format are **rejected with an error naming the
+// phase** rather than accepted and ignored for as long as nothing honours
+// them, so a manifest never describes behaviour the platform will not
+// perform - "this system's failure mode is silence" (HISTORY, Phase 2).
+// `runtime` (task 4.6), `params` (task 6.1) and `form` (task 7.8) have all
+// gone through this the same way - a typed field replaces the raw yaml.Node
+// placeholder and its entry is removed from the unimplemented-keys loop
+// below. Nothing is left pending there today.
 package manifest
 
 import (
@@ -149,6 +148,14 @@ type Manifest struct {
 	// manifest declared them - order matters, since a Bash shim (task 6.4)
 	// forwards params as positional arguments in this same order.
 	Params []Param
+
+	// Form is layout metadata over Params (task 7.8): which params appear in
+	// which section, in what order, with what label/help override. Nil means
+	// the manifest declared no form: at all, in which case a renderer shows
+	// every param in contract order. Purely presentational - it can group,
+	// order and relabel, but never changes what a param is or how its value
+	// is validated; ResolveParams (task 6.2) has no idea this type exists.
+	Form []FormSection
 }
 
 // Param types. "mount" (task 6.6) delivers its value via a Podman secret
@@ -201,6 +208,25 @@ type Param struct {
 	Secret bool
 }
 
+// FormSection groups related params under a heading in the rendered form
+// (task 7.8's `form:` key). Purely a layout hint - it never changes what a
+// param is or how ResolveParams (task 6.2) validates a submitted value.
+type FormSection struct {
+	Title  string
+	Help   string
+	Fields []FormField
+}
+
+// FormField places one param in a section, optionally overriding its label
+// or adding help text. ParamName always names an entry already declared in
+// params: - validateForm checks that before this is ever built, so a
+// renderer never needs to guard against a dangling reference.
+type FormField struct {
+	ParamName string
+	Label     string // "" - a renderer falls back to ParamName
+	Help      string
+}
+
 // Argv is what the container is told to execute.
 //
 // With no explicit command and no recognised shim extension, it is the
@@ -247,17 +273,13 @@ type file struct {
 	Command        []string `yaml:"command"`
 	TimeoutSeconds *int32   `yaml:"timeoutSeconds"`
 
-	// Params is the parameter contract (task 6.1). A typed field, unlike
-	// Form below: task 6.1 is what settles this key's shape, so there is no
-	// reason left to defer decoding it.
+	// Params is the parameter contract (task 6.1).
 	Params []rawParam `yaml:"params"`
 
-	// Specified by the format, honoured later (Phase 7). See the package
-	// comment. A raw node rather than a typed field: its shape is not
-	// settled yet, so decoding it into anything specific would be inventing
-	// a schema that the phase which implements it has to live with. A zero
-	// Kind means the key was absent.
-	Form yaml.Node `yaml:"form"`
+	// Form is layout metadata over Params (task 7.8) - see rawForm. A
+	// pointer, like TimeoutSeconds, so "absent" is distinguishable from an
+	// explicitly empty block.
+	Form *rawForm `yaml:"form"`
 }
 
 // rawParam mirrors one entry of the manifest's `params:` list. Required is a
@@ -269,6 +291,62 @@ type rawParam struct {
 	Required *bool   `yaml:"required"`
 	Default  *string `yaml:"default"`
 	Secret   bool    `yaml:"secret"`
+}
+
+// rawForm mirrors the manifest's `form:` block (task 7.8): grouping and
+// ordering over params:, never a second source of what a param is.
+type rawForm struct {
+	Sections []rawFormSection `yaml:"sections"`
+}
+
+type rawFormSection struct {
+	Title  string         `yaml:"title"`
+	Help   string         `yaml:"help"`
+	Fields []rawFormField `yaml:"fields"`
+}
+
+// rawFormField accepts either a bare param name (the common case: just place
+// it, keep its own label) or a mapping with label/help overrides - forcing
+// every entry into the mapping shape would make the common case pure
+// boilerplate.
+type rawFormField struct {
+	Name  string
+	Label string
+	Help  string
+}
+
+// UnmarshalYAML implements the scalar-or-mapping shape above by hand, since
+// that is not something a plain struct tag can express. Strict about unknown
+// keys in the mapping form to match this package's closed-set convention
+// elsewhere (§4.5's third rule) - decoder.KnownFields(true) on the outer
+// decoder does not reach into a node decoded this way, so it is re-enforced
+// here rather than silently lost for this one shape.
+func (f *rawFormField) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind == yaml.ScalarNode {
+		return node.Decode(&f.Name)
+	}
+
+	var fields map[string]yaml.Node
+	if err := node.Decode(&fields); err != nil {
+		return fmt.Errorf("form field entry must be a param name or a mapping with name/label/help: %w", err)
+	}
+	for key, value := range fields {
+		var dst *string
+		switch key {
+		case "name":
+			dst = &f.Name
+		case "label":
+			dst = &f.Label
+		case "help":
+			dst = &f.Help
+		default:
+			return fmt.Errorf("form field entry has unknown key %q; expected name, label or help", key)
+		}
+		if err := value.Decode(dst); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Error is a manifest that could not be used, carrying the path so that a
@@ -327,25 +405,12 @@ func validate(manifestPath string, raw *file) (*Manifest, error) {
 		return nil, newError(manifestPath, "apiVersion %q is not supported; this platform reads %q", raw.APIVersion, APIVersion)
 	}
 
-	// Specified-but-unimplemented, before anything else that might mask it.
-	// The error names the phase so the answer to "when?" is in the message
-	// rather than in a document the reader has to go and find.
-	for _, unimplemented := range []struct {
-		key     string
-		node    yaml.Node
-		phase   string
-		purpose string
-	}{
-		{"form", raw.Form, "Phase 7", "form layout is not yet rendered by anything"},
-	} {
-		if unimplemented.node.Kind != 0 {
-			return nil, newError(manifestPath,
-				"`%s:` belongs to the manifest format but is not honoured until %s - %s. Remove it rather than leaving it inert, so this manifest does not describe behaviour the platform will not perform",
-				unimplemented.key, unimplemented.phase, unimplemented.purpose)
-		}
+	params, err := validateParams(manifestPath, raw.Params)
+	if err != nil {
+		return nil, err
 	}
 
-	params, err := validateParams(manifestPath, raw.Params)
+	form, err := validateForm(manifestPath, raw.Form, params)
 	if err != nil {
 		return nil, err
 	}
@@ -401,6 +466,7 @@ func validate(manifestPath string, raw *file) (*Manifest, error) {
 		Command:        raw.Command,
 		TimeoutSeconds: raw.TimeoutSeconds,
 		Params:         params,
+		Form:           form,
 	}, nil
 }
 
@@ -461,6 +527,60 @@ func validateParams(manifestPath string, raw []rawParam) ([]Param, error) {
 		})
 	}
 	return params, nil
+}
+
+// validateForm turns the manifest's raw `form:` block into layout metadata
+// over the already-resolved params contract (task 7.8) - called after
+// validateParams so every reference can be checked against real params
+// rather than the raw, unvalidated list.
+//
+// form: is optional, and when present may be partial: a param it doesn't
+// mention still exists, and a renderer is expected to show it too (appended
+// after the declared sections, in contract order) rather than hide it. So
+// what's checked here is only internal consistency, not coverage: every
+// reference names a real param, no param is placed twice, and no section
+// exists to say nothing.
+func validateForm(manifestPath string, raw *rawForm, params []Param) ([]FormSection, error) {
+	if raw == nil {
+		return nil, nil
+	}
+
+	known := make(map[string]bool, len(params))
+	for _, p := range params {
+		known[p.Name] = true
+	}
+
+	if len(raw.Sections) == 0 {
+		return nil, newError(manifestPath, "form: is present but declares no sections; omit form: entirely to fall back to declaration order")
+	}
+
+	seen := make(map[string]bool)
+	sections := make([]FormSection, 0, len(raw.Sections))
+	for i, rs := range raw.Sections {
+		if len(rs.Fields) == 0 {
+			return nil, newError(manifestPath, "form.sections[%d]: has no fields; a section with nothing to show should be removed", i)
+		}
+
+		fields := make([]FormField, 0, len(rs.Fields))
+		for j, rf := range rs.Fields {
+			if rf.Name == "" {
+				return nil, newError(manifestPath, "form.sections[%d].fields[%d]: name is required", i, j)
+			}
+			if !known[rf.Name] {
+				return nil, newError(manifestPath, "form.sections[%d].fields[%d]: %q is not declared in params:", i, j, rf.Name)
+			}
+			if seen[rf.Name] {
+				return nil, newError(manifestPath, "form.sections[%d].fields[%d]: %q already appears earlier in form:", i, j, rf.Name)
+			}
+			seen[rf.Name] = true
+
+			fields = append(fields, FormField{ParamName: rf.Name, Label: rf.Label, Help: rf.Help})
+		}
+
+		sections = append(sections, FormSection{Title: rs.Title, Help: rs.Help, Fields: fields})
+	}
+
+	return sections, nil
 }
 
 // checkScalarType validates a raw string against a param's declared type,

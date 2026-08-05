@@ -243,8 +243,9 @@ Nothing needs a working tree. Reads walk the commit's tree; writes attach an
 repository stays bare and no checkout ever reaches disk.
 
 **Sidecar manifest.** Each script has a `<name>.job.yaml` beside it, and that manifest
-*is* the job (decision #23). Format v1, with the rest of it specified and rejected
-until the phase that honours it:
+*is* the job (decision #23). Format v1 was specified whole and implemented in parts —
+`runtime` (task 4.6), `params` (task 6.1) and `form` (task 7.8) were each rejected
+with an error naming the phase until their turn came, and now all three are real:
 
 ```yaml
 apiVersion: descendence/v1     # required; the format is versioned from the start
@@ -252,11 +253,18 @@ name: backup-db                # unique among live jobs; how the job is addresse
 description: Nightly dump      # optional
 script: backup-db.sh           # relative to the *manifest's own directory*
 image: docker.io/library/alpine:3.20
+# runtime: some-runtime-name                 # instead of image: exactly one of the two
 # command: ["sh", "/run/job/backup-db.sh"]   # optional; default is the shebang
 # timeoutSeconds: 1800                       # optional; platform default otherwise
-
-# Part of the format, rejected with an error naming the phase until then:
-# runtime:  Phase 4      params:  Phase 6      form:  Phase 7
+params:                          # optional; task 6.1's contract, order is load-bearing
+  - name: target_db
+    type: string
+    default: "prod"
+form:                            # optional; task 7.8's layout metadata over params
+  sections:                      #   above - never a second source of what a param is
+    - title: Target
+      fields:
+        - target_db
 ```
 
 Three rules worth stating, because each one is a decision rather than a detail:

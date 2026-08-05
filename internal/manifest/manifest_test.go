@@ -211,35 +211,6 @@ func TestParseRejects(t *testing.T) {
 	}
 }
 
-// TestParseRejectsUnimplementedSections is the point of "specify whole,
-// implement subset". These keys are part of the format and will work later;
-// accepting them now would mean a manifest that describes behaviour the
-// platform silently does not perform.
-func TestParseRejectsUnimplementedSections(t *testing.T) {
-	for _, tc := range []struct{ key, src, wantPhase string }{
-		{
-			key:       "form",
-			src:       "apiVersion: descendence/v1\nname: j\nscript: j.sh\nimage: alpine\nform:\n  - field: db\n    widget: text\n",
-			wantPhase: "Phase 7",
-		},
-	} {
-		t.Run(tc.key, func(t *testing.T) {
-			_, err := Parse("x.job.yaml", []byte(tc.src))
-			if err == nil {
-				t.Fatalf("Parse accepted `%s:`, which nothing honours yet", tc.key)
-			}
-			// The distinction that matters: this is not "unknown key", it is
-			// "known key, not yet honoured", and the message says when.
-			if !strings.Contains(err.Error(), tc.wantPhase) {
-				t.Errorf("error = %q, want it to name %s", err, tc.wantPhase)
-			}
-			if !strings.Contains(err.Error(), tc.key) {
-				t.Errorf("error = %q, want it to name the key", err)
-			}
-		})
-	}
-}
-
 // TestErrorCarriesPath is what lets a scan over many manifests report which
 // one failed without threading the path through every call site (task 3.4).
 func TestErrorCarriesPath(t *testing.T) {
@@ -329,6 +300,120 @@ func TestParseParamsRejected(t *testing.T) {
 			_, err := Parse("x.job.yaml", []byte(base+tc.params))
 			if err == nil {
 				t.Fatalf("Parse accepted an invalid params entry (%s)", tc.name)
+			}
+			if !strings.Contains(err.Error(), tc.wantText) {
+				t.Errorf("error = %q, want it to mention %q", err, tc.wantText)
+			}
+		})
+	}
+}
+
+// TestParseFormValid covers task 7.8's `form:` layout metadata: bare-string
+// field entries, mapping entries with label/help overrides, multiple
+// sections, and a param the form doesn't mention (allowed - form: may be
+// partial).
+func TestParseFormValid(t *testing.T) {
+	src := `
+apiVersion: descendence/v1
+name: greet
+script: greet.sh
+image: docker.io/library/alpine:3.20
+params:
+  - name: name
+    type: string
+  - name: shout
+    type: bool
+  - name: token
+    type: mount
+form:
+  sections:
+    - title: Basics
+      help: Who to greet.
+      fields:
+        - name
+        - name: shout
+          label: Shout it
+          help: Uppercases the greeting.
+    - title: Auth
+      fields:
+        - token
+`
+	got, err := Parse("scripts/greet.job.yaml", []byte(src))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(got.Form) != 2 {
+		t.Fatalf("Form = %+v, want 2 sections", got.Form)
+	}
+	if got.Form[0].Title != "Basics" || got.Form[0].Help != "Who to greet." {
+		t.Errorf("Form[0] = %+v", got.Form[0])
+	}
+	if len(got.Form[0].Fields) != 2 {
+		t.Fatalf("Form[0].Fields = %+v, want 2", got.Form[0].Fields)
+	}
+	if got.Form[0].Fields[0] != (FormField{ParamName: "name"}) {
+		t.Errorf("Form[0].Fields[0] = %+v, want a bare reference to name", got.Form[0].Fields[0])
+	}
+	want := FormField{ParamName: "shout", Label: "Shout it", Help: "Uppercases the greeting."}
+	if got.Form[0].Fields[1] != want {
+		t.Errorf("Form[0].Fields[1] = %+v, want %+v", got.Form[0].Fields[1], want)
+	}
+	if len(got.Form[1].Fields) != 1 || got.Form[1].Fields[0].ParamName != "token" {
+		t.Errorf("Form[1] = %+v, want a single field referencing token", got.Form[1])
+	}
+}
+
+// TestParseFormAbsent confirms a manifest with no form: at all still parses,
+// with a nil Form - the common case, since form: is optional.
+func TestParseFormAbsent(t *testing.T) {
+	src := "apiVersion: descendence/v1\nname: j\nscript: j.sh\nimage: alpine\n"
+	got, err := Parse("x.job.yaml", []byte(src))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if got.Form != nil {
+		t.Errorf("Form = %+v, want nil", got.Form)
+	}
+}
+
+// TestParseFormRejected covers form:'s internal-consistency checks: a
+// reference to a param that isn't declared, the same param placed twice, an
+// empty section, and form: present with no sections at all.
+func TestParseFormRejected(t *testing.T) {
+	base := "apiVersion: descendence/v1\nname: j\nscript: j.sh\nimage: alpine\nparams:\n  - name: a\n    type: string\n  - name: b\n    type: string\n"
+	for _, tc := range []struct {
+		name, form, wantText string
+	}{
+		{
+			"unknown param",
+			"form:\n  sections:\n    - title: S\n      fields:\n        - nope\n",
+			"not declared in params",
+		},
+		{
+			"duplicate reference",
+			"form:\n  sections:\n    - title: S\n      fields:\n        - a\n    - title: T\n      fields:\n        - a\n",
+			"already appears earlier",
+		},
+		{
+			"empty section",
+			"form:\n  sections:\n    - title: S\n      fields: []\n",
+			"has no fields",
+		},
+		{
+			"no sections",
+			"form:\n  sections: []\n",
+			"declares no sections",
+		},
+		{
+			"unknown key in mapping field",
+			"form:\n  sections:\n    - title: S\n      fields:\n        - name: a\n          widget: text\n",
+			"unknown key",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Parse("x.job.yaml", []byte(base+tc.form))
+			if err == nil {
+				t.Fatalf("Parse accepted an invalid form: block (%s)", tc.name)
 			}
 			if !strings.Contains(err.Error(), tc.wantText) {
 				t.Errorf("error = %q, want it to mention %q", err, tc.wantText)
