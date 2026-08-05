@@ -64,6 +64,11 @@ Config is environment only; see `.env.sample`.
   - `GIT_REPO_DIR` — the *other way round*: the API is sole writer (creates
     repos, commits, scans), the supervisor only reads one blob at a run's
     pinned commit SHA.
+  - `SYSTEMD_UNIT_DIR` (`~/.config/systemd/user/` by default) — a third
+    instance of the same pattern (decision #27): the supervisor is sole
+    writer of schedules' generated `.timer`/`.service` units and the only
+    process that shells out to `systemctl --user`; the API only ever writes
+    `schedules` rows in Postgres and never touches this directory.
 - **Log write ordering: flush the file → insert the index row → notify.** The index
   row is what tells a reader those bytes exist, so any other order publishes an
   offset pointing past the end of the file.

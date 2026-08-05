@@ -85,7 +85,7 @@ unclear, check it against these.
           │   reads one blob at    ┌───────────────┴────────────────────────┐                   │
           │   a run's pinned SHA   │  cmd/supervisor — single instance      │  writes           │
           └────────────────────────│  · claims queued runs                  │───────────────────┘
-                                   │  · scheduler (cron)                    │  (sole writer)
+                                   │  · generates schedules' systemd units │  (sole writer)
                                    │  · container lifecycle                 │
                                    │  · copies a job's script in, then runs │
                                    │  · log capture (one attach per run)    │
@@ -138,7 +138,13 @@ and it's one less thing to run.
 The only component that touches Podman. Responsibilities:
 
 - Poll for queued runs, claim them, execute them.
-- Evaluate schedules and enqueue runs when due.
+- Regenerate and reload the generated systemd `.timer`/`.service` unit pair
+  for each `schedules` row (task 5.3, decision #27) — the supervisor is the
+  sole writer of `~/.config/systemd/user/` for these units, mirroring how it
+  is the sole component that touches Podman. Firing itself is systemd's job,
+  not a supervisor loop's — schedules keep firing even while the supervisor
+  is down. The api process only ever writes `schedules` rows; it never
+  touches this directory.
 - Attach to container output **once per run**, write it to that run's log file, and
   index it in Postgres. One attach no matter how many clients are watching. The
   followed attach is for liveness only; once the container exits its output is
@@ -317,16 +323,56 @@ famous for.
 
 ### 4.8 Scheduling
 
-Two viable approaches; whichever is chosen, **the database is authoritative**:
+**Generated systemd (user) timers, not an in-process cron loop** (decision #27).
+The `schedules` table in Postgres is authoritative; a `.timer`/`.service` unit
+pair per schedule is a regenerable render target, the same relationship
+`internal/runtimebuild` already has between a `runtimes` row and a
+Containerfile — full regenerate-and-reload on change, never hand-edited.
 
-- **In-process scheduler** (e.g. `robfig/cron` in the supervisor). Simpler, one
-  source of truth by construction.
-- **Generated systemd timers.** More "native", but units must be treated as
-  regenerable derived state — full regenerate-and-reload on change, never hand-edited.
+The **supervisor** owns this render+reload, not the api process (§4.2) — the
+existing advisory lock that already guarantees exactly one supervisor process
+is what guarantees exactly one process ever touches
+`~/.config/systemd/user/`. The api process's schedule CRUD is a plain
+Postgres write; the supervisor's schedule-sync loop picks up the change on
+its next poll tick. One consequence worth calling out: schedules keep firing
+even while the supervisor is stopped, since systemd is host-level and
+outlives the Go process — only *changes* to schedules lag until the
+supervisor is running again to regenerate units.
 
-Decision deferred to Phase 5. Quadlet is the right tool for the *platform's own*
-services either way ([docs](https://docs.podman.io/en/latest/markdown/podman-systemd.unit.5.html));
-note it requires cgroup v2.
+`cron_expr` is standard 5-field cron syntax, translated to systemd's
+`OnCalendar=` by `internal/scheduling.CronToOnCalendar` — deliberately scoped
+to a conservative, explicitly-supported subset (single value, `*`, simple
+`*/N` steps, comma-lists), rejecting anything else (ranges, combined
+dom+dow) by name rather than risk a silent mistranslation. `robfig/cron/v3`
+(the first non-Charm/non-pgx dependency since decision #17) validates
+`cron_expr` at CRUD time and computes an informational, display-only
+`next_due_at` — it never drives firing.
+
+Missed windows (task 5.4) map onto the generated timer's `Persistent=`
+directive, from a per-schedule `catch_up_policy` column: `skip` (default,
+`Persistent=false`) or `catch_up` (`Persistent=true`, which fires **once** to
+catch up, not once per missed occurrence). Timezone/DST (task 5.5) maps onto
+the timer's `TimeZone=` directive from the schedule's `timezone` column —
+not embedded in `OnCalendar=`.
+
+Overlap policy (task 5.6) is a per-schedule `overlap_policy` column
+(`skip`/`queue`/`concurrent`, default `skip`), enforced in the trigger
+endpoint (`POST /api/v1/schedules/{id}/trigger`) rather than in the unit
+itself. **`queue` and `concurrent` are behaviorally identical today**: the
+supervisor's run-claim loop already executes runs strictly one at a time (a
+known Phase 1/3 limitation, see PLAN.md's "Current position"), so a
+"concurrent" schedule firing does not actually run concurrently with itself
+— it queues a second row the same serial claim loop works through after the
+first finishes. The distinction is preserved as stored data for when real
+concurrency exists, not built as two code paths today.
+
+Quadlet is the right tool for the *platform's own* services
+([docs](https://docs.podman.io/en/latest/markdown/podman-systemd.unit.5.html));
+note it requires cgroup v2. The schedule units here are plain systemd
+`.timer`/`.service` units under `~/.config/systemd/user/`, not Quadlet units
+— Quadlet's container-unit generation isn't the right fit here since a
+schedule fires a CLI command (which creates a run through the normal API
+path), not a container directly.
 
 ### 4.9 API
 
@@ -400,7 +446,7 @@ runtimes      id, name, base_image, sys_packages, lang, lang_manifest, input_has
               -- the local image tag, so identical definitions dedupe.
               -- image_pruned_at mirrors runs.logs_pruned_at's pattern - the
               -- row survives a prune, only the image bytes go.
-runs          id, job_id, principal_id, state, idempotency_key,
+runs          id, job_id, schedule_id, principal_id, state, idempotency_key,
               commit_sha, runtime_id, image_digest, params_json,
               container_id, exit_code,
               queued_at, started_at, finished_at
@@ -408,11 +454,22 @@ runs          id, job_id, principal_id, state, idempotency_key,
               -- runtime rather than an image; resolved once at creation and
               -- never re-resolved, so rebuilding the runtime afterwards
               -- cannot change what an already-created run executes.
+              -- schedule_id is set only for runs the schedule trigger
+              -- endpoint created (task 5.6); ON DELETE SET NULL, same
+              -- reasoning as job_id - deleting a schedule must not sever a
+              -- past run's explainability.
 run_logs      run_id, seq, stream(stdout|stderr), ts, byte_offset, byte_length
               -- index only, per decision #18/§4.1: log bodies live in files,
               -- not in Postgres. byte_offset/byte_length point into the file;
               -- there has never been a `text` column here.
-schedules     id, job_id, cron_expr, timezone, next_due_at, enabled
+schedules     id, job_id, cron_expr, timezone, catch_up_policy, overlap_policy,
+              enabled, created_at, updated_at
+              -- fleshed out at task 5.2. No next_due_at: nothing computes or
+              -- reads it as stored state under generated systemd timers
+              -- (decision #27) - it would be a second, competing source of
+              -- truth for "when does this fire" alongside systemd itself.
+              -- Display-only next-fire estimates are computed on the fly via
+              -- robfig/cron, never stored.
 audit         id, principal_id, action, target, ts, detail_json
 ```
 
@@ -456,6 +513,7 @@ Recording *why*, because in three months the reasoning will be gone.
 | 24 | **A job's script is delivered into its container as a tar over `PUT /libpod/containers/{id}/archive`**, between create and start — not bind-mounted from the host | A bare repository has no working tree, so a bind mount would first need the blob materialised into a per-run host directory: created before create, removed after the container is gone, and swept by the reconciler when the supervisor is SIGKILLed mid-run — which Phase 1e proved happens. The tar path has no on-disk state to leak at all: blob → `archive/tar` in memory → HTTP. It also hands podman no host path, which matters because a mount source is resolved in *podman's* namespace rather than the supervisor's — identical today, and not identical if the supervisor is ever a Quadlet container or the socket becomes remote. Finally, a tar header states uid/gid/mode outright, where a bind mount inherits host ownership squashed through the user namespace and breaks for any image that does not run as root. Cost was a raw-body request path in the podman client, which until now JSON-encoded every body unconditionally. Delivery is *before* start because the container filesystem exists from creation, and doing it after would race the entrypoint against the file it is meant to execute | Runs need more than a couple of small files in the container, or something must be shared *back* out of it |
 | 25 | **Runtime base images are Debian, not Alpine** | PowerShell 7 ships official images built on Debian; PSResourceGet and the modules it installs are tested against glibc, and musl compatibility on Alpine is a known source of silent breakage for .NET-based runtimes. Python wheels also resolve more reliably against glibc — Alpine's musl forces source builds for packages that ship manylinux (glibc) wheels, which is slower and sometimes fails outright for packages with native extensions. Node was the only one of the three languages (§4.4) that would have preferred Alpine's size. One base family across all three languages was chosen over mixing, so the Containerfile template (§4.4) does not need a per-language base-image branch | Image size becomes a real constraint (homelab disk pressure, slow pulls) and outweighs the compatibility cost |
 | 26 | **Every PowerShell runtime's Containerfile sets `ENV DOTNET_SYSTEM_NET_DISABLEIPV6=1`** | Measured, not theorised, at task 4.6's exit check: on a network where IPv6 is routed but blackholed rather than rejected outright, `curl` and Python's `urllib` fall back to IPv4 in well under a second (Happy Eyeballs), but .NET's `HttpClient` — what `Install-PSResource`/`PowerShellGet` use to reach PSGallery — does not fall back nearly as fast, and hung past its own 100s internal timeout on every attempt, retries included, in this platform's development sandbox. A plain HTTPS `HEAD` request that hung past 100s completed in 0.8s with this one variable set, and nothing else tried (retry loops, `--network=host`, an older `Install-Module` code path) fixed it. Scoped to the PowerShell install step only — it is a .NET-specific workaround and irrelevant to `pip`/`npm`, which were unaffected | The host network's IPv6 path is fixed, or the target deployment host doesn't blackhole IPv6 in the same way and the variable is confirmed unnecessary there — safe to leave set either way, since it is a no-op where IPv6 works |
+| 27 | **Scheduling (Phase 5) uses generated systemd (user) `.timer`/`.service` units, not an in-process cron loop, and the supervisor — not the api process — owns rendering and reloading them.** `robfig/cron/v3` is added as a dependency for cron validation and display purposes only, never for firing | Postgres (`schedules`) stays authoritative either way; systemd units are a regenerable render target, the same relationship `internal/runtimebuild` already has between a `runtimes` row and a Containerfile — decision #23's "regenerable projection" pattern, applied a third time. Firing survives a supervisor crash or restart for free, since systemd is host-level and outlives the Go process — closing Phase 5's exit check ("across a supervisor restart") more directly than an in-process timer ever could, and `Persistent=true` gives missed-window catch-up (task 5.4) as a systemd primitive instead of app code (semantics: fires **once** to catch up, never once per missed window). `TimeZone=` on the generated timer gives timezone/DST handling (task 5.5) to systemd's own well-tested calendar evaluator rather than reimplementing it. The supervisor, not the api process, owns the unit files because the api process's only host side effects until now were Postgres writes, git repo writes and log reads — adding `systemctl --user` there would have been a new trust boundary; the supervisor already is "the only component that touches Podman" (§4.2), and its existing advisory lock (one supervisor process, guaranteed) is exactly the guarantee needed for "exactly one process touches `~/.config/systemd/user/`" too, with no new locking primitive. This makes schedule CRUD a plain Postgres write from the api's point of view, same shape as jobs/runtimes CRUD, with the supervisor's schedule-sync loop (task 5.3) picking up the change asynchronously on its next poll tick — a real, if small, propagation-delay trade-off, accepted at homelab scale. `cron_expr` → systemd `OnCalendar=` translation (`internal/scheduling.CronToOnCalendar`) is deliberately scoped to a conservative subset (single value, `*`, simple `*/N` steps, comma-lists) and rejects anything else (ranges, combined dom+dow) by name, matching this codebase's "unknown key is an error, not silently wrong" posture (`internal/manifest.Parse`) rather than risk a subtly wrong translation that fires at the wrong time silently — exactly the failure shape decisions #20/#21/#26 all found the hard way. Overlap policy (task 5.6, per-schedule `skip`/`queue`/`concurrent`) is enforced in the trigger endpoint, not the unit; **`queue` and `concurrent` are behaviorally identical today** because the supervisor's run-claim loop already executes runs strictly one at a time (the Phase 1/3 concurrency limitation flagged in PLAN.md) — worth stating plainly rather than implying "concurrent" does something it can't yet | Real run concurrency arrives (at which point `queue` and `concurrent` need to actually diverge), or the propagation delay between a schedule CRUD write and the supervisor regenerating its unit proves too slow in practice |
 
 ---
 
@@ -480,7 +538,7 @@ Unresolved. Resolve at the phase indicated.
 
 | Question | Resolve at |
 |---|---|
-| In-process cron vs. generated systemd timers | Phase 5 |
+| ~~In-process cron vs. generated systemd timers~~ | **Resolved at task 5.1 — decision #27: generated systemd (user) timers, owned by the supervisor** |
 | ~~Log retention: how long, and prune where (files vs Postgres)?~~ | **Resolved at task 2.2 — decision #18** |
 | ~~Image prune policy — time-based, count-based, or reference-based?~~ | **Resolved at task 4.7 — manual, API-triggered: explicit ids or an age threshold over unreferenced images, invoked either directly or via the same sweep cadence as decision #18's log retention** |
 | Does PowerShell's AST parser give usable parameter introspection? Prototype needed | Phase 6 |

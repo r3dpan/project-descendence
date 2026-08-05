@@ -80,6 +80,7 @@ type Run struct {
 	ImageDigest       pgtype.Text        `json:"image_digest"`
 	ParamsJson        []byte             `json:"params_json"`
 	LogsPrunedAt      pgtype.Timestamptz `json:"logs_pruned_at"`
+	ScheduleID        pgtype.Int8        `json:"schedule_id"`
 }
 
 type RunLog struct {
@@ -108,11 +109,13 @@ type Runtime struct {
 }
 
 type Schedule struct {
-	ID        int64              `json:"id"`
-	JobID     int64              `json:"job_id"`
-	CronExpr  string             `json:"cron_expr"`
-	Timezone  string             `json:"timezone"`
-	NextDueAt pgtype.Timestamptz `json:"next_due_at"`
-	Enabled   bool               `json:"enabled"`
-	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	ID            int64              `json:"id"`
+	JobID         int64              `json:"job_id"`
+	CronExpr      string             `json:"cron_expr"`
+	Timezone      string             `json:"timezone"`
+	Enabled       bool               `json:"enabled"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	CatchUpPolicy string             `json:"catch_up_policy"`
+	OverlapPolicy string             `json:"overlap_policy"`
+	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
 }

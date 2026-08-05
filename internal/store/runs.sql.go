@@ -58,7 +58,7 @@ RETURNING runs.id, runs.principal_id, runs.state, runs.idempotency_key,
           runs.exit_code, runs.failure_reason, runs.cancel_requested_at,
           runs.queued_at, runs.started_at, runs.finished_at, runs.job_id,
           runs.commit_sha, runs.runtime_id, runs.image_digest,
-          runs.params_json, runs.logs_pruned_at
+          runs.params_json, runs.logs_pruned_at, runs.schedule_id
 `
 
 // The supervisor's claim loop (task 1.12). The CTE's FOR UPDATE SKIP LOCKED
@@ -91,19 +91,21 @@ func (q *Queries) ClaimNextQueuedRun(ctx context.Context) (Run, error) {
 		&i.ImageDigest,
 		&i.ParamsJson,
 		&i.LogsPrunedAt,
+		&i.ScheduleID,
 	)
 	return i, err
 }
 
 const createJobRun = `-- name: CreateJobRun :one
 INSERT INTO runs (principal_id, image_ref, argv, timeout_seconds, idempotency_key,
-                  job_id, commit_sha, runtime_id, image_digest)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                  job_id, commit_sha, runtime_id, image_digest, schedule_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 ON CONFLICT (principal_id, idempotency_key) DO NOTHING
 RETURNING id, principal_id, state, idempotency_key, image_ref, argv,
           timeout_seconds, container_id, exit_code, failure_reason,
           cancel_requested_at, queued_at, started_at, finished_at, job_id,
-          commit_sha, runtime_id, image_digest, params_json, logs_pruned_at
+          commit_sha, runtime_id, image_digest, params_json, logs_pruned_at,
+          schedule_id
 `
 
 type CreateJobRunParams struct {
@@ -116,6 +118,7 @@ type CreateJobRunParams struct {
 	CommitSha      pgtype.Text `json:"commit_sha"`
 	RuntimeID      pgtype.Int8 `json:"runtime_id"`
 	ImageDigest    pgtype.Text `json:"image_digest"`
+	ScheduleID     pgtype.Int8 `json:"schedule_id"`
 }
 
 // Task 3.5. The same insert as CreateRun, plus the columns that make a run
@@ -129,6 +132,10 @@ type CreateJobRunParams struct {
 // different later - the same reason commit_sha is pinned here rather than
 // resolved by the supervisor, and the reason rebuilding a runtime after this
 // insert cannot change what this run executes.
+//
+// schedule_id (task 5.6) is NULL for every ordinary job-run request; only
+// the schedule trigger endpoint supplies one, so this run can later answer
+// "did this schedule's last fire finish yet" (GetLatestRunForSchedule).
 func (q *Queries) CreateJobRun(ctx context.Context, arg CreateJobRunParams) (Run, error) {
 	row := q.db.QueryRow(ctx, createJobRun,
 		arg.PrincipalID,
@@ -140,6 +147,7 @@ func (q *Queries) CreateJobRun(ctx context.Context, arg CreateJobRunParams) (Run
 		arg.CommitSha,
 		arg.RuntimeID,
 		arg.ImageDigest,
+		arg.ScheduleID,
 	)
 	var i Run
 	err := row.Scan(
@@ -163,6 +171,7 @@ func (q *Queries) CreateJobRun(ctx context.Context, arg CreateJobRunParams) (Run
 		&i.ImageDigest,
 		&i.ParamsJson,
 		&i.LogsPrunedAt,
+		&i.ScheduleID,
 	)
 	return i, err
 }
@@ -174,7 +183,8 @@ ON CONFLICT (principal_id, idempotency_key) DO NOTHING
 RETURNING id, principal_id, state, idempotency_key, image_ref, argv,
           timeout_seconds, container_id, exit_code, failure_reason,
           cancel_requested_at, queued_at, started_at, finished_at, job_id,
-          commit_sha, runtime_id, image_digest, params_json, logs_pruned_at
+          commit_sha, runtime_id, image_digest, params_json, logs_pruned_at,
+          schedule_id
 `
 
 type CreateRunParams struct {
@@ -220,6 +230,7 @@ func (q *Queries) CreateRun(ctx context.Context, arg CreateRunParams) (Run, erro
 		&i.ImageDigest,
 		&i.ParamsJson,
 		&i.LogsPrunedAt,
+		&i.ScheduleID,
 	)
 	return i, err
 }
@@ -266,11 +277,38 @@ func (q *Queries) FinishRun(ctx context.Context, arg FinishRunParams) (int64, er
 	return result.RowsAffected(), nil
 }
 
+const getLatestRunForSchedule = `-- name: GetLatestRunForSchedule :one
+SELECT id, state
+FROM runs
+WHERE schedule_id = $1
+ORDER BY id DESC
+LIMIT 1
+`
+
+type GetLatestRunForScheduleRow struct {
+	ID    int64  `json:"id"`
+	State string `json:"state"`
+}
+
+// Task 5.6's overlap-skip enforcement: is the run this schedule fired last
+// time still going. Ordered by id rather than queued_at for the same reason
+// ListRuns orders by (queued_at, id) - id is monotonic and queued_at has no
+// sub-second guarantee two inserts in the same transaction couldn't tie on.
+// pgx.ErrNoRows means this schedule has never fired yet, which the trigger
+// handler treats as "nothing to overlap with, proceed."
+func (q *Queries) GetLatestRunForSchedule(ctx context.Context, scheduleID pgtype.Int8) (GetLatestRunForScheduleRow, error) {
+	row := q.db.QueryRow(ctx, getLatestRunForSchedule, scheduleID)
+	var i GetLatestRunForScheduleRow
+	err := row.Scan(&i.ID, &i.State)
+	return i, err
+}
+
 const getRun = `-- name: GetRun :one
 SELECT id, principal_id, state, idempotency_key, image_ref, argv,
        timeout_seconds, container_id, exit_code, failure_reason,
        cancel_requested_at, queued_at, started_at, finished_at, job_id,
-       commit_sha, runtime_id, image_digest, params_json, logs_pruned_at
+       commit_sha, runtime_id, image_digest, params_json, logs_pruned_at,
+       schedule_id
 FROM runs
 WHERE id = $1
 `
@@ -299,6 +337,7 @@ func (q *Queries) GetRun(ctx context.Context, id int64) (Run, error) {
 		&i.ImageDigest,
 		&i.ParamsJson,
 		&i.LogsPrunedAt,
+		&i.ScheduleID,
 	)
 	return i, err
 }
@@ -307,7 +346,8 @@ const getRunByIdempotencyKey = `-- name: GetRunByIdempotencyKey :one
 SELECT id, principal_id, state, idempotency_key, image_ref, argv,
        timeout_seconds, container_id, exit_code, failure_reason,
        cancel_requested_at, queued_at, started_at, finished_at, job_id,
-       commit_sha, runtime_id, image_digest, params_json, logs_pruned_at
+       commit_sha, runtime_id, image_digest, params_json, logs_pruned_at,
+       schedule_id
 FROM runs
 WHERE principal_id = $1 AND idempotency_key = $2
 `
@@ -341,6 +381,7 @@ func (q *Queries) GetRunByIdempotencyKey(ctx context.Context, arg GetRunByIdempo
 		&i.ImageDigest,
 		&i.ParamsJson,
 		&i.LogsPrunedAt,
+		&i.ScheduleID,
 	)
 	return i, err
 }
@@ -371,7 +412,8 @@ const listNonTerminalRuns = `-- name: ListNonTerminalRuns :many
 SELECT id, principal_id, state, idempotency_key, image_ref, argv,
        timeout_seconds, container_id, exit_code, failure_reason,
        cancel_requested_at, queued_at, started_at, finished_at, job_id,
-       commit_sha, runtime_id, image_digest, params_json, logs_pruned_at
+       commit_sha, runtime_id, image_digest, params_json, logs_pruned_at,
+       schedule_id
 FROM runs
 WHERE state IN ('queued', 'running')
 `
@@ -408,6 +450,7 @@ func (q *Queries) ListNonTerminalRuns(ctx context.Context) ([]Run, error) {
 			&i.ImageDigest,
 			&i.ParamsJson,
 			&i.LogsPrunedAt,
+			&i.ScheduleID,
 		); err != nil {
 			return nil, err
 		}
@@ -423,7 +466,8 @@ const listRuns = `-- name: ListRuns :many
 SELECT id, principal_id, state, idempotency_key, image_ref, argv,
        timeout_seconds, container_id, exit_code, failure_reason,
        cancel_requested_at, queued_at, started_at, finished_at, job_id,
-       commit_sha, runtime_id, image_digest, params_json, logs_pruned_at
+       commit_sha, runtime_id, image_digest, params_json, logs_pruned_at,
+       schedule_id
 FROM runs
 WHERE $1::timestamptz IS NULL
    OR (queued_at, id) < ($1::timestamptz, $2::bigint)
@@ -471,6 +515,7 @@ func (q *Queries) ListRuns(ctx context.Context, arg ListRunsParams) ([]Run, erro
 			&i.ImageDigest,
 			&i.ParamsJson,
 			&i.LogsPrunedAt,
+			&i.ScheduleID,
 		); err != nil {
 			return nil, err
 		}
@@ -486,7 +531,8 @@ const listRunsByJob = `-- name: ListRunsByJob :many
 SELECT id, principal_id, state, idempotency_key, image_ref, argv,
        timeout_seconds, container_id, exit_code, failure_reason,
        cancel_requested_at, queued_at, started_at, finished_at, job_id,
-       commit_sha, runtime_id, image_digest, params_json, logs_pruned_at
+       commit_sha, runtime_id, image_digest, params_json, logs_pruned_at,
+       schedule_id
 FROM runs
 WHERE job_id = $1::bigint
   AND ($2::timestamptz IS NULL
@@ -539,6 +585,7 @@ func (q *Queries) ListRunsByJob(ctx context.Context, arg ListRunsByJobParams) ([
 			&i.ImageDigest,
 			&i.ParamsJson,
 			&i.LogsPrunedAt,
+			&i.ScheduleID,
 		); err != nil {
 			return nil, err
 		}

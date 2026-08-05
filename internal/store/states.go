@@ -55,3 +55,18 @@ func IsTerminal(state string) bool {
 		return false
 	}
 }
+
+// A schedule's two policy columns (task 5.2, decision #27). Both are
+// enforced partly by the database (schedules_catch_up_policy_check,
+// schedules_overlap_policy_check) and partly by code that reads them:
+// catch-up policy becomes the generated timer's Persistent= directive
+// (internal/scheduling), overlap policy is checked by the trigger handler
+// (internal/api/schedules.go) against GetLatestRunForSchedule.
+const (
+	CatchUpPolicySkip    = "skip"
+	CatchUpPolicyCatchUp = "catch_up"
+
+	OverlapPolicySkip       = "skip"
+	OverlapPolicyQueue      = "queue"
+	OverlapPolicyConcurrent = "concurrent"
+)

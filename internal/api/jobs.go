@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -17,6 +18,19 @@ import (
 	"github.com/r3dpan/project-descendence/internal/runtimeprune"
 	"github.com/r3dpan/project-descendence/internal/store"
 )
+
+// problemError carries the RFC 9457 status/detail a failed run-creation
+// wants reported, without writing the HTTP response itself (task 5.3) - so
+// a second caller (the schedule trigger handler, internal/api/schedules.go)
+// can decide its own response shape for cases that differ from the ordinary
+// job-run endpoint's, while CreateJobRunHandler keeps writing exactly what
+// it always has.
+type problemError struct {
+	status int
+	detail string
+}
+
+func (e *problemError) Error() string { return e.detail }
 
 const (
 	defaultJobListLimit = 50
@@ -243,34 +257,51 @@ func (s *APIServer) CreateJobRunHandler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	if job.DeletedAt.Valid {
-		writeProblem(w, http.StatusConflict, fmt.Sprintf("job %q cannot be run: its manifest has been removed from the repository", job.Name))
-		return
-	}
-	if !job.Enabled {
-		writeProblem(w, http.StatusConflict, fmt.Sprintf("job %q is disabled", job.Name))
+	idempotencyKey := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+
+	run, problem := s.createJobRun(r.Context(), principal, job, idempotencyKey, nil)
+	if problem != nil {
+		writeProblem(w, problem.status, problem.detail)
 		return
 	}
 
-	repo, err := s.queries.GetRepo(r.Context(), job.RepoID)
+	w.Header().Set("Location", fmt.Sprintf("/api/v1/runs/%d", run.ID))
+	writeJSON(w, http.StatusAccepted, toRunResponse(run))
+}
+
+// createJobRun is CreateJobRunHandler's run-creation logic (task 3.5,
+// extended at task 5.3 to be callable from the schedule trigger handler
+// too): resolve the job's repository HEAD, read and parse its manifest at
+// that exact commit, pin a runtime/image, and insert the run.
+//
+// idempotencyKey is "" when the caller has none to offer (the schedule
+// trigger path never does - systemd fires a unit once per due window, and
+// the overlap policy, not idempotency, is what decides whether a second run
+// gets created). scheduleID is nil for an ordinary job-run request and set
+// only when the trigger handler calls this.
+func (s *APIServer) createJobRun(ctx context.Context, principal store.Principal, job store.Job, idempotencyKey string, scheduleID *int64) (store.Run, *problemError) {
+	if job.DeletedAt.Valid {
+		return store.Run{}, &problemError{http.StatusConflict, fmt.Sprintf("job %q cannot be run: its manifest has been removed from the repository", job.Name)}
+	}
+	if !job.Enabled {
+		return store.Run{}, &problemError{http.StatusConflict, fmt.Sprintf("job %q is disabled", job.Name)}
+	}
+
+	repo, err := s.queries.GetRepo(ctx, job.RepoID)
 	if err != nil {
-		writeProblem(w, http.StatusInternalServerError, "failed loading the job's repository")
-		return
+		return store.Run{}, &problemError{http.StatusInternalServerError, "failed loading the job's repository"}
 	}
 
 	repository, err := s.repos.Open(repo.Name)
 	if err != nil {
-		writeProblem(w, http.StatusInternalServerError, fmt.Sprintf("failed opening repository %s", repo.Name))
-		return
+		return store.Run{}, &problemError{http.StatusInternalServerError, fmt.Sprintf("failed opening repository %s", repo.Name)}
 	}
 
 	sha, err := repository.HeadCommit(repo.DefaultBranch)
 	if errors.Is(err, gitrepo.ErrNoCommits) {
-		writeProblem(w, http.StatusConflict, fmt.Sprintf("repository %s has no commits on %s", repo.Name, repo.DefaultBranch))
-		return
+		return store.Run{}, &problemError{http.StatusConflict, fmt.Sprintf("repository %s has no commits on %s", repo.Name, repo.DefaultBranch)}
 	} else if err != nil {
-		writeProblem(w, http.StatusInternalServerError, "failed resolving the repository's current commit")
-		return
+		return store.Run{}, &problemError{http.StatusInternalServerError, "failed resolving the repository's current commit"}
 	}
 
 	rawManifest, err := repository.ReadFile(sha, job.ManifestPath)
@@ -278,14 +309,12 @@ func (s *APIServer) CreateJobRunHandler(w http.ResponseWriter, r *http.Request) 
 		// The projection said this manifest exists; at HEAD it does not. The
 		// projection is simply stale - a sync has not run since the manifest
 		// was removed.
-		writeProblem(w, http.StatusConflict, fmt.Sprintf("manifest %s is not present at %s; re-sync the repository", job.ManifestPath, shortSHA(sha)))
-		return
+		return store.Run{}, &problemError{http.StatusConflict, fmt.Sprintf("manifest %s is not present at %s; re-sync the repository", job.ManifestPath, shortSHA(sha))}
 	}
 
 	parsed, err := manifest.Parse(job.ManifestPath, rawManifest)
 	if err != nil {
-		writeProblem(w, http.StatusConflict, fmt.Sprintf("manifest is not valid at %s: %v", shortSHA(sha), err))
-		return
+		return store.Run{}, &problemError{http.StatusConflict, fmt.Sprintf("manifest is not valid at %s: %v", shortSHA(sha), err)}
 	}
 
 	// Task 4.6: the manifest names either an image directly or a runtime -
@@ -296,18 +325,15 @@ func (s *APIServer) CreateJobRunHandler(w http.ResponseWriter, r *http.Request) 
 	var runtimeID pgtype.Int8
 	var imageDigest pgtype.Text
 	if parsed.RuntimeName != "" {
-		runtime, err := s.queries.GetRuntimeByName(r.Context(), parsed.RuntimeName)
+		runtime, err := s.queries.GetRuntimeByName(ctx, parsed.RuntimeName)
 		if err != nil {
-			writeProblem(w, http.StatusConflict, fmt.Sprintf("manifest names runtime %q, which is not defined", parsed.RuntimeName))
-			return
+			return store.Run{}, &problemError{http.StatusConflict, fmt.Sprintf("manifest names runtime %q, which is not defined", parsed.RuntimeName)}
 		}
 		if runtime.BuildStatus != store.BuildStatusReady {
-			writeProblem(w, http.StatusConflict, fmt.Sprintf("runtime %q is not built yet (status %s); build it before running this job", runtime.Name, runtime.BuildStatus))
-			return
+			return store.Run{}, &problemError{http.StatusConflict, fmt.Sprintf("runtime %q is not built yet (status %s); build it before running this job", runtime.Name, runtime.BuildStatus)}
 		}
 		if runtime.ImagePrunedAt.Valid {
-			writeProblem(w, http.StatusConflict, fmt.Sprintf("runtime %q's image has been pruned; rebuild it before running this job", runtime.Name))
-			return
+			return store.Run{}, &problemError{http.StatusConflict, fmt.Sprintf("runtime %q's image has been pruned; rebuild it before running this job", runtime.Name)}
 		}
 		// Pinned here, at creation - never re-resolved later - so a rebuild
 		// of the runtime after this point cannot change what this run
@@ -323,41 +349,46 @@ func (s *APIServer) CreateJobRunHandler(w http.ResponseWriter, r *http.Request) 
 		timeoutSeconds = *parsed.TimeoutSeconds
 	}
 
-	idempotencyKey := pgtype.Text{}
-	if key := strings.TrimSpace(r.Header.Get("Idempotency-Key")); key != "" {
-		idempotencyKey = pgtype.Text{String: key, Valid: true}
+	idempotencyKeyCol := pgtype.Text{}
+	if idempotencyKey != "" {
+		idempotencyKeyCol = pgtype.Text{String: idempotencyKey, Valid: true}
 	}
 
-	run, err := s.queries.CreateJobRun(r.Context(), store.CreateJobRunParams{
+	scheduleIDCol := pgtype.Int8{}
+	if scheduleID != nil {
+		scheduleIDCol = pgtype.Int8{Int64: *scheduleID, Valid: true}
+	}
+
+	run, err := s.queries.CreateJobRun(ctx, store.CreateJobRunParams{
 		PrincipalID:    principal.ID,
 		ImageRef:       imageRef,
 		Argv:           parsed.Argv(),
 		TimeoutSeconds: timeoutSeconds,
-		IdempotencyKey: idempotencyKey,
+		IdempotencyKey: idempotencyKeyCol,
 		JobID:          pgtype.Int8{Int64: job.ID, Valid: true},
 		CommitSha:      pgtype.Text{String: sha, Valid: true},
 		RuntimeID:      runtimeID,
 		ImageDigest:    imageDigest,
+		ScheduleID:     scheduleIDCol,
 	})
 	if err != nil {
 		if err != pgx.ErrNoRows {
-			writeProblem(w, http.StatusInternalServerError, "failed creating run")
-			return
+			return store.Run{}, &problemError{http.StatusInternalServerError, "failed creating run"}
 		}
 		// Same replay path as an ad-hoc run: the insert was skipped by
-		// ON CONFLICT, so return the original rather than erroring.
-		run, err = s.queries.GetRunByIdempotencyKey(r.Context(), store.GetRunByIdempotencyKeyParams{
+		// ON CONFLICT, so return the original rather than erroring. Only
+		// reachable when idempotencyKeyCol is Valid - an unkeyed insert
+		// never conflicts.
+		run, err = s.queries.GetRunByIdempotencyKey(ctx, store.GetRunByIdempotencyKeyParams{
 			PrincipalID:    principal.ID,
-			IdempotencyKey: idempotencyKey,
+			IdempotencyKey: idempotencyKeyCol,
 		})
 		if err != nil {
-			writeProblem(w, http.StatusInternalServerError, "failed fetching original run for replayed Idempotency-Key")
-			return
+			return store.Run{}, &problemError{http.StatusInternalServerError, "failed fetching original run for replayed Idempotency-Key"}
 		}
 	}
 
-	w.Header().Set("Location", fmt.Sprintf("/api/v1/runs/%d", run.ID))
-	writeJSON(w, http.StatusAccepted, toRunResponse(run))
+	return run, nil
 }
 
 // lookupJob resolves the {id} path value, answering 404 itself when it cannot.

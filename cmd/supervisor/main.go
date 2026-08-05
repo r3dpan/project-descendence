@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/r3dpan/project-descendence/internal/gitrepo"
 	"github.com/r3dpan/project-descendence/internal/podman"
 	"github.com/r3dpan/project-descendence/internal/store"
+	"github.com/r3dpan/project-descendence/internal/systemdunit"
 )
 
 const pollInterval = 1 * time.Second
@@ -68,8 +70,45 @@ func main() {
 	}
 	repoStore := gitrepo.NewStore(repoDir)
 
+	// Generated systemd (user) schedule units (ARCHITECTURE.md §4.8,
+	// decision #27, task 5.3). The supervisor is the sole writer of this
+	// directory - the api process never touches it, mirroring RUN_LOG_DIR.
+	// All three env vars here are optional with sane single-user-homelab
+	// defaults, unlike RUN_LOG_DIR/GIT_REPO_DIR/PODMAN_SOCKET above: nothing
+	// downstream of the api process reads them, so there is no "both
+	// processes must agree" requirement to enforce by failing fast.
+	unitDir := os.Getenv("SYSTEMD_UNIT_DIR")
+	if unitDir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			log.Fatalf("SYSTEMD_UNIT_DIR is not set and $HOME could not be resolved: %v", err)
+		}
+		unitDir = filepath.Join(home, ".config", "systemd", "user")
+	}
+	unitMgr := systemdunit.NewManager(unitDir)
+
+	cliPath := os.Getenv("DESCENDENCE_CLI_PATH")
+	if cliPath == "" {
+		cliPath = "descendence"
+	}
+
+	tokenFile := os.Getenv("DESCENDENCE_SCHEDULER_ENV_FILE")
+	if tokenFile == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			log.Fatalf("DESCENDENCE_SCHEDULER_ENV_FILE is not set and $HOME could not be resolved: %v", err)
+		}
+		tokenFile = filepath.Join(home, ".config", "descendence", "scheduler.env")
+	}
+
 	log.Println("Reconciling non-terminal runs from a previous run")
 	reconcile(ctx, queries, podmanClient, logDir)
+
+	// force=true: the very first sync after startup must apply every
+	// schedule's enabled/disabled state unconditionally (schedule.go's
+	// syncSchedules comment explains why later ticks don't need to).
+	log.Println("Syncing schedules to generated systemd units")
+	syncSchedules(ctx, queries, unitMgr, cliPath, tokenFile, true)
 
 	// The retention sweep (task 2.2, extended at task 4.7 to also cover
 	// unused runtime images) lives here rather than in the API because the
@@ -87,6 +126,9 @@ func main() {
 	// work at a time.
 	log.Printf("Polling for pending runtime builds every %s", buildPollInterval)
 	go runBuildClaimLoop(ctx, queries, podmanClient)
+
+	log.Printf("Syncing schedules to systemd units every %s", scheduleSyncInterval)
+	go runScheduleSyncLoop(ctx, queries, unitMgr, cliPath, tokenFile)
 
 	log.Printf("Supervisor started, polling for queued runs every %s", pollInterval)
 	runClaimLoop(ctx, queries, podmanClient, repoStore, logDir)
