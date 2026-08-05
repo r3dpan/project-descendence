@@ -37,15 +37,16 @@ type Job struct {
 }
 
 type Principal struct {
-	ID        int64              `json:"id"`
-	Kind      string             `json:"kind"`
-	Name      string             `json:"name"`
-	TokenHash []byte             `json:"token_hash"`
-	TokenHint pgtype.Text        `json:"token_hint"`
-	Scopes    []string           `json:"scopes"`
-	CreatedAt pgtype.Timestamptz `json:"created_at"`
-	ExpiresAt pgtype.Timestamptz `json:"expires_at"`
-	RevokedAt pgtype.Timestamptz `json:"revoked_at"`
+	ID           int64              `json:"id"`
+	Kind         string             `json:"kind"`
+	Name         string             `json:"name"`
+	TokenHash    []byte             `json:"token_hash"`
+	TokenHint    pgtype.Text        `json:"token_hint"`
+	Scopes       []string           `json:"scopes"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+	ExpiresAt    pgtype.Timestamptz `json:"expires_at"`
+	RevokedAt    pgtype.Timestamptz `json:"revoked_at"`
+	PasswordHash []byte             `json:"password_hash"`
 }
 
 type Repo struct {
@@ -120,4 +121,12 @@ type Schedule struct {
 	CatchUpPolicy string             `json:"catch_up_policy"`
 	OverlapPolicy string             `json:"overlap_policy"`
 	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
+}
+
+type Session struct {
+	ID          int64              `json:"id"`
+	PrincipalID int64              `json:"principal_id"`
+	TokenHash   []byte             `json:"token_hash"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	ExpiresAt   pgtype.Timestamptz `json:"expires_at"`
 }

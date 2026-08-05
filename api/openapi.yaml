@@ -62,6 +62,49 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/Problem"
+  /api/v1/auth/login:
+    post:
+      operationId: login
+      description: >-
+        Local-account login for the browser SPA (task 7.3, ahead of OIDC -
+        ARCHITECTURE.md §4.10). On success sets an HttpOnly/Secure/
+        SameSite=Lax session cookie; the response body carries no token.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: Authenticated; session cookie set
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Principal"
+        "400":
+          description: Missing username or password
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "401":
+          description: Invalid username or password
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+  /api/v1/auth/logout:
+    post:
+      operationId: logout
+      description: Deletes the current session (if any) and clears the cookie.
+      responses:
+        "204":
+          description: Logged out
   /api/v1/runs:
     post:
       operationId: createRun
@@ -1295,6 +1338,16 @@ components:
         - name
         - kind
         - scopes
+    LoginRequest:
+      type: object
+      properties:
+        username:
+          type: string
+        password:
+          type: string
+      required:
+        - username
+        - password
     Problem:
       type: object
       description: RFC 9457 problem details

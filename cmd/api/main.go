@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"github.com/r3dpan/project-descendence/internal/logstream"
 	"github.com/r3dpan/project-descendence/internal/podman"
 	"github.com/r3dpan/project-descendence/internal/store"
+	webdist "github.com/r3dpan/project-descendence/web"
 )
 
 // Product variables
@@ -31,6 +33,28 @@ var idleTimeout = 120 * time.Second
 // -- Podman
 
 // -- Postgres
+
+// spaHandler serves the embedded SPA build, falling back to index.html for
+// any path with no matching static file - a browser refresh on a
+// client-side route like /runs/42 must still get the app shell, not a 404
+// from http.FileServer.
+func spaHandler(distFS fs.FS) http.Handler {
+	fileServer := http.FileServer(http.FS(distFS))
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		if path == "/" {
+			path = "/index.html"
+		}
+
+		if _, err := fs.Stat(distFS, path[1:]); err != nil {
+			r = r.Clone(r.Context())
+			r.URL.Path = "/"
+		}
+
+		fileServer.ServeHTTP(w, r)
+	})
+}
 
 func main() {
 	// Connect to Postgres
@@ -95,6 +119,8 @@ func main() {
 	descendenceMux.HandleFunc("GET /{$}", descendenceAPI.RootHandler)
 	descendenceMux.HandleFunc("GET /healthz", descendenceAPI.HealthHandler)
 	descendenceMux.HandleFunc("GET /api/v1/whoami", descendenceAPI.RequireAuth(descendenceAPI.WhoAmIHandler))
+	descendenceMux.HandleFunc("POST /api/v1/auth/login", descendenceAPI.LoginHandler)
+	descendenceMux.HandleFunc("POST /api/v1/auth/logout", descendenceAPI.LogoutHandler)
 	descendenceMux.HandleFunc("POST /api/v1/runs", descendenceAPI.RequireAuth(descendenceAPI.CreateRunHandler))
 	descendenceMux.HandleFunc("GET /api/v1/runs/{id}", descendenceAPI.RequireAuth(descendenceAPI.GetRunHandler))
 	descendenceMux.HandleFunc("GET /api/v1/runs", descendenceAPI.RequireAuth(descendenceAPI.ListRunsHandler))
@@ -131,6 +157,18 @@ func main() {
 	descendenceMux.HandleFunc("GET /api/v1/runtimes/{id}", descendenceAPI.RequireAuth(descendenceAPI.GetRuntimeHandler))
 	descendenceMux.HandleFunc("POST /api/v1/runtimes/{id}/build", descendenceAPI.RequireAuth(descendenceAPI.BuildRuntimeHandler))
 	descendenceMux.HandleFunc("POST /api/v1/runtimes/prune", descendenceAPI.RequireAuth(descendenceAPI.PruneRuntimesHandler))
+
+	// Web UI (Phase 7, task 7.4). Registered last but wins for nothing "GET
+	// /{$}" or /api/v1/*, /healthz already claim - Go 1.22's mux always
+	// picks the most specific matching pattern regardless of registration
+	// order, so the root route above keeps returning JSON server info for
+	// machine clients and this catch-all only ever serves the SPA's own
+	// client-side routes (e.g. /login, /runs/42).
+	distFS, err := fs.Sub(webdist.Dist, "dist")
+	if err != nil {
+		log.Fatalf("Failed opening embedded web/dist: %v", err)
+	}
+	descendenceMux.Handle("/", spaHandler(distFS))
 
 	// Create descedence server
 	descendenceServer := &http.Server{

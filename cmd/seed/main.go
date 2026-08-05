@@ -13,6 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"golang.org/x/crypto/bcrypt"
 
 	"github.com/r3dpan/project-descendence/internal/store"
 )
@@ -25,10 +26,19 @@ import (
 // principals.name is unique, so this is one-shot per name: running it twice
 // with the same -name fails on the second insert, same as it always has for
 // "bootstrap".
+//
+// -kind=user (task 7.3) mints a browser-login principal instead: password
+// generated the same way the token is (crypto/rand, printed once), hashed
+// with bcrypt before it ever reaches Postgres.
 func main() {
 	name := flag.String("name", "bootstrap", "principal name (must be unique)")
 	scopes := flag.String("scopes", "read,run,admin", "comma-separated scopes")
+	kind := flag.String("kind", "token", "principal kind: token or user")
 	flag.Parse()
+
+	if *kind != "token" && *kind != "user" {
+		log.Fatalf("-kind must be \"token\" or \"user\", got %q", *kind)
+	}
 
 	databaseURL := os.Getenv("DATABASE_URL")
 	if databaseURL == "" {
@@ -48,13 +58,19 @@ func main() {
 	}
 	defer pool.Close()
 
+	queries := store.New(pool)
+
+	if *kind == "user" {
+		seedUser(ctx, queries, *name, parsedScopes)
+		return
+	}
+
 	token, err := generateToken()
 	if err != nil {
 		log.Fatalf("Failed generating token: %v", err)
 	}
 	hash := sha256.Sum256([]byte(token))
 
-	queries := store.New(pool)
 	principal, err := queries.CreateTokenPrincipal(ctx, store.CreateTokenPrincipalParams{
 		Name:      *name,
 		TokenHash: hash[:],
@@ -69,6 +85,30 @@ func main() {
 	fmt.Printf("Token (shown once - store it now):\n\n  %s\n\n", token)
 }
 
+func seedUser(ctx context.Context, queries *store.Queries, name string, scopes []string) {
+	password, err := generatePassword()
+	if err != nil {
+		log.Fatalf("Failed generating password: %v", err)
+	}
+
+	passwordHash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		log.Fatalf("Failed hashing password: %v", err)
+	}
+
+	principal, err := queries.CreateUserPrincipal(ctx, store.CreateUserPrincipalParams{
+		Name:         name,
+		PasswordHash: passwordHash,
+		Scopes:       scopes,
+	})
+	if err != nil {
+		log.Fatalf("Failed creating principal %q: %v", name, err)
+	}
+
+	fmt.Printf("Principal #%d %q created (scopes: %v).\n", principal.ID, principal.Name, principal.Scopes)
+	fmt.Printf("Password (shown once - store it now):\n\n  %s\n\n", password)
+}
+
 // sra_live_<64 hex chars>, per ARCHITECTURE.md §4.10.
 func generateToken() (string, error) {
 	buf := make([]byte, 32)
@@ -76,4 +116,16 @@ func generateToken() (string, error) {
 		return "", err
 	}
 	return "sra_live_" + hex.EncodeToString(buf), nil
+}
+
+// 24 hex chars, deliberately short of bcrypt's 72-byte input limit (unlike
+// generateToken's sra_live_-prefixed 73 bytes, which exceeds it) - this is
+// typed into a login form, not pasted as a bearer token, so it stays short
+// enough to read out.
+func generatePassword() (string, error) {
+	buf := make([]byte, 12)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(buf), nil
 }

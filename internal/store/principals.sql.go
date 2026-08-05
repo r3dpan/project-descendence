@@ -14,7 +14,7 @@ import (
 const createTokenPrincipal = `-- name: CreateTokenPrincipal :one
 INSERT INTO principals (kind, name, token_hash, token_hint, scopes)
 VALUES ('token', $1, $2, $3, $4)
-RETURNING id, kind, name, token_hash, token_hint, scopes, created_at, expires_at, revoked_at
+RETURNING id, kind, name, token_hash, token_hint, scopes, password_hash, created_at, expires_at, revoked_at
 `
 
 type CreateTokenPrincipalParams struct {
@@ -24,14 +24,27 @@ type CreateTokenPrincipalParams struct {
 	Scopes    []string    `json:"scopes"`
 }
 
-func (q *Queries) CreateTokenPrincipal(ctx context.Context, arg CreateTokenPrincipalParams) (Principal, error) {
+type CreateTokenPrincipalRow struct {
+	ID           int64              `json:"id"`
+	Kind         string             `json:"kind"`
+	Name         string             `json:"name"`
+	TokenHash    []byte             `json:"token_hash"`
+	TokenHint    pgtype.Text        `json:"token_hint"`
+	Scopes       []string           `json:"scopes"`
+	PasswordHash []byte             `json:"password_hash"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+	ExpiresAt    pgtype.Timestamptz `json:"expires_at"`
+	RevokedAt    pgtype.Timestamptz `json:"revoked_at"`
+}
+
+func (q *Queries) CreateTokenPrincipal(ctx context.Context, arg CreateTokenPrincipalParams) (CreateTokenPrincipalRow, error) {
 	row := q.db.QueryRow(ctx, createTokenPrincipal,
 		arg.Name,
 		arg.TokenHash,
 		arg.TokenHint,
 		arg.Scopes,
 	)
-	var i Principal
+	var i CreateTokenPrincipalRow
 	err := row.Scan(
 		&i.ID,
 		&i.Kind,
@@ -39,6 +52,89 @@ func (q *Queries) CreateTokenPrincipal(ctx context.Context, arg CreateTokenPrinc
 		&i.TokenHash,
 		&i.TokenHint,
 		&i.Scopes,
+		&i.PasswordHash,
+		&i.CreatedAt,
+		&i.ExpiresAt,
+		&i.RevokedAt,
+	)
+	return i, err
+}
+
+const createUserPrincipal = `-- name: CreateUserPrincipal :one
+INSERT INTO principals (kind, name, password_hash, scopes)
+VALUES ('user', $1, $2, $3)
+RETURNING id, kind, name, token_hash, token_hint, scopes, password_hash, created_at, expires_at, revoked_at
+`
+
+type CreateUserPrincipalParams struct {
+	Name         string   `json:"name"`
+	PasswordHash []byte   `json:"password_hash"`
+	Scopes       []string `json:"scopes"`
+}
+
+type CreateUserPrincipalRow struct {
+	ID           int64              `json:"id"`
+	Kind         string             `json:"kind"`
+	Name         string             `json:"name"`
+	TokenHash    []byte             `json:"token_hash"`
+	TokenHint    pgtype.Text        `json:"token_hint"`
+	Scopes       []string           `json:"scopes"`
+	PasswordHash []byte             `json:"password_hash"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+	ExpiresAt    pgtype.Timestamptz `json:"expires_at"`
+	RevokedAt    pgtype.Timestamptz `json:"revoked_at"`
+}
+
+func (q *Queries) CreateUserPrincipal(ctx context.Context, arg CreateUserPrincipalParams) (CreateUserPrincipalRow, error) {
+	row := q.db.QueryRow(ctx, createUserPrincipal, arg.Name, arg.PasswordHash, arg.Scopes)
+	var i CreateUserPrincipalRow
+	err := row.Scan(
+		&i.ID,
+		&i.Kind,
+		&i.Name,
+		&i.TokenHash,
+		&i.TokenHint,
+		&i.Scopes,
+		&i.PasswordHash,
+		&i.CreatedAt,
+		&i.ExpiresAt,
+		&i.RevokedAt,
+	)
+	return i, err
+}
+
+const getPrincipalByID = `-- name: GetPrincipalByID :one
+SELECT id, kind, name, token_hash, token_hint, scopes, password_hash, created_at, expires_at, revoked_at
+FROM principals
+WHERE id = $1
+  AND revoked_at IS NULL
+  AND (expires_at IS NULL OR expires_at > now())
+`
+
+type GetPrincipalByIDRow struct {
+	ID           int64              `json:"id"`
+	Kind         string             `json:"kind"`
+	Name         string             `json:"name"`
+	TokenHash    []byte             `json:"token_hash"`
+	TokenHint    pgtype.Text        `json:"token_hint"`
+	Scopes       []string           `json:"scopes"`
+	PasswordHash []byte             `json:"password_hash"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+	ExpiresAt    pgtype.Timestamptz `json:"expires_at"`
+	RevokedAt    pgtype.Timestamptz `json:"revoked_at"`
+}
+
+func (q *Queries) GetPrincipalByID(ctx context.Context, id int64) (GetPrincipalByIDRow, error) {
+	row := q.db.QueryRow(ctx, getPrincipalByID, id)
+	var i GetPrincipalByIDRow
+	err := row.Scan(
+		&i.ID,
+		&i.Kind,
+		&i.Name,
+		&i.TokenHash,
+		&i.TokenHint,
+		&i.Scopes,
+		&i.PasswordHash,
 		&i.CreatedAt,
 		&i.ExpiresAt,
 		&i.RevokedAt,
@@ -47,7 +143,7 @@ func (q *Queries) CreateTokenPrincipal(ctx context.Context, arg CreateTokenPrinc
 }
 
 const getPrincipalByTokenHash = `-- name: GetPrincipalByTokenHash :one
-SELECT id, kind, name, token_hash, token_hint, scopes, created_at, expires_at, revoked_at
+SELECT id, kind, name, token_hash, token_hint, scopes, password_hash, created_at, expires_at, revoked_at
 FROM principals
 WHERE token_hash = $1
   AND kind = 'token'
@@ -55,9 +151,22 @@ WHERE token_hash = $1
   AND (expires_at IS NULL OR expires_at > now())
 `
 
-func (q *Queries) GetPrincipalByTokenHash(ctx context.Context, tokenHash []byte) (Principal, error) {
+type GetPrincipalByTokenHashRow struct {
+	ID           int64              `json:"id"`
+	Kind         string             `json:"kind"`
+	Name         string             `json:"name"`
+	TokenHash    []byte             `json:"token_hash"`
+	TokenHint    pgtype.Text        `json:"token_hint"`
+	Scopes       []string           `json:"scopes"`
+	PasswordHash []byte             `json:"password_hash"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+	ExpiresAt    pgtype.Timestamptz `json:"expires_at"`
+	RevokedAt    pgtype.Timestamptz `json:"revoked_at"`
+}
+
+func (q *Queries) GetPrincipalByTokenHash(ctx context.Context, tokenHash []byte) (GetPrincipalByTokenHashRow, error) {
 	row := q.db.QueryRow(ctx, getPrincipalByTokenHash, tokenHash)
-	var i Principal
+	var i GetPrincipalByTokenHashRow
 	err := row.Scan(
 		&i.ID,
 		&i.Kind,
@@ -65,6 +174,47 @@ func (q *Queries) GetPrincipalByTokenHash(ctx context.Context, tokenHash []byte)
 		&i.TokenHash,
 		&i.TokenHint,
 		&i.Scopes,
+		&i.PasswordHash,
+		&i.CreatedAt,
+		&i.ExpiresAt,
+		&i.RevokedAt,
+	)
+	return i, err
+}
+
+const getUserPrincipalByName = `-- name: GetUserPrincipalByName :one
+SELECT id, kind, name, token_hash, token_hint, scopes, password_hash, created_at, expires_at, revoked_at
+FROM principals
+WHERE name = $1
+  AND kind = 'user'
+  AND revoked_at IS NULL
+  AND (expires_at IS NULL OR expires_at > now())
+`
+
+type GetUserPrincipalByNameRow struct {
+	ID           int64              `json:"id"`
+	Kind         string             `json:"kind"`
+	Name         string             `json:"name"`
+	TokenHash    []byte             `json:"token_hash"`
+	TokenHint    pgtype.Text        `json:"token_hint"`
+	Scopes       []string           `json:"scopes"`
+	PasswordHash []byte             `json:"password_hash"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+	ExpiresAt    pgtype.Timestamptz `json:"expires_at"`
+	RevokedAt    pgtype.Timestamptz `json:"revoked_at"`
+}
+
+func (q *Queries) GetUserPrincipalByName(ctx context.Context, name string) (GetUserPrincipalByNameRow, error) {
+	row := q.db.QueryRow(ctx, getUserPrincipalByName, name)
+	var i GetUserPrincipalByNameRow
+	err := row.Scan(
+		&i.ID,
+		&i.Kind,
+		&i.Name,
+		&i.TokenHash,
+		&i.TokenHint,
+		&i.Scopes,
+		&i.PasswordHash,
 		&i.CreatedAt,
 		&i.ExpiresAt,
 		&i.RevokedAt,
