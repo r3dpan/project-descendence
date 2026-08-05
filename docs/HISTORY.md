@@ -641,3 +641,72 @@ Notes to future me:
     runs and fails them on an unpullable image. Harmless, but it is noise in
     the supervisor log and the 1.14 lesson ("any test that claims work from a
     shared queue interferes with every other test") applies in reverse too.
+## 2026-08-05 (Phase 2, part 2)
+Worked on: Phase 2 tasks 2.5-2.7 (SSE, resume, stream cleanup) - and two
+  defects in the *capture* that verifying them uncovered, which cost more
+  of the session than the three tasks did.
+Completed:
+  - 2.5: SSE as a second representation of `GET /runs/{id}/logs`, chosen
+    by `Accept`. Two event types: `log` (id = seq) and `state` (no id -
+    not a resumable position). A terminal `state` event is the stream's
+    defined ending; ending any other way is the client's cue to reconnect.
+  - 2.6: `Last-Event-ID` resume, overriding `?after`. Nine forced
+    disconnects during a 150-line run: 150 received, 150 indexed, zero
+    duplicates, dense 1..150, right order.
+  - 2.7: proof, plus the first tests `internal/api` has ever had.
+  - **decision #20** - pin the container log driver to `k8s-file`.
+  - **decision #21** - capture in two passes: follow for liveness, re-read
+    after exit for truth.
+Broken / unresolved:
+  - **journald was eating container output, silently.** The host default
+    log driver rate-limits at 10000 messages per 30s and discards the rest
+    of the window. A 20000-line script lost ~2500 lines; a second run
+    started inside the same window lost *everything*; and the follow stream
+    then never terminated, leaking a capture goroutine (found still blocked
+    in `io.ReadFull` two minutes on, holding its podman connection). Not
+    one layer reported an error, because from journald's side nothing went
+    wrong. Fixed by setting the driver explicitly (decision #20).
+  - **A followed log stream is not complete, even with a good driver.**
+    libpod stops the follower the moment the container exits, without
+    draining what the container had already written. Measured at 2643-7081
+    lines missing from 20000, four runs in a row, every stream ending
+    *cleanly*. Fixed by re-reading after exit and recapturing if the follow
+    came up short (decision #21).
+  - Nothing else open. 2.8 and 2.9 not started.
+Next action: 2.8 (cancel endpoint), then 2.9 (CLI `--follow`), then the
+  Phase 2 exit check. 2.8 is still owed the debt from 1.14: `cancelled` is
+  defined, constrained, rendered and tested everywhere but has no producer,
+  so the task is the transition and the container stop, not plumbing a new
+  state. Read the phase's warning about getting cancellation and context
+  propagation right *there* before starting.
+Notes to future me:
+  - **Both defects above had been there since 2.1 and nothing caught them,
+    because 2.1's tests print about three lines.** Nothing in the pipeline
+    is wrong at three lines. The regression test now prints 20000, and it
+    is the reason to keep it slow-ish rather than trimming it.
+  - The lesson generalises past logs: *this system's failure mode is
+    silence.* Neither defect produced an error anywhere - just less output
+    than the script printed. Anything downstream that reports "success"
+    while holding partial data deserves a completeness check, not trust.
+  - **A test asserting cleanup did not test the line it was written for.**
+    Deleting `case <-r.Context().Done()` from the stream loop left both
+    subscription-leak tests passing, because every read carries the request
+    context so the handler unwinds on its next poll regardless. Only an
+    assertion on *how long* it took (< one poll interval) failed. When
+    testing a fast path that has a slow fallback, assert the speed.
+  - PLAN.md told 2.5 to use `SetWriteDeadline(time.Time{})`. Deviated
+    deliberately - a cleared deadline lets a client that stops reading
+    without closing block the handler forever, which is exactly the leak
+    2.7 exists to prevent. Re-arming the deadline before each write gives
+    the same unlimited stream length with a bounded stalled write. The plan
+    entry now says so.
+  - `pkill -f` bit again, in a new disguise: `pgrep -f 'bin/supervisor-instr'
+    | xargs kill` matched the shell running it and killed the session
+    (exit 144). The rule is not about `pkill` specifically - it is that any
+    `-f` pattern matches your own command line. Also `pkill -x` silently
+    matches nothing when the name is over 15 characters, which is how
+    `supervisor-instr` survived a `pkill -QUIT`. Capture `$!` instead.
+  - Verifying against 20000-line runs leaves real containers and rows
+    behind. `podman ps -a` and a non-terminal-run count are worth checking
+    before calling a session done - killing the supervisor mid-run strands
+    one every time (the reconciler does clean it up on restart, and did).

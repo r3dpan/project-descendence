@@ -42,29 +42,24 @@ Update the marker on each task as it moves:
 > **Update this block every session.**
 
 - **Phase:** 2 — Logs
-- **Task:** Phase 1 complete (1.1–1.25). **Phase 2: 2.1–2.4 done**; the
-  pipeline works end to end — a container's output is captured once,
-  written to a per-run file, indexed in Postgres, announced by `NOTIFY`,
-  fanned out to N subscribers in the API, and served paginated over HTTP.
-  Nothing is streaming *live* to a client yet: that is 2.5.
-- **Next action:** 2.5 — SSE on the same endpoint, selected by
-  `Accept: text/event-stream`. The machinery it needs already exists:
-  subscribe via `logstream.Broker`, read pages with the same
-  `readLogPage` the JSON path uses. **Read 2.5's `WriteTimeout` note
-  before writing the handler** — the server-wide 30s deadline will cut
-  every stream otherwise, and the fix is
-  `http.NewResponseController(w).SetWriteDeadline(time.Time{})` in that
-  handler only. Do not remove the server-wide timeout. Remember the slow
-  safety-net poll: notifications are lossy by design (see decision #19),
-  so a stream that trusts them alone will hang when one goes missing.
-  2.8 (cancel) is still owed a debt from 1.14: `cancelled` is defined,
-  constrained, rendered and tested everywhere but has no producer,
-  deliberately, so 2.8 only has to add the transition. Read the Phase 2
-  warning about getting cancellation and context propagation right
-  *there* before starting.
+- **Task:** Phase 1 complete (1.1–1.25). **Phase 2: 2.1–2.7 done.** Output
+  is captured, indexed, retained for 30 days, served as JSON pages *and*
+  as a live SSE stream that resumes cleanly after a disconnect. What is
+  left is 2.8 (cancel) and 2.9 (CLI `--follow`), then the phase exit check.
+- **Next action:** 2.8 — `POST /api/v1/runs/{id}/cancel`. Read the phase's
+  warning first: get cancellation and context propagation right *here*,
+  because scheduling and parameters land on top of it. The debt from 1.14
+  is still exactly as described — `cancelled` is defined, constrained,
+  rendered and tested everywhere and has no producer — so this is the
+  transition plus stopping the container, not plumbing a new state. Note
+  the shape of the problem: the API accepts the cancel, but only the
+  supervisor can stop a container, and **the two never talk** (§3). The
+  same `LISTEN`/`NOTIFY` channel 2.3 built is the obvious carrier, with
+  the same caveat that notifications are lossy — so the supervisor must
+  also notice a cancellation request by polling, or a cancel will
+  occasionally do nothing at all.
 - **Blocked on:** nothing
-- **Notes:** Phase 1's notes are in the commits and the session log; the
-  block that used to live here has served its purpose. Phase 2 so far:
+- **Notes:** Phase 2 so far:
 
   - **Log bodies are files, the index is Postgres** (ARCHITECTURE.md §4.1).
     `RUN_LOG_DIR` must be set for *both* the api and the supervisor, and
@@ -77,16 +72,27 @@ Update the marker on each task as it moves:
     row, *then* notify. The index row is what tells a reader those bytes
     exist, so any other order publishes an offset pointing past the end of
     the file. Stated in `runlog.Flush`, in `runlogs.sql`, and in
-    `captureLogs`.
+    `capturePass`.
+  - **Captured output is not to be trusted without a completeness check.**
+    Two separate things were silently dropping lines — journald's rate
+    limiter (decision #20) and libpod's follower cutting off at container
+    exit (decision #21) — and *neither produced an error anywhere*. Both
+    are fixed, but the shape is worth remembering: in this pipeline,
+    failure looks like less output, not like a failure.
+  - **Once a run is terminal, its log index is complete.** The supervisor
+    drains the capture before writing the terminal state, deliberately, so
+    a stream can end when the run ends without racing the last few lines.
+    Do not reorder that.
   - **Notifications are lossy on purpose.** They carry watermarks, not log
     text, so a dropped or missed one costs latency and nothing else. Every
     consumer must therefore poll on a slow timer as well; a consumer that
     trusts notifications alone will hang the first time the listener
     reconnects.
-  - **Reconciler adoption recaptures from scratch** — libpod replays a
-    container's whole output on every follow, so `runlog.Create` truncates
-    the file and `DeleteRunLogs` clears the index together. Resuming at an
-    offset would need to guess where the dead supervisor stopped.
+  - **Recapture is always from scratch**, never a resume at an offset —
+    both for the reconciler adopting a run and for decision #21's second
+    pass. It is safe because libpod replays the same bytes in the same
+    order, so the same lines come back with the same sequence numbers and
+    offsets. Only the capture timestamp changes.
   - Runs within one supervisor process still execute strictly one at a
     time. Unchanged by Phase 2, and still the most likely thing to bite in
     real use (see 1e's note on reconciliation blocking the claim loop).
@@ -537,8 +543,23 @@ resumes without gaps.
       ask for.
       Verified with nine forced disconnects mid-run: 150 lines received,
       150 in the index, zero duplicates, dense 1..150, correct order.
-- [ ] **2.7** Exit the stream goroutine on `r.Context().Done()` — otherwise every
+- [x] **2.7** Exit the stream goroutine on `r.Context().Done()` — otherwise every
       closed client leaks a goroutine.
+      The handler was written this way in 2.5; this task is the *proof*,
+      and writing it changed two things. First, `internal/api` had no
+      tests at all, so there was nowhere for a guard like this to live —
+      `logs_test.go` starts that.
+      Second, and worth remembering: **a test that only asserts the
+      subscription is released does not test this line.** Deleting the
+      `Done` case entirely still passed, because every read a stream makes
+      carries the request context, so the handler unwinds anyway on its
+      next safety-net poll. What `Done` buys is *promptness*, so the test
+      asserts the handler returns in less than one poll interval — that
+      assertion does fail without it (2.003s).
+      Also verified on the real HTTP path, since the tests drive the
+      handler directly: 25 live SSE clients against a 60s run, all killed
+      at once, zero `streamRunLogs` goroutines left in the process
+      afterwards (`SIGQUIT` dump).
 - [ ] **2.8** `POST /api/v1/runs/{id}/cancel` — propagate cancellation, stop the
       container, record `cancelled`.
 - [ ] **2.9** CLI `--follow`.

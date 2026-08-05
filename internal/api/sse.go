@@ -2,7 +2,9 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"time"
 )
@@ -50,6 +52,14 @@ const (
 type sseWriter struct {
 	w  http.ResponseWriter
 	rc *http.ResponseController
+	// deadlines is false when the underlying writer has no support for them,
+	// in which case they are skipped rather than failing every write. A
+	// ResponseWriter only carries the capability if whatever wraps it forwards
+	// SetWriteDeadline - net/http's own does, httptest's recorder does not,
+	// and a middleware that wraps the writer might not. Losing the stall
+	// protection is worth noting; refusing to serve the stream at all is not
+	// proportionate to it.
+	deadlines bool
 }
 
 // newSSEWriter writes the response headers for an event stream and returns a
@@ -64,7 +74,18 @@ func newSSEWriter(w http.ResponseWriter) (*sseWriter, error) {
 	// live. This header turns that off for the reverse proxies that honour it.
 	header.Set("X-Accel-Buffering", "no")
 
-	stream := &sseWriter{w: w, rc: http.NewResponseController(w)}
+	stream := &sseWriter{w: w, rc: http.NewResponseController(w), deadlines: true}
+
+	// Find out now whether deadlines work, rather than discovering it on the
+	// first write and mistaking "this writer has no deadlines" for "this
+	// client is gone".
+	if err := stream.armDeadline(); err != nil {
+		if !errors.Is(err, http.ErrNotSupported) {
+			return nil, err
+		}
+		stream.deadlines = false
+		log.Print("event stream: this ResponseWriter does not support write deadlines; a stalled client will not time out")
+	}
 
 	w.WriteHeader(http.StatusOK)
 
@@ -141,5 +162,8 @@ func (s *sseWriter) flush() error {
 // armDeadline gives the next write streamWriteTimeout to complete, replacing
 // whatever the server-wide WriteTimeout left in place.
 func (s *sseWriter) armDeadline() error {
+	if s.rc == nil || !s.deadlines {
+		return nil
+	}
 	return s.rc.SetWriteDeadline(time.Now().Add(streamWriteTimeout))
 }
