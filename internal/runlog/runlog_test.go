@@ -513,3 +513,70 @@ func TestReadLineHandlesABlankLine(t *testing.T) {
 		t.Errorf("blank line read back as %q, want empty", got)
 	}
 }
+
+// LineCounter has to agree with Writer on every input, because the supervisor
+// uses the difference between them to decide whether a capture was truncated
+// (decision #21). Disagreement in one direction hides lost output; in the
+// other it rewrites a complete capture on every single run, forever.
+func TestLineCounterAgreesWithWriter(t *testing.T) {
+	type write struct {
+		stream string
+		data   string
+	}
+
+	cases := []struct {
+		name   string
+		writes []write
+	}{
+		{"nothing at all", nil},
+		{"one whole line", []write{{StreamStdout, "one\n"}}},
+		{"unterminated tail", []write{{StreamStdout, "no newline here"}}},
+		{"several lines in one frame", []write{{StreamStdout, "a\nb\nc\n"}}},
+		{"a line split across frames", []write{{StreamStdout, "half"}, {StreamStdout, " and half\n"}}},
+		{"both streams, both unterminated", []write{
+			{StreamStdout, "out\nstill going"},
+			{StreamStderr, "err\nalso going"},
+		}},
+		{"interleaved streams", []write{
+			{StreamStdout, "o1\n"}, {StreamStderr, "e1\n"},
+			{StreamStdout, "o2\n"}, {StreamStderr, "e2\ne3\n"},
+		}},
+		{"an empty frame changes nothing", []write{
+			{StreamStdout, "a\n"}, {StreamStdout, ""}, {StreamStdout, "b\n"},
+		}},
+		{"a lone newline is an empty line", []write{{StreamStdout, "\n"}}},
+		{"trailing newline after a partial", []write{
+			{StreamStdout, "partial"}, {StreamStdout, "\n"},
+		}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			writer, err := Create(t.TempDir(), 1)
+			if err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+			counter := NewLineCounter()
+
+			written := 0
+			for _, w := range tc.writes {
+				lines, err := writer.Write(w.stream, []byte(w.data))
+				if err != nil {
+					t.Fatalf("Write: %v", err)
+				}
+				written += len(lines)
+				counter.Write(w.stream, []byte(w.data))
+			}
+
+			tail, err := writer.Close()
+			if err != nil {
+				t.Fatalf("Close: %v", err)
+			}
+			written += len(tail)
+
+			if counted := counter.Total(); counted != written {
+				t.Errorf("LineCounter counted %d lines, Writer produced %d", counted, written)
+			}
+		})
+	}
+}

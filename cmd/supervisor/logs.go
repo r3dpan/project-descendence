@@ -87,18 +87,95 @@ func startLogCapture(ctx context.Context, queries *store.Queries, podmanClient *
 	return capture
 }
 
-// captureLogs follows the container's output to EOF - which libpod produces
-// when the container exits - splitting it into numbered lines in the run's
-// log file and recording an index row for each in Postgres.
+// captureLogs records a container's output, in two passes (ARCHITECTURE.md
+// decision #21).
+//
+// The first pass follows the container live, which is what makes output
+// visible while the run is still going. It is also not trustworthy: libpod
+// stops the follower when the container exits, without draining what it had
+// already written, so a script that prints a lot and exits promptly loses the
+// tail - measured at 11869 of 20000 lines, with the stream ending cleanly and
+// nothing reporting an error. The second pass reads the same output *after*
+// the container has exited, which is not racing anything, and counts it. If
+// the follow came up short, the whole capture is redone from that authoritative
+// read.
+//
+// Redoing it is safe because it is not a merge: libpod replays the same bytes
+// in the same order, so recapturing from scratch reproduces the same lines
+// with the same sequence numbers and the same offsets. That is the same
+// property the reconciler's adoption path relies on (task 1.15). The only
+// thing that changes is the capture timestamp.
+func captureLogs(ctx context.Context, queries *store.Queries, podmanClient *podman.Client, logDir string, runID int64, containerID string) error {
+	captured, err := capturePass(ctx, queries, logDir, runID, func(fn func(podman.LogFrame) error) error {
+		return podmanClient.FollowContainerLogs(ctx, containerID, fn)
+	})
+	if err != nil {
+		return err
+	}
+
+	// Nothing below is worth doing if we are being shut down or stopped: the
+	// capture is already incomplete on purpose, and the container is about to
+	// be removed anyway.
+	if ctx.Err() != nil {
+		return nil
+	}
+
+	available, err := countContainerLogLines(ctx, podmanClient, containerID)
+	if err != nil {
+		// Not fatal. Whatever the follow captured is still recorded; all that
+		// is lost is the confirmation that it was everything.
+		log.Printf("run %d: could not verify the capture is complete: %v", runID, err)
+		return nil
+	}
+
+	if available <= captured {
+		log.Printf("run %d: captured %d lines of output", runID, captured)
+		return nil
+	}
+
+	log.Printf("run %d: the followed capture ended %d lines short of the container's %d; recapturing", runID, available-captured, available)
+
+	recaptured, err := capturePass(ctx, queries, logDir, runID, func(fn func(podman.LogFrame) error) error {
+		return podmanClient.ReadContainerLogs(ctx, containerID, fn)
+	})
+	if err != nil {
+		return err
+	}
+
+	log.Printf("run %d: captured %d lines of output", runID, recaptured)
+
+	return nil
+}
+
+// countContainerLogLines reports how many lines the container's stored output
+// holds, without writing any of it - the cheap half of the completeness check.
+func countContainerLogLines(ctx context.Context, podmanClient *podman.Client, containerID string) (int, error) {
+	counter := runlog.NewLineCounter()
+
+	if err := podmanClient.ReadContainerLogs(ctx, containerID, func(frame podman.LogFrame) error {
+		counter.Write(frame.Stream, frame.Data)
+		return nil
+	}); err != nil {
+		return 0, err
+	}
+
+	return counter.Total(), nil
+}
+
+// capturePass writes one complete capture of a run's output - the file and the
+// index rows - from whatever source read supplies, and returns how many lines
+// it recorded. Each pass starts from scratch: the file is truncated and the
+// index cleared, because a pass replays the run's whole output rather than
+// continuing a previous one.
 //
 // The two halves are deliberately ordered: bytes are flushed to the file
 // before the line they belong to is handed to the indexer, because the index
 // row is what tells a reader those bytes exist. The reverse order would
 // publish offsets pointing past the end of the file.
-func captureLogs(ctx context.Context, queries *store.Queries, podmanClient *podman.Client, logDir string, runID int64, containerID string) error {
+func capturePass(ctx context.Context, queries *store.Queries, logDir string, runID int64, read func(func(podman.LogFrame) error) error) (int, error) {
 	writer, err := runlog.Create(logDir, runID)
 	if err != nil {
-		return err
+		return 0, err
 	}
 
 	// runlog.Create truncated the file, so any index rows from a previous
@@ -116,7 +193,7 @@ func captureLogs(ctx context.Context, queries *store.Queries, podmanClient *podm
 	}()
 
 	var lineCount int
-	followErr := podmanClient.FollowContainerLogs(ctx, containerID, func(frame podman.LogFrame) error {
+	readErr := read(func(frame podman.LogFrame) error {
 		written, err := writer.Write(frame.Stream, frame.Data)
 		if err != nil {
 			return err
@@ -133,9 +210,9 @@ func captureLogs(ctx context.Context, queries *store.Queries, podmanClient *podm
 		return nil
 	})
 
-	// Close regardless of how the follow ended: a stream cut short still has
-	// a trailing partial line worth keeping, and the file must be closed
-	// either way.
+	// Close regardless of how the read ended: a stream cut short still has a
+	// trailing partial line worth keeping, and the file must be closed either
+	// way.
 	tail, closeErr := writer.Close()
 	for _, line := range tail {
 		lines <- line
@@ -145,16 +222,14 @@ func captureLogs(ctx context.Context, queries *store.Queries, podmanClient *podm
 	close(lines)
 	<-indexed
 
-	if followErr != nil {
-		return followErr
+	if readErr != nil {
+		return lineCount, readErr
 	}
 	if closeErr != nil {
-		return closeErr
+		return lineCount, closeErr
 	}
 
-	log.Printf("run %d: captured %d lines of output", runID, lineCount)
-
-	return nil
+	return lineCount, nil
 }
 
 // indexLines writes index rows for captured lines until lines is closed,

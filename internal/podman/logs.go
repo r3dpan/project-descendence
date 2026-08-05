@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 )
 
 // The two output streams a container log frame can carry. These strings are
@@ -59,19 +60,44 @@ type LogFrame struct {
 // blocks for the container's entire lifetime. Putting it on the ordinary
 // httpClient would silently truncate the logs of every run lasting longer
 // than requestTimeout - the exact bug shape found in task 1.19.
+//
+// **A followed stream is not guaranteed to be complete.** libpod stops the
+// follower when the container exits, without necessarily draining what the
+// container had already written - a container printing 20000 lines and exiting
+// immediately was measured delivering as few as 11869 of them, and the stream
+// then ends *cleanly*, so there is nothing to report as an error. Under load it
+// is worse, because the follower falls further behind before the exit cuts it
+// off. Use this for liveness; use ReadContainerLogs afterwards for the truth
+// (ARCHITECTURE.md decision #21).
 func (c *Client) FollowContainerLogs(ctx context.Context, id string, fn func(LogFrame) error) error {
+	return c.containerLogs(ctx, id, true, fn)
+}
+
+// ReadContainerLogs returns a container's output as it stands now and then
+// stops, without following. On a container that has exited, this is the
+// complete output - it reads what the log driver has stored rather than
+// racing the container's lifetime, which is what makes it authoritative where
+// FollowContainerLogs is not.
+func (c *Client) ReadContainerLogs(ctx context.Context, id string, fn func(LogFrame) error) error {
+	return c.containerLogs(ctx, id, false, fn)
+}
+
+func (c *Client) containerLogs(ctx context.Context, id string, follow bool, fn func(LogFrame) error) error {
 	query := url.Values{}
 	query.Set("stdout", "true")
 	query.Set("stderr", "true")
-	query.Set("follow", "true")
+	query.Set("follow", strconv.FormatBool(follow))
 
+	// longPollClient even when not following: the request is bounded by the
+	// size of the output, not by anything requestTimeout knows about, and a
+	// large log would otherwise be truncated at ten seconds.
 	resp, err := c.doWith(ctx, c.longPollClient, http.MethodGet, "/libpod/containers/"+id+"/logs?"+query.Encode(), nil)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
 
-	if err := checkStatus(resp, "follow container logs", http.StatusOK); err != nil {
+	if err := checkStatus(resp, "read container logs", http.StatusOK); err != nil {
 		return err
 	}
 

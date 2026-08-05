@@ -217,3 +217,48 @@ func (w *Writer) Close() ([]Line, error) {
 
 	return lines, err
 }
+
+// LineCounter counts the lines a sequence of writes would produce, without
+// producing them.
+//
+// It exists so the supervisor can ask "did that capture get everything?"
+// cheaply: re-reading a container's output through a Writer would mean writing
+// the whole file a second time just to find out it was already correct
+// (ARCHITECTURE.md decision #21). Reading is the common case, rewriting the
+// rare one, so the common case should not pay for the rare one.
+//
+// It follows Writer's rule exactly - split on '\n', and a trailing
+// unterminated fragment on either stream still counts as a line - and a test
+// asserts the two agree on the same input, because a counter that disagrees
+// with the writer would either hide a truncated capture or trigger an endless
+// rewrite of a complete one.
+type LineCounter struct {
+	lines   int
+	partial map[string]bool
+}
+
+func NewLineCounter() *LineCounter {
+	return &LineCounter{partial: make(map[string]bool)}
+}
+
+// Write counts the lines in one frame of a stream.
+func (c *LineCounter) Write(stream string, data []byte) {
+	c.lines += bytes.Count(data, []byte{'\n'})
+
+	// Whether this stream now ends mid-line, which decides if there is a
+	// trailing line to count at the end.
+	if len(data) > 0 {
+		c.partial[stream] = data[len(data)-1] != '\n'
+	}
+}
+
+// Total is the line count, including any trailing unterminated line.
+func (c *LineCounter) Total() int {
+	total := c.lines
+	for _, unterminated := range c.partial {
+		if unterminated {
+			total++
+		}
+	}
+	return total
+}
