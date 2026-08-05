@@ -22,10 +22,15 @@ with weeks in between:
 - **`docs/HISTORY.md`** — session log, newest at the bottom. What broke, what was
   learned, what was next.
 
-**End-of-session ritual (both are expected, not optional):** update PLAN.md's
+**End-of-task ritual (expected, not optional):** After finishing a task during a session
+/clean your context to get rid of unneccessary data in your context workload.
+
+**End-of-session ritual (expected, not optional):** update PLAN.md's
 "Current position" block and its task markers, and append an entry to HISTORY.md.
 When code contradicts a doc, fix the doc in the same change — §4.2 stayed wrong for
-weeks because nobody did.
+weeks because nobody did. You are also expected to do some clean-up work: For ex. leftover agents,
+containers, reset data in the postgers db to a clean state etc. There should never be
+testdata from one session leaking into another. Every session needs to start on a clean state.
 
 ## Commands
 
