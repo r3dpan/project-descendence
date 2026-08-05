@@ -1326,3 +1326,83 @@ Notes to future me:
     silently does not follow. Consistent with `descendence run`, but the
     usage dump did not say why - the error now names the problem instead of
     leaving the user hunting for a typo that is not there.
+
+## 2026-08-05 (docs rework)
+Worked on: a documentation rework across CLAUDE.md, ARCHITECTURE.md, PLAN.md
+  and HISTORY.md - reducing triple-copied facts to one owner each, moving 41
+  completed tasks' implementation narratives out of PLAN.md and into
+  HISTORY.md, and fixing several doc/code and doc/doc contradictions. Docs
+  only; no .go file, migration or openapi.yaml touched. Two commits on
+  `docs/dedup-rework`, one per work phase.
+Completed:
+  - CLAUDE.md's "Read these first" is now tiered: always read PLAN.md's
+    Current position block; ARCHITECTURE.md §6 when a design choice looks
+    arbitrary; HISTORY.md when backtracking or a bug smells familiar. It
+    previously implied every session reads all three end to end.
+  - Moved ~540 lines of per-task implementation narrative out of PLAN.md's
+    Phase 1-3 task list, verbatim, into the HISTORY.md entry for the session
+    that did the work - as a new "PLAN.md task detail (moved here by the docs
+    dedup rework)" subsection per entry, task-numbered, appended rather than
+    interleaved into the existing prose. PLAN.md's task list now carries only
+    the `[x]`, the task number, the original one-line description, and (for
+    1.15 only) one line on the reconciler-blocks-claim-loop limitation - the
+    one genuine forward constraint among the 41 tasks that wasn't already
+    covered by an ARCHITECTURE decision or a CLAUDE.md invariant.
+  - Replaced PLAN.md's "Current position -> Notes" invariants list with a
+    pointer to CLAUDE.md. Verified each of its facts against CLAUDE.md first;
+    two were missing detail there and got moved up before the PLAN.md copy
+    was deleted: manifest resurrection semantics (a restored manifest
+    resurrects the same job row and its run history, not a new one), and
+    `internal/gitrepo`'s index/worktree gotcha, promoted to its own CLAUDE.md
+    invariant since it wasn't represented anywhere as a rule. One fact from
+    the Notes block - a supervisor still executes runs strictly one at a
+    time - isn't an invariant in the "don't break this" sense, so it wasn't
+    added to CLAUDE.md; it's left where it already lived, in task 1.15's
+    HISTORY.md entry, with a pointer from PLAN.md rather than a restatement.
+  - Deletions with no landing (as instructed): the duplicate blanket-timeout
+    bullet in CLAUDE.md's Testing section (kept the more complete of the
+    two); PLAN.md's "Things beginners commonly get wrong here" (generic Go
+    advice); Learning notes table rows for completed Phase 0-3 tasks (the
+    table and its two Phase-4+-ready columns stay).
+  - Fixes: CLAUDE.md's "/clear your context" line read as an instruction to
+    an agent, but no tool lets a running session invoke a slash command on
+    itself - reworded as operator guidance, which is what it actually was
+    (verified: `/clear` is a real Claude Code command, just not one the
+    assistant can self-invoke). PLAN.md's garbled "Append to the session log
+    in HISTORY.md the bottom" sentence, and its "Reading order after a long
+    break" step 2, which still said "session log entries" instead of naming
+    HISTORY.md. ARCHITECTURE.md's header stated project phase status
+    redundantly with PLAN.md's Current position block - now points at
+    PLAN.md instead, citing its own §2 principle 2 (never two places
+    claiming the same truth) as the reason. ARCHITECTURE.md §5's data model
+    sketch listed `run_logs` with a `text` column and no `byte_offset`/
+    `byte_length` - a real contradiction with the actual migration and with
+    decision #18/§4.1 (log bodies live in files, only an index in Postgres);
+    corrected to match the real schema, and the sketch's stale "refine
+    during Phase 1-3" note dropped now that those tables are built (Phase
+    4+'s `runtimes`/`schedules`/`audit` are still legitimately sketches).
+Broken / unresolved: nothing found beyond what's listed above as fixed.
+Next action: none queued by this session; resume wherever PLAN.md's Current
+  position says (Phase 4, task 4.1, as of this writing).
+Notes to future me:
+  - **HISTORY.md now holds a second kind of content**: session narrative
+    written at the time, and per-task detail moved here later from PLAN.md
+    (marked as such, in its own subsection per entry). They read differently
+    on purpose - the moved blocks are literal PLAN.md prose, not rewritten to
+    match the surrounding entry's voice, per this session's explicit
+    ground rule ("move text, don't rewrite it"). Some redundancy between a
+    moved block and the entry's own "Completed:" bullets for the same task is
+    expected and was left alone rather than merged, for the same reason.
+  - The "one owner per fact" split that came out of this: ARCHITECTURE.md
+    owns *why* (decisions and their rationale, §6 - never edited by this
+    session), CLAUDE.md owns *the one-line rule not to break*, PLAN.md owns
+    *what's next* and carries no invariants at all. When adding a new
+    invariant-shaped fact anywhere in these docs, put it in CLAUDE.md and
+    link the ARCHITECTURE.md decision number rather than writing it a second
+    time in PLAN.md's Current position block - that block regenerating a
+    duplicate is exactly the drift this session cleaned up.
+  - CLAUDE.md is 137 lines post-rework (was 122 - net growth despite three
+    deletions, because two facts got promoted from PLAN.md-only to real
+    CLAUDE.md invariants). Comfortably under the 200-line ceiling this
+    session was asked to keep it under; worth checking again the next time
+    something is added there.
