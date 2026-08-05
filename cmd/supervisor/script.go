@@ -6,6 +6,7 @@ import (
 
 	"github.com/r3dpan/project-descendence/internal/gitrepo"
 	"github.com/r3dpan/project-descendence/internal/manifest"
+	"github.com/r3dpan/project-descendence/internal/manifest/shims"
 	"github.com/r3dpan/project-descendence/internal/podman"
 	"github.com/r3dpan/project-descendence/internal/store"
 )
@@ -77,10 +78,39 @@ func materialiseScript(
 		return fmt.Errorf("reading script %s at %s: %w", parsed.ScriptPath, shortSHA(run.CommitSha.String), err)
 	}
 
-	// Mode 0755, and the tar path is the container path with its leading
-	// slash removed, since a tar entry is relative to where it is unpacked.
+	// Tar paths are container paths with their leading slash removed, since
+	// a tar entry is relative to where it is unpacked.
 	containerPath := manifest.ContainerScriptPath(parsed.ScriptPath)
-	archive, err := podman.TarFile(containerPath[1:], 0o755, script)
+	paramsJSON := paramsJSONOrEmpty(run.ParamsJson)
+	files := []podman.ArchiveFile{
+		{Path: containerPath[1:], Mode: 0o755, Content: script},
+		// task 6.3: params.json travels in the same archive as the script,
+		// so both land before start with one PutArchive call. Always
+		// present, even for a job with no params - an empty array rather
+		// than an absent file, so a script never has to distinguish "no
+		// params" from "the file isn't there yet".
+		{Path: manifest.ContainerParamsJSONPath()[1:], Mode: 0o644, Content: paramsJSON},
+	}
+
+	// task 6.4: the shim travels in the same archive, under exactly the
+	// condition Argv() itself uses to route through one - a job with no
+	// params, an explicit command:, or a script extension with no shim all
+	// get nothing extra delivered here.
+	if len(parsed.Command) == 0 && len(parsed.Params) > 0 {
+		if lang, ok := manifest.ShimLang(parsed.ScriptPath); ok {
+			shimPath := manifest.ContainerShimPath(lang)
+			files = append(files, podman.ArchiveFile{Path: shimPath[1:], Mode: 0o755, Content: shims.ByLang[lang]})
+			if lang == "sh" {
+				argvBytes, err := manifest.ParamsArgv(paramsJSON)
+				if err != nil {
+					return fmt.Errorf("building params.argv: %w", err)
+				}
+				files = append(files, podman.ArchiveFile{Path: manifest.ContainerParamsArgvPath()[1:], Mode: 0o644, Content: argvBytes})
+			}
+		}
+	}
+
+	archive, err := podman.TarFiles(files)
 	if err != nil {
 		return fmt.Errorf("building archive for %s: %w", containerPath, err)
 	}
@@ -90,6 +120,17 @@ func materialiseScript(
 	}
 
 	return nil
+}
+
+// paramsJSONOrEmpty normalises an empty/NULL params_json into a valid empty
+// JSON array (matching manifest.ResolvedParam's array shape, task 6.4)
+// rather than zero bytes, so a script parsing the file never has to
+// special-case "no params" as "no valid JSON".
+func paramsJSONOrEmpty(raw []byte) []byte {
+	if len(raw) == 0 {
+		return []byte("[]")
+	}
+	return raw
 }
 
 // shortSHA trims a commit SHA for log lines and failure reasons, which are

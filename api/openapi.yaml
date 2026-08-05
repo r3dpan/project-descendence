@@ -1404,12 +1404,22 @@ components:
         params:
           description: >
             The job's contract resolved against what was submitted (task
-            6.2): defaults applied, types coerced. Empty for an ad-hoc run.
-            A value whose contract entry is `secret` or of type `mount` is
-            redacted here (task 6.5) regardless of what was actually
-            supplied.
-          type: object
-          additionalProperties: true
+            6.2): defaults applied, types coerced, in the manifest's own
+            param order - preserved because task 6.4's Bash shim turns this
+            same order into positional arguments, which a JSON object's key
+            order cannot be relied on for. Empty for an ad-hoc run. A value
+            whose contract entry is `secret` or of type `mount` is redacted
+            here (task 6.5) regardless of what was actually supplied.
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              value: {}
+            required:
+              - name
+              - value
       required:
         - id
         - state

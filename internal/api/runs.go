@@ -68,9 +68,18 @@ type runResponse struct {
 	ScheduleID *int64 `json:"scheduleId"`
 
 	// The job's contract resolved against what was submitted (task 6.2):
-	// defaults applied, types coerced. Empty (never nil, matching
-	// runs.params_json's NOT NULL DEFAULT '{}') for an ad-hoc run.
-	Params map[string]any `json:"params"`
+	// defaults applied, types coerced, in contract order (task 6.4's Bash
+	// shim turns this same order into positional arguments). Empty, never
+	// null, for an ad-hoc run.
+	Params []runParamResponse `json:"params"`
+}
+
+// runParamResponse is one resolved param - mirrors manifest.ResolvedParam,
+// not reused directly, matching this package's convention of never exposing
+// a manifest/store type as the wire shape.
+type runParamResponse struct {
+	Name  string `json:"name"`
+	Value any    `json:"value"`
 }
 
 type runListResponse struct {
@@ -121,7 +130,7 @@ func toRunResponse(run store.Run) runResponse {
 		Argv:           run.Argv,
 		TimeoutSeconds: run.TimeoutSeconds,
 		QueuedAt:       run.QueuedAt.Time,
-		Params:         map[string]any{},
+		Params:         []runParamResponse{},
 	}
 	if len(run.ParamsJson) > 0 {
 		// Written only by createJobRun (task 6.2), which only ever writes

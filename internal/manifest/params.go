@@ -1,15 +1,27 @@
 package manifest
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strconv"
 )
 
+// ResolvedParam is one param after ResolveParams: its name and its typed
+// value (string/float64/bool). A slice, not a map - order is preserved in
+// contract order, because task 6.4's Bash shim turns this same order into
+// positional arguments, and a JSON *object*'s key order is not something Go
+// (or the JSON spec) makes any promise about preserving.
+type ResolvedParam struct {
+	Name  string `json:"name"`
+	Value any    `json:"value"`
+}
+
 // ResolveParams validates a run request's submitted values against a job's
 // parameter contract (task 6.2) and returns the values to store on the run
 // and deliver to the container - typed (string/float64/bool), coerced from
-// the raw strings submitted is arrives as (CLI flags and JSON request
+// the raw strings a submission arrives as (CLI flags and JSON request
 // bodies both carry strings; the contract's declared type is what decides
 // what a value *means*).
 //
@@ -24,7 +36,7 @@ import (
 // every other param; task 6.5 redacts it from anything the API returns
 // about the run, but storage doesn't split it out until 6.6 gives it a
 // dedicated column.
-func ResolveParams(contract []Param, submitted map[string]string) (map[string]any, error) {
+func ResolveParams(contract []Param, submitted map[string]string) ([]ResolvedParam, error) {
 	byName := make(map[string]Param, len(contract))
 	for _, p := range contract {
 		byName[p.Name] = p
@@ -36,7 +48,7 @@ func ResolveParams(contract []Param, submitted map[string]string) (map[string]an
 		}
 	}
 
-	resolved := make(map[string]any, len(contract))
+	resolved := make([]ResolvedParam, 0, len(contract))
 	for _, p := range contract {
 		raw, submittedOK := submitted[p.Name]
 		switch {
@@ -45,7 +57,7 @@ func ResolveParams(contract []Param, submitted map[string]string) (map[string]an
 			if err != nil {
 				return nil, fmt.Errorf("param %q: %w", p.Name, err)
 			}
-			resolved[p.Name] = value
+			resolved = append(resolved, ResolvedParam{Name: p.Name, Value: value})
 		case p.Default != nil:
 			value, err := coerceParam(p.Type, *p.Default)
 			if err != nil {
@@ -54,7 +66,7 @@ func ResolveParams(contract []Param, submitted map[string]string) (map[string]an
 				// beats silently dropping the param.
 				return nil, fmt.Errorf("param %q: manifest default is invalid: %w", p.Name, err)
 			}
-			resolved[p.Name] = value
+			resolved = append(resolved, ResolvedParam{Name: p.Name, Value: value})
 		case p.Required:
 			return nil, fmt.Errorf("missing required param %q", p.Name)
 		}
@@ -80,6 +92,28 @@ func coerceParam(paramType, raw string) (any, error) {
 	default: // string, mount
 		return raw, nil
 	}
+}
+
+// ParamsArgv turns a run's stored params.json back into the Bash shim's
+// NUL-delimited convenience form (task 6.4): one stringified value per
+// param, in contract order, each terminated with a NUL byte. This is what
+// lets the Bash shim skip writing a JSON parser entirely - `mapfile -d ''`
+// reads it straight into an array - and it's exact for any byte a param
+// value can hold (quotes, newlines, anything but a literal NUL), unlike any
+// escaping scheme.
+func ParamsArgv(paramsJSON []byte) ([]byte, error) {
+	var params []ResolvedParam
+	if len(paramsJSON) > 0 {
+		if err := json.Unmarshal(paramsJSON, &params); err != nil {
+			return nil, fmt.Errorf("decoding params.json: %w", err)
+		}
+	}
+	var buf bytes.Buffer
+	for _, p := range params {
+		fmt.Fprintf(&buf, "%v", p.Value)
+		buf.WriteByte(0)
+	}
+	return buf.Bytes(), nil
 }
 
 func contractNames(contract []Param) string {

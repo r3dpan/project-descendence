@@ -54,6 +54,18 @@ type Run struct {
 
 	// Set only for a run the schedule trigger endpoint created (task 5.6).
 	ScheduleID *int64 `json:"scheduleId"`
+
+	// The job's contract resolved against what was submitted (task 6.2), in
+	// manifest order. Empty for an ad-hoc run. A secret/mount-type value is
+	// redacted (task 6.5).
+	Params []RunParam `json:"params"`
+}
+
+// RunParam is one resolved param on a Run - name plus its typed value
+// (string/float64/bool), or the redaction sentinel for a secret one.
+type RunParam struct {
+	Name  string `json:"name"`
+	Value any    `json:"value"`
 }
 
 // IsJobRun reports whether this run came from a job rather than an ad-hoc

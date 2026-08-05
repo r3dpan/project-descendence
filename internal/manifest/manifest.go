@@ -52,8 +52,20 @@ const (
 // supervisor unpacks the script here when the container is created. Those are
 // two processes that never talk to each other (§3), so the agreement between
 // them has to live in one place - this constant - rather than as a string
-// literal in each. Phase 6's params.json is destined for the same directory.
+// literal in each. params.json (task 6.3), its Bash convenience form
+// params.argv, and the shim itself (task 6.4) all live in this same
+// directory.
 const ContainerScriptDir = "/run/job"
+
+// ContainerParamsJSONPath is where a run's resolved params land (task 6.3),
+// as JSON - the contract every language's shim (or a hand-rolled script
+// that reads it directly) can rely on.
+func ContainerParamsJSONPath() string { return path.Join(ContainerScriptDir, "params.json") }
+
+// ContainerParamsArgvPath is params.json's Bash-only convenience form (task
+// 6.4): the same values, NUL-delimited, in contract order, needing no JSON
+// parser to consume.
+func ContainerParamsArgvPath() string { return path.Join(ContainerScriptDir, "params.argv") }
 
 // namePattern constrains a job name because the name is how a job is
 // addressed - `descendence jobs run <name>` - and is unique among live jobs.
@@ -65,6 +77,28 @@ var namePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`)
 // directory layout into the container.
 func ContainerScriptPath(scriptPath string) string {
 	return path.Join(ContainerScriptDir, path.Base(scriptPath))
+}
+
+// ShimLang identifies which shim (task 6.4) a script's own extension calls
+// for - "sh", "py" or "ps1" - or false if the extension isn't one this
+// platform ships a shim for, in which case the script runs directly with no
+// param support (not an error: an unrecognised extension just opts out).
+func ShimLang(scriptPath string) (string, bool) {
+	switch path.Ext(scriptPath) {
+	case ".sh":
+		return "sh", true
+	case ".py":
+		return "py", true
+	case ".ps1":
+		return "ps1", true
+	default:
+		return "", false
+	}
+}
+
+// ContainerShimPath is where the shim matching lang is delivered.
+func ContainerShimPath(lang string) string {
+	return path.Join(ContainerScriptDir, "shim."+lang)
 }
 
 // Manifest is a validated job definition, with paths already resolved
@@ -160,16 +194,33 @@ type Param struct {
 
 // Argv is what the container is told to execute.
 //
-// With no explicit command - the usual case - it is the script's own path and
-// nothing else, so the script's shebang chooses its interpreter. That is what
-// keeps the platform language-agnostic: adding a language means writing a
-// script with the right shebang and naming an image that has it, and the
-// orchestrator learns nothing new.
+// With no explicit command and no recognised shim extension, it is the
+// script's own path and nothing else, so the script's shebang chooses its
+// interpreter - that is what keeps the platform language-agnostic for a
+// script with no params: adding a language means writing a script with the
+// right shebang and naming an image that has it, and the orchestrator
+// learns nothing new.
+//
+// When the manifest declares at least one param, names no explicit command,
+// and the script's extension matches a shim (task 6.4: .sh/.py/.ps1), argv
+// instead points at that shim with the script's own path as its argument -
+// the shim (delivered alongside the script, ContainerShimPath) reads
+// params.json/params.argv and re-execs the script with a native calling
+// convention. A job with no params is left exactly as before: rewrapping
+// invocation for nothing to deliver would be a pointless behaviour change
+// for the common case. An explicit `command:` always wins over shimming
+// too - it is the author taking control of invocation, which params support
+// opts out of rather than fights.
 //
 // Always a []string, never joined into a shell string (task 1.11).
 func (m *Manifest) Argv() []string {
 	if len(m.Command) > 0 {
 		return m.Command
+	}
+	if len(m.Params) > 0 {
+		if lang, ok := ShimLang(m.ScriptPath); ok {
+			return []string{ContainerShimPath(lang), ContainerScriptPath(m.ScriptPath)}
+		}
 	}
 	return []string{ContainerScriptPath(m.ScriptPath)}
 }
