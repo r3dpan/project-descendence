@@ -51,6 +51,9 @@ type Run struct {
 	// never changes ImageDigest on a run that already exists.
 	RuntimeID   *int64  `json:"runtimeId"`
 	ImageDigest *string `json:"imageDigest"`
+
+	// Set only for a run the schedule trigger endpoint created (task 5.6).
+	ScheduleID *int64 `json:"scheduleId"`
 }
 
 // IsJobRun reports whether this run came from a job rather than an ad-hoc
