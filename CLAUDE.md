@@ -28,8 +28,8 @@ Full file roles, for when you need more than the block above:
   Tasks are referenced by number throughout the code (`task 2.3`).
 - **`docs/HISTORY.md`** — what broke, what was learned, what was next, per session.
 
-**End-of-task ritual (expected, not optional):** After finishing a task during a
-session, the operator should run `/clear` to get rid of unnecessary data in the
+**End-of-task ritual (expected, not optional):** After finishing a task create a commit with the changed files and a commit message regarding the changes.
+Additionally during a session, the operator should run `/clear` to get rid of unnecessary data in the
 context workload. This is a note to whoever is at the keyboard, not an instruction
 an agent can act on — `/clear` is a slash command typed at the CLI prompt, and no
 tool exists for a running session to invoke it on itself.
