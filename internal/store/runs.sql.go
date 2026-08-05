@@ -28,7 +28,7 @@ RETURNING runs.id, runs.principal_id, runs.state, runs.idempotency_key,
           runs.exit_code, runs.failure_reason, runs.cancel_requested_at,
           runs.queued_at, runs.started_at, runs.finished_at, runs.job_id,
           runs.commit_sha, runs.runtime_id, runs.image_digest,
-          runs.params_json
+          runs.params_json, runs.logs_pruned_at
 `
 
 // The supervisor's claim loop (task 1.12). The CTE's FOR UPDATE SKIP LOCKED
@@ -60,6 +60,7 @@ func (q *Queries) ClaimNextQueuedRun(ctx context.Context) (Run, error) {
 		&i.RuntimeID,
 		&i.ImageDigest,
 		&i.ParamsJson,
+		&i.LogsPrunedAt,
 	)
 	return i, err
 }
@@ -71,7 +72,7 @@ ON CONFLICT (principal_id, idempotency_key) DO NOTHING
 RETURNING id, principal_id, state, idempotency_key, image_ref, argv,
           timeout_seconds, container_id, exit_code, failure_reason,
           cancel_requested_at, queued_at, started_at, finished_at, job_id,
-          commit_sha, runtime_id, image_digest, params_json
+          commit_sha, runtime_id, image_digest, params_json, logs_pruned_at
 `
 
 type CreateRunParams struct {
@@ -116,6 +117,7 @@ func (q *Queries) CreateRun(ctx context.Context, arg CreateRunParams) (Run, erro
 		&i.RuntimeID,
 		&i.ImageDigest,
 		&i.ParamsJson,
+		&i.LogsPrunedAt,
 	)
 	return i, err
 }
@@ -166,7 +168,7 @@ const getRun = `-- name: GetRun :one
 SELECT id, principal_id, state, idempotency_key, image_ref, argv,
        timeout_seconds, container_id, exit_code, failure_reason,
        cancel_requested_at, queued_at, started_at, finished_at, job_id,
-       commit_sha, runtime_id, image_digest, params_json
+       commit_sha, runtime_id, image_digest, params_json, logs_pruned_at
 FROM runs
 WHERE id = $1
 `
@@ -194,6 +196,7 @@ func (q *Queries) GetRun(ctx context.Context, id int64) (Run, error) {
 		&i.RuntimeID,
 		&i.ImageDigest,
 		&i.ParamsJson,
+		&i.LogsPrunedAt,
 	)
 	return i, err
 }
@@ -202,7 +205,7 @@ const getRunByIdempotencyKey = `-- name: GetRunByIdempotencyKey :one
 SELECT id, principal_id, state, idempotency_key, image_ref, argv,
        timeout_seconds, container_id, exit_code, failure_reason,
        cancel_requested_at, queued_at, started_at, finished_at, job_id,
-       commit_sha, runtime_id, image_digest, params_json
+       commit_sha, runtime_id, image_digest, params_json, logs_pruned_at
 FROM runs
 WHERE principal_id = $1 AND idempotency_key = $2
 `
@@ -235,6 +238,7 @@ func (q *Queries) GetRunByIdempotencyKey(ctx context.Context, arg GetRunByIdempo
 		&i.RuntimeID,
 		&i.ImageDigest,
 		&i.ParamsJson,
+		&i.LogsPrunedAt,
 	)
 	return i, err
 }
@@ -243,7 +247,7 @@ const listNonTerminalRuns = `-- name: ListNonTerminalRuns :many
 SELECT id, principal_id, state, idempotency_key, image_ref, argv,
        timeout_seconds, container_id, exit_code, failure_reason,
        cancel_requested_at, queued_at, started_at, finished_at, job_id,
-       commit_sha, runtime_id, image_digest, params_json
+       commit_sha, runtime_id, image_digest, params_json, logs_pruned_at
 FROM runs
 WHERE state IN ('queued', 'running')
 `
@@ -279,6 +283,7 @@ func (q *Queries) ListNonTerminalRuns(ctx context.Context) ([]Run, error) {
 			&i.RuntimeID,
 			&i.ImageDigest,
 			&i.ParamsJson,
+			&i.LogsPrunedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -294,7 +299,7 @@ const listRuns = `-- name: ListRuns :many
 SELECT id, principal_id, state, idempotency_key, image_ref, argv,
        timeout_seconds, container_id, exit_code, failure_reason,
        cancel_requested_at, queued_at, started_at, finished_at, job_id,
-       commit_sha, runtime_id, image_digest, params_json
+       commit_sha, runtime_id, image_digest, params_json, logs_pruned_at
 FROM runs
 WHERE $1::timestamptz IS NULL
    OR (queued_at, id) < ($1::timestamptz, $2::bigint)
@@ -341,6 +346,7 @@ func (q *Queries) ListRuns(ctx context.Context, arg ListRunsParams) ([]Run, erro
 			&i.RuntimeID,
 			&i.ImageDigest,
 			&i.ParamsJson,
+			&i.LogsPrunedAt,
 		); err != nil {
 			return nil, err
 		}

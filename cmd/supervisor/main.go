@@ -58,6 +58,13 @@ func main() {
 	log.Println("Reconciling non-terminal runs from a previous run")
 	reconcile(ctx, queries, podmanClient, logDir)
 
+	// The retention sweep (task 2.2) lives here rather than in the API
+	// because the advisory lock guarantees exactly one supervisor, and two
+	// processes deleting the same files is a race with nothing to gain.
+	retention := logRetention()
+	log.Printf("Pruning run logs older than %s, every %s", retention, pruneInterval)
+	go runPruneLoop(ctx, queries, logDir, retention)
+
 	log.Printf("Supervisor started, polling for queued runs every %s", pollInterval)
 	runClaimLoop(ctx, queries, podmanClient, logDir)
 	log.Println("Supervisor shutting down")

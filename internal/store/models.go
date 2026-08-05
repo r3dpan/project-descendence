@@ -68,6 +68,7 @@ type Run struct {
 	RuntimeID         pgtype.Int8        `json:"runtime_id"`
 	ImageDigest       pgtype.Text        `json:"image_digest"`
 	ParamsJson        []byte             `json:"params_json"`
+	LogsPrunedAt      pgtype.Timestamptz `json:"logs_pruned_at"`
 }
 
 type RunLog struct {

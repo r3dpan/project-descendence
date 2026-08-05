@@ -74,7 +74,7 @@ func reconcile(ctx context.Context, queries *store.Queries, podmanClient *podman
 			// a container's output on every follow, so starting over is both
 			// complete and free of a seam that could duplicate or drop lines
 			// (see runlog.Create on why the file is truncated).
-			capture := startLogCapture(ctx, podmanClient, logDir, run.ID, container.ID)
+			capture := startLogCapture(ctx, queries, podmanClient, logDir, run.ID, container.ID)
 			waitFinishAndRemove(ctx, queries, podmanClient, run, container.ID, capture)
 		}
 	}

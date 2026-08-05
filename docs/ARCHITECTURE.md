@@ -353,6 +353,7 @@ Recording *why*, because in three months the reasoning will be gone.
 | 15 | Hand-write routing and handlers; no chi, no oapi-codegen | Learning value is the point of the project; stdlib `net/http` + Go 1.22 patterns are sufficient. Reverses the codegen half of #11 — the spec remains the contract | Handler boilerplate becomes genuinely unmanageable |
 | 16 | goose for migrations, not golang-migrate | Go-based migrations available for the Phase-1 bootstrap token (crypto/rand + SHA-256, not expressible in SQL); no dirty-flag state to force-clear after a failed migration; Postgres-only project makes golang-migrate's driver breadth irrelevant | Migrations ever need running by something that isn't Go |
 | 17 | CLI built on the Charm stack (`bubbletea`, `bubbles`, `lipgloss`), not plain `fmt.Println` | A run is a *live* thing — queued → running → terminal, on the order of seconds to an hour. Watching that is genuinely interactive, and a good TUI is the difference between a tool that gets used and one that doesn't. Deliberately narrower than #15's "hand-write it": rendering is not where this project's learning value is, and reimplementing a terminal renderer would be busywork, not education. Command dispatch and flag parsing stay stdlib (`flag`) — no cobra | The TUI outgrows bubbletea, or the CLI stops being the primary client |
+| 18 | **Log retention: run records forever, run *output* for 30 days.** Time-based, swept hourly by the supervisor, both halves (index rows and files) deleted together | The question an operator actually asks is "can I still see what last month's backup printed" — a question about time. Count-based answers it differently depending on how busy the month was; size-based lets one chatty job evict everyone else's history. The run row is the audit trail (what ran, when, under whose token, how it ended): small, structured, worth keeping forever. The output is the bulky part and the part whose value decays. The sweep lives in the supervisor because the advisory lock (#16 era, task 1.16) already guarantees exactly one of it. `runs.logs_pruned_at` exists so the API can tell "printed nothing" from "output deleted" — without it both look like an empty log, and the second silently lies | Disk pressure arrives before 30 days, i.e. a per-run size cap becomes necessary — deliberately not built, since it has not happened |
 ---
 
 ## 7. Deliberately deferred
@@ -377,7 +378,7 @@ Unresolved. Resolve at the phase indicated.
 | Question | Resolve at |
 |---|---|
 | In-process cron vs. generated systemd timers | Phase 5 |
-| Log retention: how long, and prune where (files vs Postgres)? | Phase 2 |
+| ~~Log retention: how long, and prune where (files vs Postgres)?~~ | **Resolved at task 2.2 — decision #18** |
 | Image prune policy — time-based, count-based, or reference-based? | Phase 4 |
 | Does PowerShell's AST parser give usable parameter introspection? Prototype needed | Phase 6 |
 | Base image family — Alpine (small) vs Debian (compatible, esp. for PowerShell)? | Phase 4 |

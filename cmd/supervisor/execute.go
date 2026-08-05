@@ -50,7 +50,7 @@ func executeRun(ctx context.Context, queries *store.Queries, podmanClient *podma
 	// once per run (task 2.1). libpod replays from the beginning of the
 	// container's life, so nothing printed between start and attach is
 	// missed.
-	capture := startLogCapture(ctx, podmanClient, logDir, run.ID, containerID)
+	capture := startLogCapture(ctx, queries, podmanClient, logDir, run.ID, containerID)
 
 	waitFinishAndRemove(ctx, queries, podmanClient, run, containerID, capture)
 }
