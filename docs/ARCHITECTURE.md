@@ -1,7 +1,8 @@
 # Architecture
 
 **Project:** Script automation platform (working name: TBD)
-**Status:** Phases 0-3 implemented; 4-7 designed, not yet built
+**Status:** see PLAN.md's "Current position" block — this file does not track
+implementation progress, to avoid two places claiming to know it (§2 principle 2).
 **Last updated:** 2026-08-05
 
 ---
@@ -375,7 +376,10 @@ than two rendering strategies.
 
 ## 5. Data model sketch
 
-Not final — refine during Phase 1–3. Included so the shape is visible.
+Phases 0–3's tables (`principals`, `repos`, `jobs`, `runs`, `run_logs`) are built;
+this sketch of them is illustrative, not authoritative — the migrations in
+`migrations/` are the source of truth for exact columns and constraints.
+`runtimes`, `schedules` and `audit` are still Phase 4+ sketches, not yet built.
 
 ```
 principals    id, kind(user|token), name, token_hash, scopes[], created_at
@@ -394,7 +398,10 @@ runs          id, job_id, principal_id, state, idempotency_key,
               commit_sha, image_digest, params_json,
               container_id, exit_code,
               queued_at, started_at, finished_at
-run_logs      run_id, seq, stream(stdout|stderr), ts, text
+run_logs      run_id, seq, stream(stdout|stderr), ts, byte_offset, byte_length
+              -- index only, per decision #18/§4.1: log bodies live in files,
+              -- not in Postgres. byte_offset/byte_length point into the file;
+              -- there has never been a `text` column here.
 schedules     id, job_id, cron_expr, timezone, next_due_at, enabled
 audit         id, principal_id, action, target, ts, detail_json
 ```

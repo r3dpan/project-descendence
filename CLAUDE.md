@@ -11,19 +11,28 @@ frameworks where the framework is the thing worth learning).
 ## Read these first
 
 Three docs in `docs/`, and they are load-bearing — this project is worked on in bursts
-with weeks in between:
+with weeks in between. Not all three every session:
 
-- **`docs/ARCHITECTURE.md`** — the *what* and *why*. §6 is a numbered decision log;
-  when a design choice looks arbitrary, the answer is there. Cite decisions by number
-  in comments (`decision #19`) the way the existing code does.
+- **Always: `docs/PLAN.md`'s "Current position" block.** The fastest way to find out
+  where things stand.
+- **When a design choice looks arbitrary: `docs/ARCHITECTURE.md` §6**, a numbered
+  decision log with the answer. Cite decisions by number in comments (`decision #19`)
+  the way the existing code does.
+- **When backtracking or a bug smells familiar: `docs/HISTORY.md`**, the session log,
+  newest at the bottom. What broke, what was learned, what was next.
+
+Full file roles, for when you need more than the block above:
+
+- **`docs/ARCHITECTURE.md`** — the *what* and *why*.
 - **`docs/PLAN.md`** — the *when*. Phased task list with `[ ] [~] [x] [!]` markers.
-  The **"Current position"** block at the top is the fastest way to find out where
-  things stand. Tasks are referenced by number throughout the code (`task 2.3`).
-- **`docs/HISTORY.md`** — session log, newest at the bottom. What broke, what was
-  learned, what was next.
+  Tasks are referenced by number throughout the code (`task 2.3`).
+- **`docs/HISTORY.md`** — what broke, what was learned, what was next, per session.
 
-**End-of-task ritual (expected, not optional):** After finishing a task during a session
-/clear your context to get rid of unneccessary data in your context workload.
+**End-of-task ritual (expected, not optional):** After finishing a task during a
+session, the operator should run `/clear` to get rid of unnecessary data in the
+context workload. This is a note to whoever is at the keyboard, not an instruction
+an agent can act on — `/clear` is a slash command typed at the CLI prompt, and no
+tool exists for a running session to invoke it on itself.
 
 **End-of-session ritual (expected, not optional):** update PLAN.md's
 "Current position" block and its task markers, and append an entry to HISTORY.md.
@@ -79,9 +88,17 @@ Config is environment only; see `.env.sample`.
 - **A vanished manifest soft-deletes its job**, never hard-deletes: `runs.job_id` is
   `ON DELETE SET NULL`, so removing the row would sever past runs from what they ran.
   An *unparseable* manifest is reported and skipped — it is present, just unreadable.
+  A manifest that comes back resurrects the *same* job row, and its run history
+  with it, rather than creating a new one.
 - **A job run reads everything at its pinned `commit_sha`, never at HEAD.** Both the
   API (at create) and the supervisor (at execute) do; the projection tracks HEAD and
   is never consulted for what to execute.
+- **`internal/gitrepo`'s index outlives its in-memory worktree.** The index lives in
+  the on-disk storer and survives between calls, but the worktree is a fresh
+  in-memory filesystem that starts empty each time — reset the index before every
+  checkout, or go-git either refuses (sees the empty worktree as "dirty") or, with
+  `Force: true`, tries to prune the root and fails. See `CommitFile`'s comment in
+  `internal/gitrepo/gitrepo.go`.
 
 ## Conventions
 
@@ -102,9 +119,7 @@ Integration tests skip themselves rather than fail when their dependency is abse
 (`DATABASE_URL`, `PODMAN_SOCKET`, `DESCENDENCE_URL`), so a green `go test ./...` does
 not mean much on its own — check what actually ran.
 
-- Some tests sleep past a request timeout on purpose (they exist to catch the
-  "blanket `http.Client.Timeout` truncates a long poll" bug, which has landed four times).
-  They are behind `testing.Short()`.
+- Some tests sleep past a request timeout on purpose — behind `testing.Short()`.
 - **Do not run `go test ./internal/store` against a database a live supervisor is
   polling** — it claims the tests' throwaway runs. Any test that claims work from a
   shared queue interferes with every other test, in both directions.
