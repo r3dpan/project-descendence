@@ -39,22 +39,19 @@ Update the marker on each task as it moves:
 
 - **Phase:** 1 — Vertical slice
 - **Task:** Phase 1a, `internal/podman` (1.9–1.11), 1.12, 1.13, 1.15, 1.16,
-  1.17 done — Phase 1c is done except 1.14. **Phase 1d (CLI) is done:**
-  1.18-1.21.
+  1.17 done. **Phases 1a, 1b, 1c and 1d are all complete** (1.1-1.21).
 - **Next action:** Phase 1e — "prove it" (1.22-1.25): kill the supervisor
   mid-run and restart it, kill the API mid-poll, submit 20 runs at once,
   and confirm `podman ps -a` is clean afterwards. The plan is emphatic
   that these are the point of the whole phase, so do them deliberately
-  rather than skimming. 1.14 should be settled before or alongside them,
-  since "all six states" is exactly what 1.22-1.25 exercise.
+  rather than skimming.
   The CLI is built on the Charm stack (bubbletea/bubbles/lipgloss) at the
   user's explicit direction, recorded as ARCHITECTURE.md decision #17;
-  dispatch and flags stay stdlib. 1.14 (all six run states) is still open
-  and has now been
-  deliberately skipped four times (1.15, 1.16, 1.17, and again for 1d);
-  likely mostly a verification pass -
-  `queued`/`running`/`succeeded`/`failed`/`lost` all already happen, only
-  `cancelled` has no producer (needs Phase 2's cancel endpoint).
+  dispatch and flags stay stdlib. 1.14 (all six run states) is now done
+  after being deliberately deferred four times: the states live in
+  `internal/store/states.go`, `FinishRun` refuses to overwrite a terminal
+  state, and `cancelled` remains producerless on purpose because task 2.8
+  owns cancellation end to end.
 - **Blocked on:** nothing
 - **Notes:** Phase 0, 1a, `internal/podman`, and the claim loop (1.12) all
   done (see prior entries / commits). 1.13 closes the vertical slice's core
@@ -309,8 +306,21 @@ the run appears in Postgres with correct timestamps and state.
       Verified live: real success, real nonzero exit, and a nonexistent image
       all reached the correct terminal state with correct `exit_code`/
       `container_id`/`failure_reason`, zero leaked containers.
-- [ ] **1.14** Implement all six states: `queued`, `running`, `succeeded`, `failed`,
-      `cancelled`, `lost`.
+- [x] **1.14** Implement all six states: `queued`, `running`, `succeeded`, `failed`,
+      `cancelled`, `lost`. New `internal/store/states.go` (hand-written,
+      lives beside the generated code) is the authoritative Go list, with
+      `IsTerminal` and the state machine documented as a diagram naming who
+      performs each transition; the supervisor's string literals are gone.
+      **`FinishRun` now guards on `state IN ('queued','running')` and is
+      `:execrows`** — a terminal state is final, so a slow reconciler can no
+      longer rewrite a real `succeeded` as `lost`; zero rows is logged as
+      "already terminal" rather than silently clobbering. `cancelled` is
+      defined, constrained, rendered and tested everywhere but has no
+      producer: task 2.8 owns cancellation end to end, and the plan is
+      emphatic about getting it right there, so building half of it here
+      was deliberately declined. Drift between the three copies of the
+      state list (Go, the `runs_state_check` constraint, `openapi.yaml`'s
+      enum) is now caught by tests.
 - [x] **1.15** **Reconciler.** On startup, list containers filtered by the `run_id`
       label and compare against runs in non-terminal states. Adopt what's still
       alive; mark the rest `lost`.
@@ -975,7 +985,8 @@ Notes to future me:
 Worked on: Phase 1d (the CLI). 1.18 (hand-written API client); 1.19
 (`cli run`) — plus a genuine `internal/podman` bug that 1.19's verification
 surfaced, see below; 1.20 (`cli runs list` / `runs get`); 1.21 (config file
-+ precedence) — **Phase 1d complete**.
++ precedence) — **Phase 1d complete**; 1.14 (all six run states) — the last
+open item in 1c, so **Phases 1a-1d are now all complete**.
 Decision up front, at the user's explicit direction: **the CLI is built on
 the Charm stack** — `bubbletea` for anything interactive, with `bubbles` and
 `lipgloss` as needed. That is a real dependency choice for a project that has
@@ -1086,9 +1097,43 @@ Completed:
     `whoami`, a full `run`, and `runs list` all working from the file
     alone, plus per-value override, the permission warning, an unknown key,
     and the nothing-configured message.
-Broken / unresolved: nothing. 1.14 (all six states) is still open — now
-skipped four times, still not forgotten, and 1e is the natural place to
-settle it since 1.22-1.25 exercise exactly those states.
+  - 1.14, finally, after four deliberate deferrals — and it was *not* just
+    a verification pass, which is the lesson. Three real pieces of work:
+    (a) `internal/store/states.go`, hand-written beside the generated code
+    (sqlc only rewrites its own outputs, so it survives `sqlc generate`),
+    holding the six constants, `IsTerminal`, and a diagram of the state
+    machine naming who performs each transition. The supervisor's string
+    literals are gone.
+    (b) **`FinishRun` had no state guard** — `WHERE id = $1` would happily
+    overwrite a terminal run. Concretely: a reconciler slow to notice a run
+    had finished could rewrite a real `succeeded`, exit code and all, as
+    `lost`. Now `WHERE id = $1 AND state IN ('queued','running')` and
+    `:execrows`, so the caller can tell "recorded" from "someone else got
+    here first" and log it rather than silently clobbering.
+    (c) `cancelled` deliberately left with no producer. Task 2.8 owns
+    cancellation end to end and the plan is emphatic about getting it right
+    there; building half of it here would have been exactly the scope drift
+    this document warns against. It is defined, constrained, rendered and
+    tested regardless, so 2.8 only adds a transition rather than plumbing a
+    new state through four layers.
+    Verified live: all six states accepted by `runs_state_check` and a
+    seventh rejected; the guard proven both in raw SQL and through the
+    generated Go (new DB-backed tests in `internal/store`, skipping on an
+    unset `DATABASE_URL` like the other integration suites); the CLI
+    rendering all six; and the reconciler marking two genuinely stranded
+    runs `lost` on restart.
+  - 1.14 (bug found in my own test, worth recording): the first version of
+    `TestFinishRunWillNotOverwriteATerminalState` called
+    `ClaimNextQueuedRun` in a loop to get its run into `running`. That
+    query returns the *oldest* queued run, not yours — so under `go test
+    ./...`, where packages run in parallel, it stole and abandoned runs
+    belonging to `internal/client`'s tests, stranding them in `running`.
+    Symptom was the client package suddenly taking 60s (its poll deadline)
+    instead of 1.5s. Fixed by finishing straight from `queued`, which
+    exercises the same guard without reaching outside its own row. **Any
+    test that claims work from a shared queue is a test that interferes
+    with every other test.**
+Broken / unresolved: nothing.
 Next action: Phase 1e, "prove it" (1.22-1.25). Deliberately, not quickly.
 Notes to future me:
   - `DESCENDENCE_URL` / `DESCENDENCE_TOKEN` are the CLI's env vars, chosen

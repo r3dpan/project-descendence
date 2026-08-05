@@ -47,7 +47,7 @@ func reconcile(ctx context.Context, queries *store.Queries, podmanClient *podman
 	}
 
 	for _, run := range runs {
-		if run.State != "running" {
+		if run.State != store.StateRunning {
 			// A queued run was never claimed, so it never got a container -
 			// nothing to reconcile. The claim loop picks it up normally.
 			continue
@@ -57,14 +57,14 @@ func reconcile(ctx context.Context, queries *store.Queries, podmanClient *podman
 		switch {
 		case !found:
 			log.Printf("reconcile: run %d has no matching container, marking lost", run.ID)
-			finishRun(ctx, queries, run.ID, "lost", nil, "", "supervisor restarted; no container found for this run")
+			finishRun(ctx, queries, run.ID, store.StateLost, nil, "", "supervisor restarted; no container found for this run")
 
 		case container.State == "created":
 			// Crashed between create and start - the container never ran,
 			// so there's no outcome to adopt. Clean up the stale container
 			// rather than leaving it behind.
 			log.Printf("reconcile: run %d's container %s was created but never started, marking lost", run.ID, container.ID)
-			finishRun(ctx, queries, run.ID, "lost", nil, container.ID, "supervisor restarted before the container started")
+			finishRun(ctx, queries, run.ID, store.StateLost, nil, container.ID, "supervisor restarted before the container started")
 			removeContainer(podmanClient, run.ID, container.ID)
 
 		default:

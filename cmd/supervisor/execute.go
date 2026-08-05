@@ -25,12 +25,12 @@ func executeRun(ctx context.Context, queries *store.Queries, podmanClient *podma
 		Command: run.Argv,
 	})
 	if err != nil {
-		finishRun(ctx, queries, run.ID, "failed", nil, "", fmt.Sprintf("creating container: %v", err))
+		finishRun(ctx, queries, run.ID, store.StateFailed, nil, "", fmt.Sprintf("creating container: %v", err))
 		return
 	}
 
 	if err := podmanClient.StartContainer(ctx, containerID); err != nil {
-		finishRun(ctx, queries, run.ID, "failed", nil, containerID, fmt.Sprintf("starting container: %v", err))
+		finishRun(ctx, queries, run.ID, store.StateFailed, nil, containerID, fmt.Sprintf("starting container: %v", err))
 		removeContainer(podmanClient, run.ID, containerID)
 		return
 	}
@@ -68,16 +68,16 @@ func waitFinishAndRemove(ctx context.Context, queries *store.Queries, podmanClie
 			// a timeout. Leave the run running; don't touch the container.
 			log.Printf("run %d: stopped waiting (%v); leaving it running for the reconciler", run.ID, waitCtx.Err())
 		default:
-			finishRun(ctx, queries, run.ID, "failed", nil, containerID, fmt.Sprintf("waiting for container: %v", err))
+			finishRun(ctx, queries, run.ID, store.StateFailed, nil, containerID, fmt.Sprintf("waiting for container: %v", err))
 			removeContainer(podmanClient, run.ID, containerID)
 		}
 		return
 	}
 
-	state := "succeeded"
+	state := store.StateSucceeded
 	failureReason := ""
 	if exitCode != 0 {
-		state = "failed"
+		state = store.StateFailed
 		failureReason = fmt.Sprintf("exit code %d", exitCode)
 	}
 
@@ -104,10 +104,15 @@ func handleTimeout(queries *store.Queries, podmanClient *podman.Client, run stor
 		log.Printf("run %d: failed confirming kill of container %s: %v", run.ID, containerID, err)
 	}
 
-	finishRun(ctx, queries, run.ID, "failed", nil, containerID, fmt.Sprintf("exceeded timeout of %ds", run.TimeoutSeconds))
+	finishRun(ctx, queries, run.ID, store.StateFailed, nil, containerID, fmt.Sprintf("exceeded timeout of %ds", run.TimeoutSeconds))
 	removeContainer(podmanClient, run.ID, containerID)
 }
 
+// finishRun records a terminal state. A terminal state is final (task
+// 1.14), so the query refuses to overwrite one: zero rows affected means
+// something else already finished this run, which is worth saying out loud
+// rather than passing over silently - it means two things believed they
+// owned the same run.
 func finishRun(ctx context.Context, queries *store.Queries, runID int64, state string, exitCode *int32, containerID, failureReason string) {
 	params := store.FinishRunParams{
 		ID:    runID,
@@ -123,8 +128,13 @@ func finishRun(ctx context.Context, queries *store.Queries, runID int64, state s
 		params.FailureReason = pgtype.Text{String: failureReason, Valid: true}
 	}
 
-	if err := queries.FinishRun(ctx, params); err != nil {
+	rows, err := queries.FinishRun(ctx, params)
+	if err != nil {
 		log.Printf("run %d: failed recording terminal state %q: %v", runID, state, err)
+		return
+	}
+	if rows == 0 {
+		log.Printf("run %d: not recording %q - the run was already in a terminal state", runID, state)
 	}
 }
 

@@ -120,7 +120,7 @@ func (q *Queries) CreateRun(ctx context.Context, arg CreateRunParams) (Run, erro
 	return i, err
 }
 
-const finishRun = `-- name: FinishRun :exec
+const finishRun = `-- name: FinishRun :execrows
 UPDATE runs
 SET state = $2,
     exit_code = $3,
@@ -128,6 +128,7 @@ SET state = $2,
     failure_reason = $5,
     finished_at = now()
 WHERE id = $1
+  AND state IN ('queued', 'running')
 `
 
 type FinishRunParams struct {
@@ -138,18 +139,27 @@ type FinishRunParams struct {
 	FailureReason pgtype.Text `json:"failure_reason"`
 }
 
-// Task 1.13. state is always a terminal one here (succeeded/failed for now;
-// cancelled/lost come later) - runs_state_timestamps_check requires
-// finished_at whenever state is terminal, which this always sets.
-func (q *Queries) FinishRun(ctx context.Context, arg FinishRunParams) error {
-	_, err := q.db.Exec(ctx, finishRun,
+// Task 1.13. state is always a terminal one here -
+// runs_state_timestamps_check requires finished_at whenever state is
+// terminal, which this always sets.
+//
+// The state guard makes a terminal state final (task 1.14): a run that has
+// already succeeded must never be rewritten as lost by a reconciler that
+// was slow to notice, and an outcome must never be overwritten by a stale
+// process. :execrows so the caller can tell "recorded" from "someone else
+// already finished this run" instead of silently clobbering a real result.
+func (q *Queries) FinishRun(ctx context.Context, arg FinishRunParams) (int64, error) {
+	result, err := q.db.Exec(ctx, finishRun,
 		arg.ID,
 		arg.State,
 		arg.ExitCode,
 		arg.ContainerID,
 		arg.FailureReason,
 	)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const getRun = `-- name: GetRun :one
