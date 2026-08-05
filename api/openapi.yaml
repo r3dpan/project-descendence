@@ -181,6 +181,12 @@ paths:
         rather than an opaque cursor: unlike the runs list, a log line's
         position is meaningful and public - it is the same number an SSE
         client sends back as Last-Event-ID to resume.
+
+
+        Two representations, chosen by Accept. The default is one JSON page of
+        history. `Accept: text/event-stream` instead follows the run live,
+        sending the history first and then each line as it is captured, until
+        the run reaches a terminal state.
       security:
         - bearerAuth: []
       parameters:
@@ -200,7 +206,9 @@ paths:
             default: 0
         - name: limit
           in: query
-          description: Maximum lines to return.
+          description: >
+            Maximum lines to return. Applies to the JSON representation only -
+            an event stream is not paginated, it runs until the run ends.
           schema:
             type: integer
             minimum: 1
@@ -208,11 +216,42 @@ paths:
             default: 500
       responses:
         "200":
-          description: One page of the run's output.
+          description: >
+            One page of the run's output, or a live event stream of it,
+            depending on Accept.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/RunLogList"
+            text/event-stream:
+              schema:
+                type: string
+              description: >
+                Server-sent events. Two event types:
+
+
+                `log` - one line of output. Its `id` is the line's sequence
+                number, and its data is a RunLogLine object.
+
+
+                `state` - the run's state, sent when the stream opens and on
+                every change after that. Data is `{"runState": "..."}`. No
+                `id`: it is not a position to resume from.
+
+
+                A `state` event carrying a terminal state is the stream's
+                defined ending, and the server closes the connection after it.
+                A stream that ends any other way ended abnormally; reconnect
+                and resume from the last `log` id received.
+              example: |
+                retry: 3000
+
+                id: 1
+                event: log
+                data: {"seq":1,"stream":"stdout","ts":"2026-08-05T12:00:00Z","text":"hello"}
+
+                event: state
+                data: {"runState":"succeeded"}
         "400":
           description: Negative after, or limit outside 1-1000
           content:

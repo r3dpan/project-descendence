@@ -496,7 +496,7 @@ resumes without gaps.
       A pruned run is **410 Gone**, checked *before* reading: pruning
       deletes the index rows too, so a pruned run is otherwise
       indistinguishable from one that printed nothing.
-- [ ] **2.5** Same endpoint with `Accept: text/event-stream` → SSE. Emit `id:`,
+- [x] **2.5** Same endpoint with `Accept: text/event-stream` → SSE. Emit `id:`,
       `event:`, `data:` with a blank line between messages; one `data:` line per
       output line. Call `Flush()` after every message.
       **Constrained by `WriteTimeout`.** `cmd/api/main.go` sets a server-wide
@@ -505,6 +505,23 @@ resumes without gaps.
       and `SetWriteDeadline(time.Time{})` inside this handler only — a zero
       `time.Time` disables the deadline for that one response. Do not solve this
       by removing the server-wide timeout.
+      `internal/api/sse.go` (the wire format) + `streamRunLogs` in `logs.go`.
+      Two event types: `log` (id = seq, data = the same object the JSON path
+      returns) and `state` (no id — not a resumable position). A `state`
+      event carrying a terminal state is the stream's *defined* ending;
+      ending any other way is the client's cue to reconnect.
+      **Deviated from the `SetWriteDeadline(time.Time{})` instruction above,
+      deliberately.** A cleared deadline swaps one bug for a worse one: a
+      client that stops reading without closing leaves the handler blocked
+      in `Write` forever, holding the goroutine and subscription 2.7 exists
+      to release (TCP keepalive notices in *hours*). The deadline is
+      re-armed before every write instead — same 30s, applied per write
+      rather than per response, so a stream lives as long as it likes and a
+      stalled write still dies on schedule.
+      Error paths are checked *before* the stream headers go out, because
+      after them the only way to report a 404 is to hang up.
+      Verification found two real defects that had nothing to do with SSE;
+      see decisions #20 and #21, and the session log.
 - [ ] **2.6** Honour `Last-Event-ID` on reconnect: replay from that sequence number.
 - [ ] **2.7** Exit the stream goroutine on `r.Context().Done()` — otherwise every
       closed client leaks a goroutine.
