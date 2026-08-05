@@ -20,6 +20,15 @@ export function getJob(id: number | string): Promise<Job> {
   return request<Job>(`/api/v1/jobs/${id}`)
 }
 
+// enabled is the only field a job's manifest in git does not own (decision
+// #23) - everything else comes from a commit + sync, never this endpoint.
+export function patchJob(id: number | string, enabled: boolean): Promise<Job> {
+  return request<Job>(`/api/v1/jobs/${id}`, {
+    method: 'PATCH',
+    body: { enabled },
+  })
+}
+
 // Params are raw strings, matching --param name=value on the CLI - the
 // server coerces them against the job's contract (task 6.2), so this client
 // never needs to duplicate that typing.

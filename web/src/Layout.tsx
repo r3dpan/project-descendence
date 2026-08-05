@@ -25,6 +25,9 @@ export default function Layout({ children }: { children: ReactNode }) {
         <NavLink to="/jobs" style={linkStyle}>
           Jobs
         </NavLink>
+        <NavLink to="/runtimes" style={linkStyle}>
+          Runtimes
+        </NavLink>
         <button type="button" onClick={handleLogout} style={{ marginLeft: 'auto' }}>
           Sign out
         </button>

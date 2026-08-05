@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { listJobs, type Job } from '../api/jobs'
+import { listJobs, patchJob, type Job } from '../api/jobs'
 import { APIError } from '../api/client'
 
 export default function JobList() {
@@ -9,6 +9,7 @@ export default function JobList() {
   const [nextCursor, setNextCursor] = useState<string | null | undefined>(undefined)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+  const [togglingId, setTogglingId] = useState<number | null>(null)
 
   useEffect(() => {
     setLoading(true)
@@ -20,6 +21,19 @@ export default function JobList() {
       .catch((err) => setError(err instanceof APIError ? err.message : 'Failed loading jobs'))
       .finally(() => setLoading(false))
   }, [cursor])
+
+  async function handleToggle(job: Job) {
+    setError(null)
+    setTogglingId(job.id)
+    try {
+      const updated = await patchJob(job.id, !job.enabled)
+      setJobs((prev) => prev.map((j) => (j.id === updated.id ? updated : j)))
+    } catch (err) {
+      setError(err instanceof APIError ? err.message : 'Failed updating job')
+    } finally {
+      setTogglingId(null)
+    }
+  }
 
   return (
     <main>
@@ -36,6 +50,7 @@ export default function JobList() {
             <th>Description</th>
             <th>Enabled</th>
             <th>Params</th>
+            <th></th>
           </tr>
         </thead>
         <tbody>
@@ -47,6 +62,11 @@ export default function JobList() {
               <td>{job.description ?? ''}</td>
               <td>{job.enabled ? 'yes' : 'no'}</td>
               <td>{job.params.length}</td>
+              <td>
+                <button type="button" onClick={() => handleToggle(job)} disabled={togglingId === job.id}>
+                  {job.enabled ? 'Disable' : 'Enable'}
+                </button>
+              </td>
             </tr>
           ))}
         </tbody>

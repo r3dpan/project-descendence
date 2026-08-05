@@ -1228,6 +1228,23 @@ paths:
               description: "/api/v1/runtimes/{id} of the runtime being built"
               schema:
                 type: string
+          content:
+            application/json:
+              schema:
+                type: object
+                description: >
+                  Deliberately partial - id and the new buildStatus only, not
+                  the full Runtime. Poll GET /api/v1/runtimes/{id} (or use
+                  Location) for the rest.
+                properties:
+                  id:
+                    type: integer
+                  buildStatus:
+                    type: string
+                    enum: [pending]
+                required:
+                  - id
+                  - buildStatus
         "401":
           description: Missing, malformed, unknown, expired or revoked token
           content:

@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { createJobRun, getJob, type Job } from '../api/jobs'
+import { createJobRun, getJob, patchJob, type Job } from '../api/jobs'
 import { APIError } from '../api/client'
 
 export default function JobDetail() {
@@ -11,6 +11,8 @@ export default function JobDetail() {
   const [error, setError] = useState<string | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
+  const [toggling, setToggling] = useState(false)
+  const [toggleError, setToggleError] = useState<string | null>(null)
 
   useEffect(() => {
     if (!id) return
@@ -61,6 +63,20 @@ export default function JobDetail() {
     }
   }
 
+  async function handleToggle() {
+    if (!job) return
+    setToggleError(null)
+    setToggling(true)
+    try {
+      const updated = await patchJob(job.id, !job.enabled)
+      setJob(updated)
+    } catch (err) {
+      setToggleError(err instanceof APIError ? err.message : 'Failed updating job')
+    } finally {
+      setToggling(false)
+    }
+  }
+
   if (loadError) return <p role="alert" style={{ color: 'crimson' }}>{loadError}</p>
   if (!job) return <p>Loading…</p>
 
@@ -76,6 +92,19 @@ export default function JobDetail() {
       {!job.enabled && !job.deletedAt && (
         <p role="alert" style={{ color: 'darkorange' }}>
           This job is disabled and cannot be run until it is re-enabled.
+        </p>
+      )}
+
+      {!job.deletedAt && (
+        <p>
+          <button type="button" onClick={handleToggle} disabled={toggling}>
+            {toggling ? 'Updating…' : job.enabled ? 'Disable job' : 'Enable job'}
+          </button>
+          {toggleError && (
+            <span role="alert" style={{ color: 'crimson', marginLeft: '0.5rem' }}>
+              {toggleError}
+            </span>
+          )}
         </p>
       )}
 

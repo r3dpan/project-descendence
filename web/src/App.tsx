@@ -7,6 +7,8 @@ import RunList from './pages/RunList'
 import RunDetail from './pages/RunDetail'
 import JobList from './pages/JobList'
 import JobDetail from './pages/JobDetail'
+import RuntimeList from './pages/RuntimeList'
+import RuntimeDetail from './pages/RuntimeDetail'
 
 function Protected({ children }: { children: ReactNode }) {
   const { principal } = useAuth()
@@ -54,6 +56,22 @@ export default function App() {
             element={
               <Protected>
                 <JobDetail />
+              </Protected>
+            }
+          />
+          <Route
+            path="/runtimes"
+            element={
+              <Protected>
+                <RuntimeList />
+              </Protected>
+            }
+          />
+          <Route
+            path="/runtimes/:id"
+            element={
+              <Protected>
+                <RuntimeDetail />
               </Protected>
             }
           />

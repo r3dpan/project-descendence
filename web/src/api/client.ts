@@ -56,6 +56,9 @@ export async function request<T>(path: string, opts: RequestOptions = {}): Promi
     throw new APIError(res.status, detail, title)
   }
 
-  if (res.status === 204) return undefined as T
-  return (await res.json()) as T
+  // Not every 2xx carries a body (logout's 204, buildRuntime's empty 202) -
+  // read as text first rather than assuming every success decodes as JSON.
+  const text = await res.text()
+  if (text === '') return undefined as T
+  return JSON.parse(text) as T
 }
