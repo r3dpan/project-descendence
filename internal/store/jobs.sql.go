@@ -14,7 +14,7 @@ import (
 const getJob = `-- name: GetJob :one
 SELECT id, repo_id, runtime_id, manifest_path, name, enabled, created_at,
        description, script_path, command, image_ref, timeout_seconds,
-       synced_commit_sha, synced_at, deleted_at
+       synced_commit_sha, synced_at, deleted_at, params_json
 FROM jobs
 WHERE id = $1
 `
@@ -40,6 +40,7 @@ func (q *Queries) GetJob(ctx context.Context, id int64) (Job, error) {
 		&i.SyncedCommitSha,
 		&i.SyncedAt,
 		&i.DeletedAt,
+		&i.ParamsJson,
 	)
 	return i, err
 }
@@ -47,7 +48,7 @@ func (q *Queries) GetJob(ctx context.Context, id int64) (Job, error) {
 const getJobByName = `-- name: GetJobByName :one
 SELECT id, repo_id, runtime_id, manifest_path, name, enabled, created_at,
        description, script_path, command, image_ref, timeout_seconds,
-       synced_commit_sha, synced_at, deleted_at
+       synced_commit_sha, synced_at, deleted_at, params_json
 FROM jobs
 WHERE name = $1 AND deleted_at IS NULL
 `
@@ -74,6 +75,7 @@ func (q *Queries) GetJobByName(ctx context.Context, name string) (Job, error) {
 		&i.SyncedCommitSha,
 		&i.SyncedAt,
 		&i.DeletedAt,
+		&i.ParamsJson,
 	)
 	return i, err
 }
@@ -81,7 +83,7 @@ func (q *Queries) GetJobByName(ctx context.Context, name string) (Job, error) {
 const listJobs = `-- name: ListJobs :many
 SELECT id, repo_id, runtime_id, manifest_path, name, enabled, created_at,
        description, script_path, command, image_ref, timeout_seconds,
-       synced_commit_sha, synced_at, deleted_at
+       synced_commit_sha, synced_at, deleted_at, params_json
 FROM jobs
 WHERE deleted_at IS NULL
   AND ($1::text IS NULL
@@ -124,6 +126,7 @@ func (q *Queries) ListJobs(ctx context.Context, arg ListJobsParams) ([]Job, erro
 			&i.SyncedCommitSha,
 			&i.SyncedAt,
 			&i.DeletedAt,
+			&i.ParamsJson,
 		); err != nil {
 			return nil, err
 		}
@@ -138,7 +141,7 @@ func (q *Queries) ListJobs(ctx context.Context, arg ListJobsParams) ([]Job, erro
 const listJobsByRepo = `-- name: ListJobsByRepo :many
 SELECT id, repo_id, runtime_id, manifest_path, name, enabled, created_at,
        description, script_path, command, image_ref, timeout_seconds,
-       synced_commit_sha, synced_at, deleted_at
+       synced_commit_sha, synced_at, deleted_at, params_json
 FROM jobs
 WHERE repo_id = $1
 ORDER BY manifest_path ASC
@@ -173,6 +176,7 @@ func (q *Queries) ListJobsByRepo(ctx context.Context, repoID int64) ([]Job, erro
 			&i.SyncedCommitSha,
 			&i.SyncedAt,
 			&i.DeletedAt,
+			&i.ParamsJson,
 		); err != nil {
 			return nil, err
 		}
@@ -257,8 +261,9 @@ func (q *Queries) SoftDeleteJobsNotIn(ctx context.Context, arg SoftDeleteJobsNot
 
 const upsertJob = `-- name: UpsertJob :one
 INSERT INTO jobs (repo_id, manifest_path, name, description, script_path,
-                  command, image_ref, timeout_seconds, synced_commit_sha, runtime_id)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                  command, image_ref, timeout_seconds, synced_commit_sha, runtime_id,
+                  params_json)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 ON CONFLICT (repo_id, manifest_path) DO UPDATE
 SET name              = EXCLUDED.name,
     description       = EXCLUDED.description,
@@ -268,11 +273,12 @@ SET name              = EXCLUDED.name,
     timeout_seconds   = EXCLUDED.timeout_seconds,
     synced_commit_sha = EXCLUDED.synced_commit_sha,
     runtime_id        = EXCLUDED.runtime_id,
+    params_json       = EXCLUDED.params_json,
     synced_at         = now(),
     deleted_at        = NULL
 RETURNING id, repo_id, runtime_id, manifest_path, name, enabled, created_at,
           description, script_path, command, image_ref, timeout_seconds,
-          synced_commit_sha, synced_at, deleted_at
+          synced_commit_sha, synced_at, deleted_at, params_json
 `
 
 type UpsertJobParams struct {
@@ -286,6 +292,7 @@ type UpsertJobParams struct {
 	TimeoutSeconds  pgtype.Int4 `json:"timeout_seconds"`
 	SyncedCommitSha string      `json:"synced_commit_sha"`
 	RuntimeID       pgtype.Int8 `json:"runtime_id"`
+	ParamsJson      []byte      `json:"params_json"`
 }
 
 // The write half of a scan (task 3.4).
@@ -316,6 +323,7 @@ func (q *Queries) UpsertJob(ctx context.Context, arg UpsertJobParams) (Job, erro
 		arg.TimeoutSeconds,
 		arg.SyncedCommitSha,
 		arg.RuntimeID,
+		arg.ParamsJson,
 	)
 	var i Job
 	err := row.Scan(
@@ -334,6 +342,7 @@ func (q *Queries) UpsertJob(ctx context.Context, arg UpsertJobParams) (Job, erro
 		&i.SyncedCommitSha,
 		&i.SyncedAt,
 		&i.DeletedAt,
+		&i.ParamsJson,
 	)
 	return i, err
 }

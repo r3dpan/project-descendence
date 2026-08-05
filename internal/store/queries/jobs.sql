@@ -16,8 +16,9 @@
 -- express, but the FK is what the image_or_runtime CHECK and a run's
 -- creation actually need.
 INSERT INTO jobs (repo_id, manifest_path, name, description, script_path,
-                  command, image_ref, timeout_seconds, synced_commit_sha, runtime_id)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                  command, image_ref, timeout_seconds, synced_commit_sha, runtime_id,
+                  params_json)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 ON CONFLICT (repo_id, manifest_path) DO UPDATE
 SET name              = EXCLUDED.name,
     description       = EXCLUDED.description,
@@ -27,11 +28,12 @@ SET name              = EXCLUDED.name,
     timeout_seconds   = EXCLUDED.timeout_seconds,
     synced_commit_sha = EXCLUDED.synced_commit_sha,
     runtime_id        = EXCLUDED.runtime_id,
+    params_json       = EXCLUDED.params_json,
     synced_at         = now(),
     deleted_at        = NULL
 RETURNING id, repo_id, runtime_id, manifest_path, name, enabled, created_at,
           description, script_path, command, image_ref, timeout_seconds,
-          synced_commit_sha, synced_at, deleted_at;
+          synced_commit_sha, synced_at, deleted_at, params_json;
 
 -- name: SoftDeleteJobsNotIn :many
 -- The other half of a scan: manifests that were there last time and are not
@@ -56,7 +58,7 @@ RETURNING id, name, manifest_path;
 -- resurrected manifest has to be recognised as the row it already owns.
 SELECT id, repo_id, runtime_id, manifest_path, name, enabled, created_at,
        description, script_path, command, image_ref, timeout_seconds,
-       synced_commit_sha, synced_at, deleted_at
+       synced_commit_sha, synced_at, deleted_at, params_json
 FROM jobs
 WHERE repo_id = $1
 ORDER BY manifest_path ASC;
@@ -66,7 +68,7 @@ ORDER BY manifest_path ASC;
 -- manifest is gone, and "what did this run execute" must still answer.
 SELECT id, repo_id, runtime_id, manifest_path, name, enabled, created_at,
        description, script_path, command, image_ref, timeout_seconds,
-       synced_commit_sha, synced_at, deleted_at
+       synced_commit_sha, synced_at, deleted_at, params_json
 FROM jobs
 WHERE id = $1;
 
@@ -76,7 +78,7 @@ WHERE id = $1;
 -- (jobs_name_live_idx), so this returns at most one row.
 SELECT id, repo_id, runtime_id, manifest_path, name, enabled, created_at,
        description, script_path, command, image_ref, timeout_seconds,
-       synced_commit_sha, synced_at, deleted_at
+       synced_commit_sha, synced_at, deleted_at, params_json
 FROM jobs
 WHERE name = $1 AND deleted_at IS NULL;
 
@@ -86,7 +88,7 @@ WHERE name = $1 AND deleted_at IS NULL;
 -- ListRuns, whose newest row is the interesting one.
 SELECT id, repo_id, runtime_id, manifest_path, name, enabled, created_at,
        description, script_path, command, image_ref, timeout_seconds,
-       synced_commit_sha, synced_at, deleted_at
+       synced_commit_sha, synced_at, deleted_at, params_json
 FROM jobs
 WHERE deleted_at IS NULL
   AND (sqlc.narg(cursor_name)::text IS NULL

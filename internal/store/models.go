@@ -33,6 +33,7 @@ type Job struct {
 	SyncedCommitSha string             `json:"synced_commit_sha"`
 	SyncedAt        pgtype.Timestamptz `json:"synced_at"`
 	DeletedAt       pgtype.Timestamptz `json:"deleted_at"`
+	ParamsJson      []byte             `json:"params_json"`
 }
 
 type Principal struct {

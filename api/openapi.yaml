@@ -1646,6 +1646,14 @@ components:
         timeoutSeconds:
           description: Null when the manifest does not say, in which case the platform default applies.
           type: [integer, "null"]
+        params:
+          description: >
+            The parameter contract (task 6.1), in manifest order. Empty when
+            the manifest has no `params:` block. Authoritative for what
+            POST /api/v1/jobs/{id}/runs accepts in its `params` body.
+          type: array
+          items:
+            $ref: "#/components/schemas/JobParam"
         enabled:
           description: >
             The one field git does not own. A sync never changes it, so
@@ -1668,8 +1676,40 @@ components:
         - name
         - manifestPath
         - scriptPath
+        - params
         - enabled
         - syncedCommitSha
+    JobParam:
+      type: object
+      description: One entry of a job's parameter contract (task 6.1).
+      properties:
+        name:
+          type: string
+        type:
+          description: >
+            "mount" delivers its value via a Podman secret file (task 6.6)
+            rather than as a JSON scalar in params.json.
+          type: string
+          enum: [string, number, bool, mount]
+        required:
+          description: >
+            False whenever the manifest set `required: false`, or whenever a
+            default is present - a param with a default is never missing.
+          type: boolean
+        default:
+          description: The manifest's raw default, or null when it gave none.
+          type: [string, "null"]
+        secret:
+          description: >
+            Redacted from anything the API returns about a run (task 6.5).
+            Every mount-type param is treated as secret regardless of this
+            flag.
+          type: boolean
+      required:
+        - name
+        - type
+        - required
+        - secret
     JobList:
       type: object
       properties:

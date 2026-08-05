@@ -21,6 +21,7 @@ package jobsync
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -193,6 +194,18 @@ func Sync(ctx context.Context, queries *store.Queries, repoStore *gitrepo.Store,
 }
 
 func upsertParams(repoID int64, sha, manifestPath string, parsed *manifest.Manifest, runtimeID pgtype.Int8) store.UpsertJobParams {
+	// task 6.1's contract projection (decision #23's pattern, same
+	// treatment as runtime_id). parsed.Params is nil for a manifest with no
+	// params: block; marshalled explicitly as [] rather than the encoding
+	// of nil ("null") so the column always holds a JSON array, matching its
+	// NOT NULL DEFAULT '[]'.
+	paramsJSON := []byte("[]")
+	if len(parsed.Params) > 0 {
+		// Marshalling []manifest.Param can only fail for cyclic or
+		// unsupported types, neither of which this plain struct has.
+		paramsJSON, _ = json.Marshal(parsed.Params)
+	}
+
 	params := store.UpsertJobParams{
 		RepoID:          repoID,
 		ManifestPath:    manifestPath,
@@ -201,6 +214,7 @@ func upsertParams(repoID int64, sha, manifestPath string, parsed *manifest.Manif
 		Command:         parsed.Command,
 		SyncedCommitSha: sha,
 		RuntimeID:       runtimeID,
+		ParamsJson:      paramsJSON,
 	}
 	if parsed.Description != "" {
 		params.Description = pgtype.Text{String: parsed.Description, Valid: true}

@@ -54,16 +54,28 @@ type jobResponse struct {
 	ScriptPath   string  `json:"scriptPath"`
 	// Null when the manifest names no explicit command, which is the usual
 	// case: argv is then the script's own path and its shebang decides.
-	Command         []string `json:"command"`
-	ImageRef        *string  `json:"imageRef"`
-	RuntimeID       *int64   `json:"runtimeId"`
-	TimeoutSeconds  *int32   `json:"timeoutSeconds"`
-	Enabled         bool     `json:"enabled"`
-	SyncedCommitSHA string   `json:"syncedCommitSha"`
+	Command         []string           `json:"command"`
+	ImageRef        *string            `json:"imageRef"`
+	RuntimeID       *int64             `json:"runtimeId"`
+	TimeoutSeconds  *int32             `json:"timeoutSeconds"`
+	Params          []jobParamResponse `json:"params"`
+	Enabled         bool               `json:"enabled"`
+	SyncedCommitSHA string             `json:"syncedCommitSha"`
 	// Set when the manifest has been removed from the repository. Such a job
 	// cannot be run and does not appear in listings, but it still exists so
 	// that runs which used it remain explainable.
 	DeletedAt *string `json:"deletedAt"`
+}
+
+// jobParamResponse mirrors manifest.Param (task 6.1) - a separate type
+// rather than reusing it directly, matching this package's convention of
+// never exposing a store/manifest type as the wire shape.
+type jobParamResponse struct {
+	Name     string  `json:"name"`
+	Type     string  `json:"type"`
+	Required bool    `json:"required"`
+	Default  *string `json:"default"`
+	Secret   bool    `json:"secret"`
 }
 
 type jobListResponse struct {
@@ -102,6 +114,34 @@ func toJobResponse(job store.Job) jobResponse {
 	if job.DeletedAt.Valid {
 		formatted := job.DeletedAt.Time.UTC().Format("2006-01-02T15:04:05.999999999Z07:00")
 		resp.DeletedAt = &formatted
+	}
+	resp.Params = jobParamsResponse(job.ParamsJson)
+	return resp
+}
+
+// jobParamsResponse decodes a jobs row's params_json projection (task 6.1)
+// into the wire shape. Always returns a non-nil slice - the column's NOT
+// NULL DEFAULT '[]' means empty is the only "no params" case, never null -
+// so the JSON response is always a `[]`, never a `null`.
+func jobParamsResponse(raw []byte) []jobParamResponse {
+	var params []manifest.Param
+	if len(raw) > 0 {
+		// jobsync is the sole writer of this column and only ever writes
+		// what validateParams already accepted, so a decode error here
+		// would mean the projection and the parser have drifted - not
+		// something a caller can act on, so it's surfaced as empty rather
+		// than failing the whole job response.
+		_ = json.Unmarshal(raw, &params)
+	}
+	resp := make([]jobParamResponse, len(params))
+	for i, p := range params {
+		resp[i] = jobParamResponse{
+			Name:     p.Name,
+			Type:     p.Type,
+			Required: p.Required,
+			Default:  p.Default,
+			Secret:   p.Secret,
+		}
 	}
 	return resp
 }

@@ -218,11 +218,6 @@ func TestParseRejects(t *testing.T) {
 func TestParseRejectsUnimplementedSections(t *testing.T) {
 	for _, tc := range []struct{ key, src, wantPhase string }{
 		{
-			key:       "params",
-			src:       "apiVersion: descendence/v1\nname: j\nscript: j.sh\nimage: alpine\nparams:\n  - name: db\n    type: string\n",
-			wantPhase: "Phase 6",
-		},
-		{
 			key:       "form",
 			src:       "apiVersion: descendence/v1\nname: j\nscript: j.sh\nimage: alpine\nform:\n  - field: db\n    widget: text\n",
 			wantPhase: "Phase 7",
@@ -267,4 +262,77 @@ func asManifestError(err error, target **Error) bool {
 		*target = e
 	}
 	return ok
+}
+
+// TestParseParamsValid covers task 6.1's contract parsing: order preserved,
+// required inferred from an absent default, an explicit default relaxing
+// required.
+func TestParseParamsValid(t *testing.T) {
+	src := `
+apiVersion: descendence/v1
+name: greet
+script: greet.sh
+image: docker.io/library/alpine:3.20
+params:
+  - name: name
+    type: string
+  - name: shout
+    type: bool
+    default: "false"
+  - name: token
+    type: mount
+    secret: true
+`
+	got, err := Parse("scripts/greet.job.yaml", []byte(src))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	want := []Param{
+		{Name: "name", Type: ParamTypeString, Required: true},
+		{Name: "shout", Type: ParamTypeBool, Required: false, Default: strPtr("false")},
+		{Name: "token", Type: ParamTypeMount, Required: true, Secret: true},
+	}
+	if len(got.Params) != len(want) {
+		t.Fatalf("Params = %+v, want %+v", got.Params, want)
+	}
+	for i := range want {
+		g, w := got.Params[i], want[i]
+		if g.Name != w.Name || g.Type != w.Type || g.Required != w.Required || g.Secret != w.Secret {
+			t.Errorf("Params[%d] = %+v, want %+v", i, g, w)
+		}
+		if (g.Default == nil) != (w.Default == nil) || (g.Default != nil && *g.Default != *w.Default) {
+			t.Errorf("Params[%d].Default = %v, want %v", i, g.Default, w.Default)
+		}
+	}
+}
+
+func strPtr(s string) *string { return &s }
+
+// TestParseParamsRejected covers the validation errors task 6.1 adds:
+// unknown type, duplicate name, bad name shape, a default that doesn't
+// match its declared type, required+default together, and a mount param
+// with a default.
+func TestParseParamsRejected(t *testing.T) {
+	base := "apiVersion: descendence/v1\nname: j\nscript: j.sh\nimage: alpine\nparams:\n"
+	for _, tc := range []struct {
+		name, params, wantText string
+	}{
+		{"unknown type", "  - name: x\n    type: hex\n", "not one of"},
+		{"duplicate name", "  - name: x\n    type: string\n  - name: x\n    type: string\n", "duplicate"},
+		{"bad name", "  - name: 1x\n    type: string\n", "must start with a letter"},
+		{"empty name", "  - name: \"\"\n    type: string\n", "name is required"},
+		{"bad default", "  - name: x\n    type: number\n    default: \"abc\"\n", "not a valid number"},
+		{"required and default", "  - name: x\n    type: string\n    required: true\n    default: \"a\"\n", "required cannot be true"},
+		{"mount with default", "  - name: x\n    type: mount\n    default: \"a\"\n", "cannot have a default"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Parse("x.job.yaml", []byte(base+tc.params))
+			if err == nil {
+				t.Fatalf("Parse accepted an invalid params entry (%s)", tc.name)
+			}
+			if !strings.Contains(err.Error(), tc.wantText) {
+				t.Errorf("error = %q, want it to mention %q", err, tc.wantText)
+			}
+		})
+	}
 }

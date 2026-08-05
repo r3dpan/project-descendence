@@ -15,8 +15,10 @@
 // They are therefore **rejected with an error naming the phase** rather than
 // accepted and ignored, so a manifest never describes behaviour the platform
 // will not perform - "this system's failure mode is silence" (HISTORY, Phase
-// 2). `runtime` was the third member of this list until task 4.6; it is now
-// implemented, as the alternative to naming an image directly with `image:`.
+// 2). `runtime` was the third member of this list until task 4.6, and
+// `params` the fourth until task 6.1; both are now implemented, the same way
+// - a typed field replaces the raw yaml.Node placeholder and its entry is
+// removed from the unimplemented-keys loop below.
 package manifest
 
 import (
@@ -26,6 +28,7 @@ import (
 	"io"
 	"path"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"go.yaml.in/yaml/v3"
@@ -98,6 +101,61 @@ type Manifest struct {
 	// TimeoutSeconds is nil when the manifest does not say, in which case
 	// the platform default applies.
 	TimeoutSeconds *int32
+
+	// Params is the parameter contract (task 6.1), in the order the
+	// manifest declared them - order matters, since a Bash shim (task 6.4)
+	// forwards params as positional arguments in this same order.
+	Params []Param
+}
+
+// Param types. "mount" (task 6.6) delivers its value via a Podman secret
+// file rather than in params.json - everything else is a JSON scalar.
+const (
+	ParamTypeString = "string"
+	ParamTypeNumber = "number"
+	ParamTypeBool   = "bool"
+	ParamTypeMount  = "mount"
+)
+
+// paramTypes is the closed set validate() accepts - closed, per this
+// package's own precedent (§4.5's third rule): an unknown key is an error,
+// not something silently passed through.
+var paramTypes = map[string]bool{
+	ParamTypeString: true,
+	ParamTypeNumber: true,
+	ParamTypeBool:   true,
+	ParamTypeMount:  true,
+}
+
+// paramNamePattern is deliberately stricter than namePattern: a param name
+// is forwarded by a shim (task 6.4) as a Bash env var suffix, a Python
+// argparse flag and a PowerShell parameter name, all at once, so it must be
+// valid as all three - no dots or dashes, unlike a job name.
+var paramNamePattern = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
+
+// Param is one entry in the parameter contract - what a job takes, not what
+// a particular run supplied. Submitted values are resolved against this by
+// ResolveParams (task 6.2).
+type Param struct {
+	Name string
+	Type string // one of ParamTypeString/Number/Bool/Mount
+
+	// Required is false whenever the manifest set `required: false`, or
+	// whenever a Default is present - a param with a default is never
+	// "missing", so requiring it in addition would be contradictory.
+	Required bool
+
+	// Default is the raw scalar text as written in the manifest, typed and
+	// validated at submission time (task 6.2) rather than here - Param
+	// itself carries no dependency on how a value gets parsed. Nil means
+	// the manifest gave none.
+	Default *string
+
+	// Secret marks a param whose value is redacted from anything the API
+	// returns about a run (task 6.5). Independent of Type == mount: a
+	// plain string param can be marked secret too, and every mount-type
+	// param is treated as secret regardless of this flag.
+	Secret bool
 }
 
 // Argv is what the container is told to execute.
@@ -129,13 +187,28 @@ type file struct {
 	Command        []string `yaml:"command"`
 	TimeoutSeconds *int32   `yaml:"timeoutSeconds"`
 
-	// Specified by the format, honoured later. See the package comment.
-	// Raw nodes rather than typed fields: their shape is not settled yet, so
-	// decoding them into anything specific would be inventing a schema that
-	// the phase which implements them has to live with. A zero Kind means
-	// the key was absent.
-	Params yaml.Node `yaml:"params"`
-	Form   yaml.Node `yaml:"form"`
+	// Params is the parameter contract (task 6.1). A typed field, unlike
+	// Form below: task 6.1 is what settles this key's shape, so there is no
+	// reason left to defer decoding it.
+	Params []rawParam `yaml:"params"`
+
+	// Specified by the format, honoured later (Phase 7). See the package
+	// comment. A raw node rather than a typed field: its shape is not
+	// settled yet, so decoding it into anything specific would be inventing
+	// a schema that the phase which implements it has to live with. A zero
+	// Kind means the key was absent.
+	Form yaml.Node `yaml:"form"`
+}
+
+// rawParam mirrors one entry of the manifest's `params:` list. Required is a
+// pointer so "absent" (default to true unless a default is given) is
+// distinguishable from an explicit `required: false`.
+type rawParam struct {
+	Name     string  `yaml:"name"`
+	Type     string  `yaml:"type"`
+	Required *bool   `yaml:"required"`
+	Default  *string `yaml:"default"`
+	Secret   bool    `yaml:"secret"`
 }
 
 // Error is a manifest that could not be used, carrying the path so that a
@@ -203,7 +276,6 @@ func validate(manifestPath string, raw *file) (*Manifest, error) {
 		phase   string
 		purpose string
 	}{
-		{"params", raw.Params, "Phase 6", "the parameter contract is not yet enforced or passed to scripts"},
 		{"form", raw.Form, "Phase 7", "form layout is not yet rendered by anything"},
 	} {
 		if unimplemented.node.Kind != 0 {
@@ -211,6 +283,11 @@ func validate(manifestPath string, raw *file) (*Manifest, error) {
 				"`%s:` belongs to the manifest format but is not honoured until %s - %s. Remove it rather than leaving it inert, so this manifest does not describe behaviour the platform will not perform",
 				unimplemented.key, unimplemented.phase, unimplemented.purpose)
 		}
+	}
+
+	params, err := validateParams(manifestPath, raw.Params)
+	if err != nil {
+		return nil, err
 	}
 
 	if raw.Name == "" {
@@ -263,7 +340,92 @@ func validate(manifestPath string, raw *file) (*Manifest, error) {
 		RuntimeName:    raw.Runtime,
 		Command:        raw.Command,
 		TimeoutSeconds: raw.TimeoutSeconds,
+		Params:         params,
 	}, nil
+}
+
+// validateParams turns the manifest's raw `params:` list into the contract
+// (task 6.1). Order is preserved - it is what a Bash shim (task 6.4) uses to
+// turn params.json into positional arguments, so silently reordering them
+// here would be a correctness bug there, not just a cosmetic one.
+func validateParams(manifestPath string, raw []rawParam) ([]Param, error) {
+	if raw == nil {
+		return nil, nil
+	}
+
+	seen := make(map[string]bool, len(raw))
+	params := make([]Param, 0, len(raw))
+	for i, p := range raw {
+		if p.Name == "" {
+			return nil, newError(manifestPath, "params[%d]: name is required", i)
+		}
+		if !paramNamePattern.MatchString(p.Name) {
+			return nil, newError(manifestPath, "params[%d]: name %q must start with a letter or underscore and contain only letters, digits and underscores - it is forwarded as a Bash env var, a Python flag and a PowerShell parameter name, all at once", i, p.Name)
+		}
+		if seen[p.Name] {
+			return nil, newError(manifestPath, "params[%d]: duplicate param name %q", i, p.Name)
+		}
+		seen[p.Name] = true
+
+		if !paramTypes[p.Type] {
+			return nil, newError(manifestPath, "params[%d] (%s): type %q is not one of string, number, bool, mount", i, p.Name, p.Type)
+		}
+
+		if p.Type == ParamTypeMount && p.Default != nil {
+			return nil, newError(manifestPath, "params[%d] (%s): a mount param cannot have a default - its value always comes from a Podman secret supplied at run time", i, p.Name)
+		}
+
+		required := p.Required == nil || *p.Required
+		if p.Default != nil {
+			// A default makes "required" contradictory: the value is never
+			// actually missing, it just falls back. Rather than silently
+			// ignoring an explicit `required: true` alongside a default,
+			// only the implicit case (required omitted) is relaxed here;
+			// an explicit true stays an error below.
+			if p.Required == nil {
+				required = false
+			} else if *p.Required {
+				return nil, newError(manifestPath, "params[%d] (%s): required cannot be true when a default is set - a value with a default is never missing", i, p.Name)
+			}
+			if err := checkScalarType(p.Type, *p.Default); err != nil {
+				return nil, newError(manifestPath, "params[%d] (%s): default %v", i, p.Name, err)
+			}
+		}
+
+		params = append(params, Param{
+			Name:     p.Name,
+			Type:     p.Type,
+			Required: required,
+			Default:  p.Default,
+			Secret:   p.Secret,
+		})
+	}
+	return params, nil
+}
+
+// checkScalarType validates a raw string against a param's declared type,
+// shared between a manifest's `default:` (here) and a submitted value
+// (ResolveParams, task 6.2), so the two can never disagree about what counts
+// as a valid number or bool.
+func checkScalarType(paramType, value string) error {
+	switch paramType {
+	case ParamTypeString:
+		return nil
+	case ParamTypeNumber:
+		if _, err := strconv.ParseFloat(value, 64); err != nil {
+			return fmt.Errorf("%q is not a valid number", value)
+		}
+		return nil
+	case ParamTypeBool:
+		if _, err := strconv.ParseBool(value); err != nil {
+			return fmt.Errorf("%q is not a valid bool (use true/false)", value)
+		}
+		return nil
+	case ParamTypeMount:
+		return fmt.Errorf("mount params take no literal value")
+	default:
+		return fmt.Errorf("unknown param type %q", paramType)
+	}
 }
 
 // resolveScriptPath interprets `script:` **relative to the manifest's own
