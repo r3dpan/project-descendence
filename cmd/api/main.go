@@ -115,6 +115,17 @@ func main() {
 	descendenceMux.HandleFunc("PATCH /api/v1/jobs/{id}", descendenceAPI.RequireAuth(descendenceAPI.PatchJobHandler))
 	descendenceMux.HandleFunc("POST /api/v1/jobs/{id}/runs", descendenceAPI.RequireAuth(descendenceAPI.CreateJobRunHandler))
 
+	// Schedules (Phase 5, decision #27). CRUD here is a plain Postgres
+	// write - the supervisor's schedule-sync loop picks up the change
+	// asynchronously and renders the generated systemd units. The trigger
+	// endpoint is what a generated unit's ExecStart calls via the CLI.
+	descendenceMux.HandleFunc("POST /api/v1/jobs/{id}/schedules", descendenceAPI.RequireAuth(descendenceAPI.CreateScheduleHandler))
+	descendenceMux.HandleFunc("GET /api/v1/jobs/{id}/schedules", descendenceAPI.RequireAuth(descendenceAPI.ListSchedulesByJobHandler))
+	descendenceMux.HandleFunc("GET /api/v1/schedules/{id}", descendenceAPI.RequireAuth(descendenceAPI.GetScheduleHandler))
+	descendenceMux.HandleFunc("PATCH /api/v1/schedules/{id}", descendenceAPI.RequireAuth(descendenceAPI.PatchScheduleHandler))
+	descendenceMux.HandleFunc("DELETE /api/v1/schedules/{id}", descendenceAPI.RequireAuth(descendenceAPI.DeleteScheduleHandler))
+	descendenceMux.HandleFunc("POST /api/v1/schedules/{id}/trigger", descendenceAPI.RequireAuth(descendenceAPI.TriggerScheduleHandler))
+
 	descendenceMux.HandleFunc("POST /api/v1/runtimes", descendenceAPI.RequireAuth(descendenceAPI.CreateRuntimeHandler))
 	descendenceMux.HandleFunc("GET /api/v1/runtimes", descendenceAPI.RequireAuth(descendenceAPI.ListRuntimesHandler))
 	descendenceMux.HandleFunc("GET /api/v1/runtimes/{id}", descendenceAPI.RequireAuth(descendenceAPI.GetRuntimeHandler))

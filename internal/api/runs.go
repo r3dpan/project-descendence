@@ -62,6 +62,10 @@ type runResponse struct {
 	// looks like now.
 	RuntimeID   *int64  `json:"runtimeId"`
 	ImageDigest *string `json:"imageDigest"`
+
+	// Set only for a run the schedule trigger endpoint created (task 5.6) -
+	// NULL for both ad-hoc and ordinary job runs.
+	ScheduleID *int64 `json:"scheduleId"`
 }
 
 type runListResponse struct {
@@ -143,6 +147,9 @@ func toRunResponse(run store.Run) runResponse {
 	}
 	if run.ImageDigest.Valid {
 		resp.ImageDigest = &run.ImageDigest.String
+	}
+	if run.ScheduleID.Valid {
+		resp.ScheduleID = &run.ScheduleID.Int64
 	}
 
 	return resp

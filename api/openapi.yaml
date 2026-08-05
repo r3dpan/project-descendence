@@ -743,6 +743,276 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/Problem"
+  /api/v1/jobs/{id}/schedules:
+    post:
+      operationId: createSchedule
+      description: >
+        Create a schedule for a job (task 5.7, decision #27). A plain
+        Postgres write - the supervisor's schedule-sync loop picks up the
+        new row asynchronously and renders the generated systemd
+        `.timer`/`.service` unit pair that actually fires it. cronExpr is
+        standard 5-field cron syntax, translated to systemd's OnCalendar= by
+        a deliberately conservative subset (single value, `*`, simple `*/N`
+        steps, comma-lists); anything else is rejected here with a specific
+        reason before it ever reaches the database.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ScheduleCreate"
+      responses:
+        "201":
+          description: Schedule created
+          headers:
+            Location:
+              description: "/api/v1/schedules/{id} of the created schedule"
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Schedule"
+        "400":
+          description: Malformed body, unsupported cronExpr syntax, invalid timezone, or an invalid catchUpPolicy/overlapPolicy value
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "401":
+          description: Missing, malformed, unknown, expired or revoked token
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "404":
+          description: No job with this id
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "409":
+          description: The job's manifest has been removed from the repository
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+    get:
+      operationId: listSchedulesByJob
+      description: >
+        A job's schedules. No pagination - a job's schedule count is small
+        at this scale.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: The job's schedules
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScheduleList"
+        "401":
+          description: Missing, malformed, unknown, expired or revoked token
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "404":
+          description: No job with this id
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+  /api/v1/schedules/{id}:
+    get:
+      operationId: getSchedule
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: The schedule
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Schedule"
+        "401":
+          description: Missing, malformed, unknown, expired or revoked token
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "404":
+          description: No schedule with this id
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+    patch:
+      operationId: patchSchedule
+      description: >
+        Update a schedule. Fields omitted from the body keep their current
+        value. Re-validated the same way creation is; on success the
+        supervisor's schedule-sync loop regenerates the unit pair on its
+        next tick.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SchedulePatch"
+      responses:
+        "200":
+          description: The updated schedule
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Schedule"
+        "400":
+          description: Malformed body, unsupported cronExpr syntax, invalid timezone, or an invalid catchUpPolicy/overlapPolicy value
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "401":
+          description: Missing, malformed, unknown, expired or revoked token
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "404":
+          description: No schedule with this id
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+    delete:
+      operationId: deleteSchedule
+      description: >
+        Hard delete - a schedule is operator-owned data, not a git
+        projection. Past runs this schedule created stay explainable
+        (runs.scheduleId points at nothing, not nowhere useful).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Schedule deleted
+        "401":
+          description: Missing, malformed, unknown, expired or revoked token
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "404":
+          description: No schedule with this id
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+  /api/v1/schedules/{id}/trigger:
+    post:
+      operationId: triggerSchedule
+      description: >
+        Fire a schedule (task 5.3/5.6). This is what a generated schedule's
+        `.service` unit calls, via `descendence schedule trigger <id>`, when
+        its `.timer` fires - not normally called directly by an operator,
+        though nothing prevents it for testing.
+
+
+        Requires the `run` scope - the first endpoint in this API to
+        actually enforce one (a narrow, deliberate exception; see
+        ARCHITECTURE.md decision #27).
+
+
+        If the schedule's overlapPolicy is `skip` and the run it created
+        last time has not reached a terminal state, this returns `200` with
+        `skipped: true` rather than creating a run - the schedule fired
+        exactly as designed, which is not a failure (a `409` here would show
+        as a failed unit in `systemctl --user status` for an entirely
+        expected outcome).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Skipped - the overlap policy chose not to create a run
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScheduleTriggerResult"
+        "202":
+          description: Run created
+          headers:
+            Location:
+              description: "/api/v1/runs/{id} of the created run"
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScheduleTriggerResult"
+        "401":
+          description: Missing, malformed, unknown, expired or revoked token
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "403":
+          description: Principal is missing the run scope
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "404":
+          description: No schedule with this id
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "409":
+          description: The schedule is disabled, its job no longer exists, or the job cannot be run as it stands (see createJobRun's 409)
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
   /api/v1/runtimes:
     get:
       operationId: listRuntimes
@@ -1102,6 +1372,9 @@ components:
         imageDigest:
           description: The runtime's image digest at the moment this run was created. Null for an ad-hoc run or a job that names an image directly.
           type: [string, "null"]
+        scheduleId:
+          description: Set only for a run POST /api/v1/schedules/{id}/trigger created (task 5.6). Null for both ad-hoc and ordinary job runs.
+          type: [integer, "null"]
       required:
         - id
         - state
@@ -1420,6 +1693,133 @@ components:
           type: boolean
       required:
         - enabled
+    Schedule:
+      type: object
+      description: >
+        Fires a job on a cron schedule (ARCHITECTURE.md §4.8, decision #27).
+        Unlike a job, a schedule is not authored in git - operator-owned
+        data, created and changed only through this API. Firing itself is
+        done by a generated systemd (user) timer, not this row directly;
+        the supervisor's schedule-sync loop keeps the two in agreement.
+      properties:
+        id:
+          type: integer
+        jobId:
+          type: integer
+        cronExpr:
+          description: >
+            Standard 5-field cron syntax (minute hour dom month dow).
+            Deliberately scoped to what translates cleanly to systemd's
+            OnCalendar= syntax: single values, `*`, simple `*/N` steps and
+            comma-lists. Range syntax (1-5) and combined day-of-month +
+            day-of-week restrictions are rejected outright.
+          type: string
+        timezone:
+          description: IANA timezone name. Defaults to UTC.
+          type: string
+        catchUpPolicy:
+          description: >
+            What happens if a fire is missed while nothing was around to
+            fire it (task 5.4). `skip` (default) does nothing; `catch_up`
+            fires once to catch up, never once per missed occurrence -
+            mapped directly onto the generated timer's Persistent=.
+          type: string
+          enum: [skip, catch_up]
+        overlapPolicy:
+          description: >
+            What happens when a fire is due but the run this schedule
+            created last time has not reached a terminal state (task 5.6).
+            `skip` (default) does not create a new run. `queue` and
+            `concurrent` currently behave identically - the supervisor
+            executes runs strictly one at a time today, so a "concurrent"
+            firing still just queues a second run behind the first.
+          type: string
+          enum: [skip, queue, concurrent]
+        enabled:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        nextDueAt:
+          description: >
+            Informational only - an estimate, not what actually drives
+            firing (systemd does, from the generated unit). Null if it
+            cannot currently be computed.
+          type: [string, "null"]
+          format: date-time
+      required:
+        - id
+        - jobId
+        - cronExpr
+        - timezone
+        - catchUpPolicy
+        - overlapPolicy
+        - enabled
+        - createdAt
+        - updatedAt
+    ScheduleList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Schedule"
+      required:
+        - items
+    ScheduleCreate:
+      type: object
+      properties:
+        cronExpr:
+          type: string
+        timezone:
+          description: Optional; defaults to UTC.
+          type: string
+        catchUpPolicy:
+          description: Optional; defaults to skip.
+          type: string
+          enum: [skip, catch_up]
+        overlapPolicy:
+          description: Optional; defaults to skip.
+          type: string
+          enum: [skip, queue, concurrent]
+        enabled:
+          description: Optional; defaults to true.
+          type: boolean
+      required:
+        - cronExpr
+    SchedulePatch:
+      type: object
+      description: Fields omitted keep their current value.
+      properties:
+        cronExpr:
+          type: string
+        timezone:
+          type: string
+        catchUpPolicy:
+          type: string
+          enum: [skip, catch_up]
+        overlapPolicy:
+          type: string
+          enum: [skip, queue, concurrent]
+        enabled:
+          type: boolean
+    ScheduleTriggerResult:
+      type: object
+      properties:
+        skipped:
+          description: True when the overlap policy chose not to create a run.
+          type: boolean
+        reason:
+          description: Set only when skipped is true.
+          type: string
+        run:
+          description: Set only when skipped is false.
+          $ref: "#/components/schemas/Run"
+      required:
+        - skipped
     Runtime:
       type: object
       description: >
