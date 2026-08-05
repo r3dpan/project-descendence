@@ -11,13 +11,15 @@ package store
 //
 // The state machine, and who performs each transition:
 //
-//	                      ┌──────────────────────► cancelled   (Phase 2, task 2.8)
-//	                      │
-//	(api: CreateRun)      │      (supervisor: FinishRun)
-//	        │             │        ┌──────────► succeeded
-//	        ▼             │        │
-//	     queued ──────────┴────────┼──────────► failed
-//	        │  (supervisor:        │
+//	                    (api: CancelQueuedRun)
+//	        ┌──────────────────────────────────► cancelled
+//	        │                                        ▲
+//	(api: CreateRun)                                 │ (supervisor: cancelWatch,
+//	        │                    (supervisor:        │  on runs.cancel_requested_at)
+//	        ▼                     FinishRun)         │
+//	     queued                    ┌──────────► succeeded
+//	        │                      │
+//	        │  (supervisor:        ├──────────► failed
 //	        │   ClaimNextQueuedRun)│
 //	        ▼                      │
 //	     running ──────────────────┴──────────► lost
@@ -27,10 +29,14 @@ package store
 // final: nothing ever transitions out of one, and FinishRun refuses to
 // overwrite one.
 //
-// cancelled currently has no producer - the cancel endpoint is Phase 2 task
-// 2.8, which owns propagating cancellation and stopping the container. It
-// is defined, constrained and rendered everywhere regardless, so that task
-// only has to add the transition, not plumb a new state through.
+// cancelled has two producers, because cancelling means two different things
+// depending on where the run is (task 2.8). A *queued* run has no container,
+// so the API cancels it outright in one guarded UPDATE - the only terminal
+// state the API ever writes. A *running* run belongs to the supervisor, which
+// is the only process allowed to stop a container, so the API records the
+// request in runs.cancel_requested_at and the supervisor performs it. The two
+// processes never talk (ARCHITECTURE.md §3); that column is the whole channel
+// between them in this direction.
 const (
 	StateQueued    = "queued"
 	StateRunning   = "running"

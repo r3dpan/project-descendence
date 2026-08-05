@@ -90,6 +90,14 @@ func waitFinishAndRemove(ctx context.Context, queries *store.Queries, podmanClie
 	waitCtx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
 
+	// Watch for a cancellation request for as long as the wait lasts (task
+	// 2.8). Started here rather than in executeRun so the reconciler's
+	// adoption path gets it too: a run cancelled while the supervisor was down
+	// must still be cancelled when it comes back, not run to completion
+	// because the request arrived during the gap.
+	cancelWatcher := watchForCancellation(ctx, queries, podmanClient, run.ID, containerID)
+	defer cancelWatcher.stop()
+
 	exitCode, err := podmanClient.WaitContainer(waitCtx, containerID)
 	if err != nil {
 		switch {
@@ -110,15 +118,30 @@ func waitFinishAndRemove(ctx context.Context, queries *store.Queries, podmanClie
 		return
 	}
 
+	// Drain before finishing, not after: see this function's doc comment.
+	capture.wait()
+
+	// A cancelled run is cancelled, not failed - checked before the exit code
+	// is read, because the container was killed and will report a nonzero one.
+	// Reading that as a failure would record a run somebody deliberately
+	// stopped as though something went wrong with it, and the distinction is
+	// the entire reason `cancelled` is a state of its own.
+	//
+	// No exit code is recorded, matching the timeout path: the container was
+	// killed, so its exit status describes the signal rather than anything the
+	// script did.
+	if cancelWatcher.requested() {
+		finishRun(ctx, queries, run.ID, store.StateCancelled, nil, containerID, "cancelled on request")
+		removeContainer(podmanClient, run.ID, containerID)
+		return
+	}
+
 	state := store.StateSucceeded
 	failureReason := ""
 	if exitCode != 0 {
 		state = store.StateFailed
 		failureReason = fmt.Sprintf("exit code %d", exitCode)
 	}
-
-	// Drain before finishing, not after: see this function's doc comment.
-	capture.wait()
 
 	code := int32(exitCode)
 	finishRun(ctx, queries, run.ID, state, &code, containerID, failureReason)

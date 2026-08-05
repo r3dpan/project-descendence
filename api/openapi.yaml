@@ -173,6 +173,62 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/Problem"
+  /api/v1/runs/{id}/cancel:
+    post:
+      operationId: cancelRun
+      description: >
+        Request cancellation of a run.
+
+
+        Always 202, never 200, because what happens next depends on the run's
+        state and the caller cannot control which. A **queued** run has no
+        container, so it is cancelled outright and is already terminal in the
+        response body. A **running** run belongs to the supervisor, which is
+        the only process that may stop a container, so the request is recorded
+        and the run is still running when this returns - poll or stream for the
+        outcome, as after creating a run.
+
+
+        Repeating the request on a run already being cancelled is not an error.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "202":
+          description: >
+            Cancellation accepted. The run's `state` says which of the two
+            happened: `cancelled` if it was queued and is now terminal,
+            `running` if the supervisor still has to stop it -
+            `cancelRequestedAt` is set either way.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Run"
+        "401":
+          description: Missing, malformed, unknown, expired or revoked token
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "404":
+          description: No run with this id
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "409":
+          description: >
+            The run has already reached a terminal state. Terminal states are
+            final, so there is nothing left to cancel.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
   /api/v1/runs/{id}/logs:
     get:
       operationId: getRunLogs
@@ -399,6 +455,16 @@ components:
           type: [integer, "null"]
         failureReason:
           type: [string, "null"]
+        cancelRequestedAt:
+          description: >
+            When cancellation was requested. Set before the run is actually
+            cancelled - a running run's container still has to be stopped by
+            the supervisor - so a run can be `running` with this set, meaning
+            "on its way out". Also kept on a run that finished on its own
+            before the request landed, which is the case worth being able to
+            explain afterwards.
+          type: [string, "null"]
+          format: date-time
         queuedAt:
           type: string
           format: date-time

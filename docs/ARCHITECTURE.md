@@ -215,8 +215,7 @@ required, not optional.
 
 ### 4.5 Git
 
-Scripts live in bare git repositories on disk. We **shell out to `git`** rather than
-using an in-process implementation — principle 1.
+Scripts live in bare git repositories on disk. We use the go-git golang library for inetracting with git.
 
 The important design consequence is not versioning but **content addressing**: a run
 record stores `(repo, commit_sha, image_digest, params)`, which makes any historical
@@ -366,7 +365,7 @@ Recording *why*, because in three months the reasoning will be gone.
 | 5 | Postgres as queue and lock | Already required; avoids Redis/broker | Scale far beyond a homelab |
 | 6 | api and supervisor as separate processes | API restartable without disturbing jobs; exactly one scheduler | Never |
 | 7 | Sidecar manifest in git | Git as source of truth; unifies local and external repos | Never |
-| 8 | Shell out to git | Native tooling principle | Need fine-grained in-process control |
+| 8 | Use git via go-git library | Need fine-grained in-process control |
 | 9 | Podman native secrets | Native tooling; `shell` driver is the upgrade path | Need real encryption at rest sooner |
 | 10 | JSON params file + per-runtime shim | Keeps core language-agnostic | Never |
 | 11 | Handwritten OpenAPI spec as contract | Handwritten handlers; free CLI client | Never |

@@ -11,6 +11,36 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const cancelQueuedRun = `-- name: CancelQueuedRun :execrows
+UPDATE runs
+SET state = 'cancelled',
+    cancel_requested_at = now(),
+    finished_at = now()
+WHERE id = $1
+  AND state = 'queued'
+`
+
+// Task 2.8, the half of cancellation the API can do alone: a queued run has
+// no container, so there is nothing to stop and nothing to ask the supervisor
+// for. State and outcome are written in one guarded statement.
+//
+// The state guard is what makes this safe against the claim loop. Both this
+// and ClaimNextQueuedRun update the same row under `state = 'queued'`, so
+// exactly one of them wins: either the run is cancelled before it ever starts,
+// or it is claimed and the caller falls back to RequestRunCancel. There is no
+// window where both happen, and none where neither does.
+//
+// cancel_requested_at is set here too even though nothing reads it for a
+// queued run - it is the record that this run was cancelled rather than
+// having failed on its own.
+func (q *Queries) CancelQueuedRun(ctx context.Context, id int64) (int64, error) {
+	result, err := q.db.Exec(ctx, cancelQueuedRun, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const claimNextQueuedRun = `-- name: ClaimNextQueuedRun :one
 WITH claimed AS (
     SELECT id FROM runs
@@ -243,6 +273,28 @@ func (q *Queries) GetRunByIdempotencyKey(ctx context.Context, arg GetRunByIdempo
 	return i, err
 }
 
+const isRunCancelRequested = `-- name: IsRunCancelRequested :one
+SELECT (cancel_requested_at IS NOT NULL)::boolean AS cancel_requested
+FROM runs
+WHERE id = $1
+`
+
+// The supervisor's poll while a run is in flight (task 2.8).
+//
+// Polled rather than pushed. The api-to-supervisor direction has no
+// notification channel - LISTEN/NOTIFY carries log watermarks the other way
+// (decision #19) - and building one for this would inherit its lossiness,
+// which is tolerable for "there is more output to read" and not tolerable for
+// "stop this run". A cancel that silently does nothing is worse than a cancel
+// that takes a second. Reads the primary key, so the cost is a lookup per
+// second per in-flight run.
+func (q *Queries) IsRunCancelRequested(ctx context.Context, id int64) (bool, error) {
+	row := q.db.QueryRow(ctx, isRunCancelRequested, id)
+	var cancel_requested bool
+	err := row.Scan(&cancel_requested)
+	return cancel_requested, err
+}
+
 const listNonTerminalRuns = `-- name: ListNonTerminalRuns :many
 SELECT id, principal_id, state, idempotency_key, image_ref, argv,
        timeout_seconds, container_id, exit_code, failure_reason,
@@ -356,6 +408,31 @@ func (q *Queries) ListRuns(ctx context.Context, arg ListRunsParams) ([]Run, erro
 		return nil, err
 	}
 	return items, nil
+}
+
+const requestRunCancel = `-- name: RequestRunCancel :execrows
+UPDATE runs
+SET cancel_requested_at = now()
+WHERE id = $1
+  AND state = 'running'
+`
+
+// Task 2.8, the other half: a running run belongs to the supervisor, which
+// holds the container and is the only process allowed to stop it. This
+// records the request; the supervisor performs it and writes the terminal
+// state itself.
+//
+// Guarded on 'running' so a request can never land on a run that has already
+// finished, which would leave a terminal run marked as cancellation-pending
+// forever. Setting it twice is harmless - the second call moves the timestamp
+// and changes nothing else - so a client retrying a cancel needs no special
+// handling.
+func (q *Queries) RequestRunCancel(ctx context.Context, id int64) (int64, error) {
+	result, err := q.db.Exec(ctx, requestRunCancel, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const setRunContainerID = `-- name: SetRunContainerID :exec

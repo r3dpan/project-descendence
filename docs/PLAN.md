@@ -560,8 +560,36 @@ resumes without gaps.
       handler directly: 25 live SSE clients against a 60s run, all killed
       at once, zero `streamRunLogs` goroutines left in the process
       afterwards (`SIGQUIT` dump).
-- [ ] **2.8** `POST /api/v1/runs/{id}/cancel` — propagate cancellation, stop the
+- [x] **2.8** `POST /api/v1/runs/{id}/cancel` — propagate cancellation, stop the
       container, record `cancelled`.
+      **Cancelling is two operations behind one endpoint**, because the two
+      processes own different halves of a run. A *queued* run has no
+      container, so the API cancels it outright — the only terminal state
+      the API ever writes. A *running* run belongs to the supervisor, so
+      the API records the request in `runs.cancel_requested_at` (a column
+      migration 00001 already had, for exactly this) and the supervisor
+      performs it. Always `202`, never `200`: which path a request takes
+      depends on a race the caller cannot see, and a status code varying
+      on that is one clients have to handle both ways anyway.
+      **The api→supervisor direction polls, it does not notify.** The
+      `LISTEN`/`NOTIFY` channel from 2.3 is lossy by design (decision
+      #19), which is fine for "there is more output" and not fine for
+      "stop this run" — a missed message means the cancel silently does
+      nothing. `cancel_requested_at` is a fact in the database, not a
+      message in flight, so a 1s poll cannot miss it.
+      The kill is what ends the run: it makes the executor's
+      `WaitContainer` return, and the executor checks `requested()`
+      *before* reading the exit code, so a deliberately-stopped run is
+      recorded as `cancelled` rather than `failed` with the signal's exit
+      status.
+      Verified: running run cancelled in **1.36s**; output captured before
+      the cancel preserved; a live SSE stream ends on
+      `{"runState":"cancelled"}`; queued run cancelled instantly and never
+      claimed afterwards; `409` on a finished run, `404`/`401` as
+      expected; a repeated cancel is not an error; and a cancel requested
+      while the supervisor was **SIGKILLed mid-run** was carried out on
+      restart, via the reconciler's adoption path, with no leftover
+      containers.
 - [ ] **2.9** CLI `--follow`.
 
 > Get cancellation and context propagation right **here**. It gets much harder once
@@ -578,7 +606,7 @@ no lines are lost or duplicated; cancel works within a second or two.
 **Done when:** `cli job run backup-db` works, and the run records the commit SHA.
 
 - [ ] **3.1** Migration: `repos`, `jobs`. Add `job_id` and `commit_sha` to `runs`.
-- [ ] **3.2** Create and manage a bare git repo on disk by shelling out to `git`.
+- [ ] **3.2** Create and manage a bare git repo on disk by using `go-git` implementation of git.
 - [ ] **3.3** Define the sidecar manifest format (`<name>.job.yaml`) — start minimal:
       name, script path, runtime, description.
 - [ ] **3.4** Scan a repo, parse manifests, sync into the `jobs` table.

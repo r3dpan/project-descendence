@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -29,17 +30,22 @@ type runCreateRequest struct {
 }
 
 type runResponse struct {
-	ID             int64      `json:"id"`
-	State          string     `json:"state"`
-	ImageRef       string     `json:"imageRef"`
-	Argv           []string   `json:"argv"`
-	TimeoutSeconds int32      `json:"timeoutSeconds"`
-	ContainerID    *string    `json:"containerId"`
-	ExitCode       *int32     `json:"exitCode"`
-	FailureReason  *string    `json:"failureReason"`
-	QueuedAt       time.Time  `json:"queuedAt"`
-	StartedAt      *time.Time `json:"startedAt"`
-	FinishedAt     *time.Time `json:"finishedAt"`
+	ID             int64    `json:"id"`
+	State          string   `json:"state"`
+	ImageRef       string   `json:"imageRef"`
+	Argv           []string `json:"argv"`
+	TimeoutSeconds int32    `json:"timeoutSeconds"`
+	ContainerID    *string  `json:"containerId"`
+	ExitCode       *int32   `json:"exitCode"`
+	FailureReason  *string  `json:"failureReason"`
+	// Set as soon as a cancellation is requested, which is before the run is
+	// actually cancelled - the supervisor still has to stop the container. A
+	// client watching a run needs to distinguish "still running" from "still
+	// running, but on its way out" (task 2.8).
+	CancelRequestedAt *time.Time `json:"cancelRequestedAt"`
+	QueuedAt          time.Time  `json:"queuedAt"`
+	StartedAt         *time.Time `json:"startedAt"`
+	FinishedAt        *time.Time `json:"finishedAt"`
 }
 
 type runListResponse struct {
@@ -106,6 +112,9 @@ func toRunResponse(run store.Run) runResponse {
 	}
 	if run.FinishedAt.Valid {
 		resp.FinishedAt = &run.FinishedAt.Time
+	}
+	if run.CancelRequestedAt.Valid {
+		resp.CancelRequestedAt = &run.CancelRequestedAt.Time
 	}
 
 	return resp
@@ -203,6 +212,84 @@ func (s *APIServer) GetRunHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, toRunResponse(run))
+}
+
+// Handles cancellation (task 2.8).
+//
+// Cancelling is two different operations behind one endpoint, because the two
+// processes own different halves of a run and never talk to each other (§3):
+//
+//   - A **queued** run has no container. There is nothing to stop, so the API
+//     cancels it outright and the run is terminal when this returns.
+//   - A **running** run belongs to the supervisor. The API can only record the
+//     request; the supervisor stops the container and writes the terminal
+//     state. So this returns 202, not 200 - the run is still running when the
+//     response is sent, and a client that needs the outcome polls or streams
+//     for it, exactly as it does after creating a run.
+//
+// Both answers are 202 rather than one 200 and one 202. Which of the two paths
+// a request took depends on a race the caller cannot see or control, and an
+// API whose status code varies on that would be one clients have to handle
+// both ways anyway. The response body carries the run, whose state says which
+// happened.
+//
+// A run that has already finished is a 409: terminal states are final (task
+// 1.14), and answering "cancel this" with 202 for a run that succeeded ten
+// minutes ago would imply something is going to happen.
+func (s *APIServer) CancelRunHandler(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeProblem(w, http.StatusNotFound, "no run with this id")
+		return
+	}
+
+	// Try the queued path first, unconditionally, rather than reading the run
+	// and branching on what it says. Both this and the supervisor's claim
+	// guard on state = 'queued' in a single statement, so exactly one of them
+	// wins; reading first and then deciding would open the window between the
+	// two where the claim lands and the cancel is written anyway.
+	cancelled, err := s.queries.CancelQueuedRun(r.Context(), id)
+	if err != nil {
+		writeProblem(w, http.StatusInternalServerError, "failed cancelling run")
+		return
+	}
+
+	if cancelled == 0 {
+		// Not queued: either running, already finished, or not a run at all.
+		run, err := s.queries.GetRun(r.Context(), id)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				writeProblem(w, http.StatusNotFound, "no run with this id")
+				return
+			}
+			writeProblem(w, http.StatusInternalServerError, "failed fetching run")
+			return
+		}
+
+		if store.IsTerminal(run.State) {
+			writeProblem(w, http.StatusConflict, fmt.Sprintf("this run has already finished (%s) and cannot be cancelled", run.State))
+			return
+		}
+
+		// Running. Record the request and let the supervisor act on it.
+		// Requesting twice is deliberately not an error - a client retrying a
+		// cancel it is not sure landed should not have to care.
+		if _, err := s.queries.RequestRunCancel(r.Context(), id); err != nil {
+			writeProblem(w, http.StatusInternalServerError, "failed requesting cancellation")
+			return
+		}
+	}
+
+	// Re-read rather than returning what either statement wrote: the run has
+	// just changed, and this is the one place a client learns whether it is
+	// already cancelled or merely on its way there.
+	run, err := s.queries.GetRun(r.Context(), id)
+	if err != nil {
+		writeProblem(w, http.StatusInternalServerError, "failed fetching run")
+		return
+	}
+
+	writeJSON(w, http.StatusAccepted, toRunResponse(run))
 }
 
 // Handles run listing: keyset (seek) pagination on (queued_at DESC, id DESC),

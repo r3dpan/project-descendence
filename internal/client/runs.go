@@ -24,17 +24,21 @@ const (
 // is distinguishable from "zero" - an exitCode of 0 means success, and must
 // not be confused with a run that hasn't finished.
 type Run struct {
-	ID             int64      `json:"id"`
-	State          string     `json:"state"`
-	ImageRef       string     `json:"imageRef"`
-	Argv           []string   `json:"argv"`
-	TimeoutSeconds int32      `json:"timeoutSeconds"`
-	ContainerID    *string    `json:"containerId"`
-	ExitCode       *int32     `json:"exitCode"`
-	FailureReason  *string    `json:"failureReason"`
-	QueuedAt       time.Time  `json:"queuedAt"`
-	StartedAt      *time.Time `json:"startedAt"`
-	FinishedAt     *time.Time `json:"finishedAt"`
+	ID             int64    `json:"id"`
+	State          string   `json:"state"`
+	ImageRef       string   `json:"imageRef"`
+	Argv           []string `json:"argv"`
+	TimeoutSeconds int32    `json:"timeoutSeconds"`
+	ContainerID    *string  `json:"containerId"`
+	ExitCode       *int32   `json:"exitCode"`
+	FailureReason  *string  `json:"failureReason"`
+	// Set as soon as cancellation is requested, which is before the run is
+	// actually cancelled - a running run's container still has to be stopped.
+	// A run with this set and State still "running" is on its way out.
+	CancelRequestedAt *time.Time `json:"cancelRequestedAt"`
+	QueuedAt          time.Time  `json:"queuedAt"`
+	StartedAt         *time.Time `json:"startedAt"`
+	FinishedAt        *time.Time `json:"finishedAt"`
 }
 
 // IsTerminal reports whether the run has reached a state it will never leave -
@@ -120,6 +124,23 @@ type ListRunsParams struct {
 // ListRuns calls GET /api/v1/runs, returning one keyset-paginated page,
 // newest first. Follow RunList.NextCursor for the next page; a nil cursor
 // means this was the last one.
+// CancelRun requests cancellation of a run and returns the run as it stands
+// afterwards (task 2.8).
+//
+// The returned run's State is what says whether the cancellation has already
+// happened: a queued run comes back "cancelled" and is finished, while a
+// running one comes back still "running" with CancelRequestedAt set, because
+// only the supervisor can stop a container and it has not done so yet. Poll or
+// stream for the outcome in that case.
+//
+// A run that has already finished returns an APIError with StatusConflict -
+// terminal states are final, so there is nothing left to cancel.
+func (c *Client) CancelRun(ctx context.Context, id int64) (Run, error) {
+	var run Run
+	err := c.do(ctx, http.MethodPost, "/api/v1/runs/"+strconv.FormatInt(id, 10)+"/cancel", requestOptions{}, &run)
+	return run, err
+}
+
 func (c *Client) ListRuns(ctx context.Context, params ListRunsParams) (RunList, error) {
 	query := url.Values{}
 	if params.Cursor != "" {

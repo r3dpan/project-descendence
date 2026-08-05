@@ -153,3 +153,89 @@ func TestListNonTerminalRunsAgreesWithIsTerminal(t *testing.T) {
 		}
 	}
 }
+
+// The two halves of cancellation guard on different states, and getting those
+// guards right is what makes cancelling safe against everything else happening
+// to a run at the same time (task 2.8).
+func TestCancelQueuedRunOnlyCancelsQueuedRuns(t *testing.T) {
+	queries, ctx := newTestQueries(t)
+	run := createTestRun(t, queries, ctx)
+
+	rows, err := queries.CancelQueuedRun(ctx, run.ID)
+	if err != nil {
+		t.Fatalf("CancelQueuedRun: %v", err)
+	}
+	if rows != 1 {
+		t.Fatalf("CancelQueuedRun affected %d rows, want 1", rows)
+	}
+
+	cancelled, err := queries.GetRun(ctx, run.ID)
+	if err != nil {
+		t.Fatalf("GetRun: %v", err)
+	}
+	if cancelled.State != StateCancelled {
+		t.Errorf("state = %q, want %q", cancelled.State, StateCancelled)
+	}
+	// The check constraint requires finished_at on a terminal state, so a
+	// missing one would have failed the UPDATE - asserting it anyway says the
+	// run is properly finished, not just relabelled.
+	if !cancelled.FinishedAt.Valid {
+		t.Error("a cancelled run has no finished_at")
+	}
+	if !cancelled.CancelRequestedAt.Valid {
+		t.Error("a cancelled run has no cancel_requested_at")
+	}
+
+	// The second call is the claim loop's position in the race: by the time it
+	// arrives the state has moved, so it must do nothing. This is the same
+	// guard, from the other side - whichever of the two statements runs
+	// second finds the row no longer matching, so exactly one ever wins.
+	rows, err = queries.CancelQueuedRun(ctx, run.ID)
+	if err != nil {
+		t.Fatalf("CancelQueuedRun (repeat): %v", err)
+	}
+	if rows != 0 {
+		t.Errorf("CancelQueuedRun affected %d rows on an already-cancelled run, want 0", rows)
+	}
+}
+
+// A cancellation request must never land on a run that has already finished:
+// it would leave a terminal run marked as cancellation-pending forever, and
+// the supervisor's watcher would be looking for a container that no longer
+// exists.
+func TestRequestRunCancelOnlyTouchesRunningRuns(t *testing.T) {
+	queries, ctx := newTestQueries(t)
+	run := createTestRun(t, queries, ctx)
+
+	// Queued, not running: the API's queued path owns this case, so the
+	// request must not apply here either.
+	rows, err := queries.RequestRunCancel(ctx, run.ID)
+	if err != nil {
+		t.Fatalf("RequestRunCancel: %v", err)
+	}
+	if rows != 0 {
+		t.Errorf("RequestRunCancel affected %d rows on a queued run, want 0", rows)
+	}
+
+	requested, err := queries.IsRunCancelRequested(ctx, run.ID)
+	if err != nil {
+		t.Fatalf("IsRunCancelRequested: %v", err)
+	}
+	if requested {
+		t.Error("a queued run reports a cancellation request that was refused")
+	}
+
+	// Finished straight from queued, for the reason TestFinishRun... explains:
+	// claiming would steal a run belonging to something else.
+	if _, err := queries.FinishRun(ctx, FinishRunParams{ID: run.ID, State: StateSucceeded}); err != nil {
+		t.Fatalf("FinishRun: %v", err)
+	}
+
+	rows, err = queries.RequestRunCancel(ctx, run.ID)
+	if err != nil {
+		t.Fatalf("RequestRunCancel (terminal): %v", err)
+	}
+	if rows != 0 {
+		t.Errorf("RequestRunCancel affected %d rows on a finished run, want 0", rows)
+	}
+}
