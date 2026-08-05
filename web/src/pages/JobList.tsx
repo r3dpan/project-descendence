@@ -38,6 +38,9 @@ export default function JobList() {
   return (
     <main>
       <h1>Jobs</h1>
+      <p>
+        <Link to="/jobs/new">New job</Link>
+      </p>
       {error && (
         <p role="alert" style={{ color: 'crimson' }}>
           {error}

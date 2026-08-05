@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import { createJobRun, getJob, patchJob, type Job } from '../api/jobs'
 import { APIError } from '../api/client'
 import { ParamField } from '../paramField'
@@ -101,6 +101,8 @@ export default function JobDetail() {
           <button type="button" onClick={handleToggle} disabled={toggling}>
             {toggling ? 'Updating…' : job.enabled ? 'Disable job' : 'Enable job'}
           </button>
+          {' '}
+          <Link to={`/jobs/${job.id}/edit`}>Edit manifest</Link>
           {toggleError && (
             <span role="alert" style={{ color: 'crimson', marginLeft: '0.5rem' }}>
               {toggleError}

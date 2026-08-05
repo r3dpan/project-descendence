@@ -7,6 +7,7 @@ import RunList from './pages/RunList'
 import RunDetail from './pages/RunDetail'
 import JobList from './pages/JobList'
 import JobDetail from './pages/JobDetail'
+import ManifestEditor from './pages/ManifestEditor'
 import RuntimeList from './pages/RuntimeList'
 import RuntimeDetail from './pages/RuntimeDetail'
 
@@ -52,10 +53,26 @@ export default function App() {
             }
           />
           <Route
+            path="/jobs/new"
+            element={
+              <Protected>
+                <ManifestEditor mode="create" />
+              </Protected>
+            }
+          />
+          <Route
             path="/jobs/:id"
             element={
               <Protected>
                 <JobDetail />
+              </Protected>
+            }
+          />
+          <Route
+            path="/jobs/:id/edit"
+            element={
+              <Protected>
+                <ManifestEditor mode="edit" />
               </Protected>
             }
           />
