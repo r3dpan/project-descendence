@@ -1488,3 +1488,173 @@ Notes to future me:
     correct decision-#18-style behavior, not a workaround. If runtimes ever
     need real deletion (e.g. an operator naming one wrong), that's a small,
     separate addition, not a sign this session's design is incomplete.
+
+## 2026-08-05 (Phase 5 — Scheduling)
+Worked on: Phase 5 in full (5.1-5.7). Resolved ARCHITECTURE.md §8's last
+open question, built scheduling end to end, verified live against real
+systemd on this machine, cleaned up all test state.
+Completed:
+  - 5.1: decision #27 - generated systemd (user) `.timer`/`.service` units,
+    not an in-process cron loop, and the **supervisor** (not the api
+    process) owns rendering/reloading them. The api process's only prior
+    host side effects were Postgres writes, git repo writes and log reads;
+    adding `systemctl --user` there would have been a new trust boundary,
+    and the supervisor's existing advisory lock already guarantees exactly
+    one process ever touches `SYSTEMD_UNIT_DIR`, the same way it already
+    guarantees exactly one process touches Podman. This was a real
+    mid-design pivot: the plan agent's first pass put unit generation in the
+    api process; asked directly, the call came back "move it to the
+    supervisor instead", which also simplified CRUD back down to a plain
+    Postgres write matching jobs/runtimes. Updated ARCHITECTURE.md §4.2,
+    §4.8, §5 (schedules' row shape, `next_due_at` dropped), §8, and added a
+    CLAUDE.md invariant (`SYSTEMD_UNIT_DIR` is the supervisor's sole-writer
+    directory, third instance of the pattern after `RUN_LOG_DIR`/
+    `GIT_REPO_DIR`). Also fixed the §3 ASCII diagram, which still said
+    "scheduler (cron)" under the supervisor - a real inaccuracy the old
+    design left behind.
+  - 5.2: `migrations/00005_schedules.sql` alters the skeleton from 00001
+    (same style as 00003/00004): `catch_up_policy`/`overlap_policy` (both
+    CHECK-constrained enums) and `updated_at` added to `schedules`;
+    `next_due_at` dropped outright - nothing computes or stores it under
+    generated systemd timers, and keeping an unused column that looks
+    load-bearing invites someone to wire it up as authoritative later.
+    `runs.schedule_id` added, nullable, `ON DELETE SET NULL` (mirrors
+    `job_id`'s reasoning - deleting a schedule must not sever a past run's
+    explainability). `internal/store/queries/schedules.sql` (Create/Get/
+    ListByJob/List/Update/Delete) plus `runs.sql`'s `CreateJobRun` gaining a
+    `schedule_id` param and a new `GetLatestRunForSchedule` (ordered by id,
+    same reasoning `ListRuns` already documents for why not `queued_at`).
+    Every full-row run query updated to select the new column too, so they
+    keep returning `store.Run` rather than sqlc silently generating a
+    narrower ad-hoc type.
+  - `internal/scheduling` (new): `CronToOnCalendar` translates standard
+    5-field cron into systemd's `OnCalendar=`, deliberately scoped to a
+    conservative subset (single value, `*`, simple `*/N` steps,
+    comma-lists) - range syntax and combined day-of-month+day-of-week
+    restrictions are rejected by name, matching this codebase's "unknown
+    key is an error, not silently wrong" posture from manifest parsing
+    rather than risk a subtly wrong translation that fires at the wrong
+    time silently. `robfig/cron/v3` (the first non-Charm/non-pgx dependency
+    since decision #17) validates the expression first; the hand-rolled
+    translator only has to reason about syntax already known to be legal
+    cron. Every supported translation is cross-checked against
+    `systemd-analyze calendar` in tests where the binary is available (it
+    was, in this sandbox) - this codebase's own stated risk was "I am not
+    fully confident in systemd's calendar grammar edge cases", so the check
+    is real, not decorative. `RenderTimerUnit`/`RenderServiceUnit` produce
+    the actual `.timer`/`.service` text; `Persistent=` from `catch_up_policy`,
+    `TimeZone=` from the schedule's own timezone (not embedded in
+    `OnCalendar=`).
+  - `internal/systemdunit` (new): a thin `exec.CommandContext` wrapper over
+    `systemctl --user` - write (content-comparing, so a no-op tick doesn't
+    trigger a reload), remove, reload, enable/disable, and listing the
+    schedule ids currently on disk (parsed from the unit filename
+    convention, for the sync loop's "remove stray units" pass). Used only
+    by the supervisor. Tests run against the real `systemctl --user` in
+    this environment (skip cleanly if unreachable, same pattern as the
+    DB/Podman integration tests) - all passed live.
+  - `cmd/supervisor/schedule.go` (new): a third, separate poll loop
+    (`runScheduleSyncLoop`, 5s tick - schedule changes are rare and
+    low-urgency compared to a queued run), structurally mirroring
+    `build.go`'s precedent for "why a third loop rather than a shared
+    abstraction". Lists every schedule, renders its expected unit pair,
+    writes only what changed, removes units for deleted schedules,
+    reloads systemd exactly once per tick if anything changed (never per
+    schedule), and applies enable/disable - unconditionally on the first
+    sync after startup (`force=true`, since a unit's enrollment state isn't
+    part of what content-comparison catches), only for changed schedules on
+    later ticks. Wired into `main.go` alongside the existing prune and
+    build-claim loops, plus a synchronous first sync before the claim loop
+    starts (same spot `reconcile()` already runs).
+  - `internal/api/jobs.go`: extracted `CreateJobRunHandler`'s body into
+    `createJobRun(ctx, principal, job, idempotencyKey, scheduleID *int64)`,
+    returning a `store.Run` and a new small `*problemError` type instead of
+    writing the HTTP response directly - the schedule trigger endpoint needs
+    the exact same git-HEAD-to-manifest-to-runtime-pin-to-insert logic but a
+    different response shape for a couple of cases. `CreateJobRunHandler`
+    itself is now `lookupJob` + `createJobRun` + write-the-response, with no
+    behavior change (nothing external moved).
+  - `cmd/seed`: gained `-name`/`-scopes` flags (unflagged default unchanged:
+    `bootstrap`, `read,run,admin`) so a second, least-privilege principal
+    could be minted for the scheduler (`-scopes run` only) without a second
+    seeding mechanism.
+  - `internal/api/schedules.go` (new): CRUD as plain Postgres writes -
+    `POST`/`GET /api/v1/jobs/{id}/schedules`, `GET`/`PATCH`/
+    `DELETE /api/v1/schedules/{id}` - validating `cronExpr` (via
+    `scheduling.CronToOnCalendar`) and `timezone` (`time.LoadLocation`)
+    before the row ever lands, same posture `manifest.Parse` already has
+    toward its own inputs. `POST /api/v1/schedules/{id}/trigger` is what a
+    generated unit's `ExecStart` calls: requires the `run` scope (the first
+    endpoint in this codebase to actually check `principal.scopes` rather
+    than relying on token possession alone - a narrow, deliberate exception,
+    not a general RBAC rollout), applies the overlap policy
+    (`GetLatestRunForSchedule` + `store.IsTerminal`), and on `skip` returns
+    `200` with a `skipped` body rather than `409` - the fire happened
+    exactly as designed, and a `409` would show as a failed unit in
+    `systemctl --user status` for something that isn't a failure.
+    `runResponse`/`api/openapi.yaml`'s `Run` schema gained `scheduleId` for
+    explainability, matching `jobId`. Verified live: create (with a
+    deliberately-unsupported range-syntax cron rejected with a specific
+    reason), list, trigger (queued a real run), an immediate second trigger
+    correctly skipped citing the still-non-terminal run, patch, delete, and
+    a scopeless token correctly getting `403`.
+  - `internal/client/schedules.go` + `cmd/cli/schedules.go` (new): mirrors
+    `runtimes.go`'s list/get/create/update/delete shape exactly, plus
+    `trigger` (fires the same endpoint a generated unit does, so an operator
+    can test a schedule without waiting for its timer). `client.Run` gained
+    `ScheduleID` alongside the API's change. Verified live through the real
+    CLI: create, list, get, update (overlap policy to `queue`), trigger
+    twice under `queue` (both created runs, unlike `skip`), delete, and
+    get-after-delete correctly 404ing.
+  - **Full live verification pass**, against real `systemctl --user` on
+    this machine (not a mock): created a schedule firing every minute,
+    watched it fire for real through a generated unit - which needed one
+    fix found the hard way, not anticipated by any doc: a systemd user
+    service's `PATH` does not include `~/.local/bin` even though an
+    interactive shell's does, so the first real fire failed with "Unable to
+    locate executable 'descendence'" until `DESCENDENCE_CLI_PATH` (a new,
+    documented env var) pointed the rendered `ExecStart` at an absolute
+    path. After that: a real fire created run 229, the supervisor claimed
+    and finished it (`succeeded`, 0.8s). Killed the supervisor entirely,
+    waited past the next minute boundary - the timer fired anyway and
+    queued run 230 with **no supervisor process running at all**, proving
+    firing genuinely does not depend on the supervisor's liveness. Restarted
+    the supervisor - it claimed and finished run 230 immediately, nothing
+    duplicated, nothing lost. Set `catch_up_policy=catch_up`, stopped the
+    timer, let roughly four one-minute windows pass, re-enabled it: **one**
+    catch-up run appeared (231), not four - confirming `Persistent=true`'s
+    "catch up once, not once per missed window" semantics exactly as
+    decision #27 documents, not just asserted in a comment. Deleted the
+    schedule; the sync loop removed its unit files and the timer
+    disappeared from `systemctl --user list-timers` within one tick.
+Broken / unresolved: nothing. **Phase 5 is complete.**
+Next action: Phase 6 (parameters), starting at 6.1 - see ARCHITECTURE.md
+§4.7 for the four deliberately-separate concerns before starting (contract /
+introspection / form / binding map - do not merge them).
+Notes to future me:
+  - The plan agent's first design put systemd unit generation in the api
+    process (CRUD would have shelled out to `systemctl` synchronously). That
+    was overruled in favor of the supervisor doing it, which turned out to
+    be the better call on more than one axis: it kept schedule CRUD a plain
+    DB write like every other resource, it reused the advisory lock instead
+    of needing a new guarantee, and it meant the api process's trust
+    boundary genuinely didn't need to grow. Worth remembering as a pattern:
+    when a new feature wants to shell out to a host tool, ask "does the
+    supervisor's existing sole-writer-of-a-directory precedent
+    (RUN_LOG_DIR/GIT_REPO_DIR) already have room for this" before reaching
+    for the api process by default.
+  - `systemd-analyze calendar <expr>` is worth running by hand once when
+    hand-writing any future `OnCalendar=` string - the field order (weekday,
+    then date, then time) is easy to get backwards relative to cron's
+    (minute-first) ordering, and a syntactically-valid-but-wrong string is
+    exactly the silent-failure shape this project has been burned by before
+    (decisions #20/#21/#26).
+  - A systemd **user** service's `PATH` is not an interactive shell's `PATH`
+    - do not assume a binary on `$PATH` in a terminal will resolve inside a
+    generated unit's `ExecStart`. `DESCENDENCE_CLI_PATH` exists because of
+    exactly this, found live rather than anticipated.
+  - Verifying `Persistent=true`'s semantics needed real wall-clock waiting
+    (a couple of minutes, not skippable) - there was no way to fake this one
+    with hand-edited Postgres state the way earlier phases sometimes could,
+    since the thing under test is systemd's own timer bookkeeping, not
+    anything this codebase controls.

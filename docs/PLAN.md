@@ -42,33 +42,42 @@ Update the marker on each task as it moves:
 
 > **Update this block every session.**
 
-- **Phase:** 4 — **complete** (4.1–4.8, exit check passed). Next up is
-  Phase 5 — scheduling.
-- **Task:** Phases 0–4 all done. Runtimes are curated base image + system
-  packages + one language's dependency manifest, rendered to a Containerfile
-  and built via the Podman API (`internal/runtimebuild`, `internal/podman`'s
-  `BuildImage`). A job manifest now honours `runtime: <name>` as the
-  alternative to `image:`; `CreateJobRunHandler` resolves the runtime's
-  current image digest at *run creation* and pins it onto the run
-  (`runs.runtime_id`/`image_digest`, now exposed via the API) - rebuilding a
-  runtime afterwards never changes what an already-created run executes,
-  verified directly this session (see HISTORY.md).
-- **Next action:** 5.1 — resolve the in-process-cron-vs-systemd-timers open
-  question (ARCHITECTURE.md §8) and record it as a decision, then 5.2's
-  `schedules` migration (already a skeleton table since migration 00001).
+- **Phase:** 5 — **complete** (5.1–5.7, exit check passed). Next up is
+  Phase 6 — parameters.
+- **Task:** Phases 0–5 all done. Scheduling fires jobs through generated
+  systemd (user) `.timer`/`.service` units (decision #27), not an in-process
+  cron loop — the supervisor renders/reloads them
+  (`internal/scheduling`, `internal/systemdunit`,
+  `cmd/supervisor/schedule.go`), and the api process's schedule CRUD stays a
+  plain Postgres write. A generated unit's `ExecStart` calls
+  `descendence schedule trigger <id>`, which hits
+  `POST /api/v1/schedules/{id}/trigger` (the first endpoint enforcing a
+  scope) — that endpoint applies the overlap policy and then reuses
+  `createJobRun`, the same run-creation logic `CreateJobRunHandler` was
+  refactored to share.
+- **Next action:** 6.1 — extend the manifest with the parameter contract
+  (name, type, required, default); see ARCHITECTURE.md §4.7 for the four
+  deliberately-separate concerns (contract / introspection / form / binding
+  map) before starting.
 - **Blocked on:** nothing
 - **Notes:** invariants live in CLAUDE.md's "Invariants worth not breaking" —
   that's the one place to check before touching jobs, git, or run execution.
   (The one fact from Phase 3 that isn't an invariant and has no other home:
   a supervisor process still executes runs strictly one at a time, which task
   1.15's HISTORY.md entry already flags as the most likely thing to bite once
-  concurrency or scheduling arrives.) One more from Phase 4: this
-  environment's podman container network blackholes IPv6 rather than
-  rejecting it, so any .NET-based tool (PSResourceGet included) hangs until
-  its IPv6 attempt times out before falling back to IPv4 - `DOTNET_SYSTEM_NET_DISABLEIPV6=1`
+  concurrency or scheduling arrives — Phase 5 hit exactly this: a schedule's
+  `overlap_policy` of `queue` and `concurrent` are behaviorally identical
+  today, see decision #27.) From Phase 4: this environment's podman
+  container network blackholes IPv6 rather than rejecting it, so any
+  .NET-based tool (PSResourceGet included) hangs until its IPv6 attempt
+  times out before falling back to IPv4 - `DOTNET_SYSTEM_NET_DISABLEIPV6=1`
   is now baked into every PowerShell runtime's Containerfile for exactly this
-  reason (`internal/runtimebuild/render.go`). Worth remembering if a future
-  language's tooling shows the same "hangs for ~100s then works" symptom.
+  reason (`internal/runtimebuild/render.go`). From Phase 5: a systemd user
+  service's `PATH` does not include `~/.local/bin` even though an
+  interactive shell's does — `DESCENDENCE_CLI_PATH` exists specifically so a
+  generated schedule unit's `ExecStart` can name the CLI's absolute path
+  instead of relying on `PATH` resolution, found the hard way when the first
+  live-fired schedule failed with "Unable to locate executable 'descendence'".
 
 ---
 
@@ -368,18 +377,44 @@ a container-networking one.
 **Done when:** a job runs every 5 minutes for an hour without intervention, including
 across a supervisor restart.
 
-- [ ] **5.1** Resolve the open question: in-process cron vs. generated systemd timers.
-      Record the decision in ARCHITECTURE.md §6.
-- [ ] **5.2** Migration: `schedules`.
-- [ ] **5.3** Implement the scheduler in the supervisor, under the advisory lock.
-- [ ] **5.4** Handle missed windows: after downtime, do you catch up or skip? Decide
-      explicitly — the default should probably be skip.
-- [ ] **5.5** Timezone and DST handling. Store the timezone; do not assume UTC.
-- [ ] **5.6** Overlap policy: what happens when a run is still going and the next is
-      due? (skip / queue / run concurrently — make it per-job.)
-- [ ] **5.7** Schedule CRUD + CLI.
+- [x] **5.1** Resolved: **generated systemd (user) timers**, owned by the
+      supervisor (decision #27) — not an in-process cron loop.
+- [x] **5.2** Migration `00005_schedules.sql`: `catch_up_policy`,
+      `overlap_policy`, `updated_at` on `schedules`; `schedule_id` on `runs`;
+      drops the `next_due_at` skeleton column (nothing stores it under this
+      design).
+- [x] **5.3** Reinterpreted per 5.1: `internal/scheduling` (cron_expr →
+      OnCalendar= translation + unit rendering), `internal/systemdunit`
+      (`systemctl --user` wrapper), `cmd/supervisor/schedule.go` (the
+      schedule-sync loop). No advisory-lock-guarded scheduler loop was
+      needed — systemd itself does the firing, independent of the
+      supervisor's liveness.
+- [x] **5.4** `catch_up_policy` maps onto the generated timer's
+      `Persistent=`. Verified live: stopping a timer, letting ~4 one-minute
+      windows pass, then re-enabling it produced **exactly one** catch-up
+      run, not one per missed window.
+- [x] **5.5** `timezone` maps onto the timer's `TimeZone=` directive
+      (separate from `OnCalendar=`); `robfig/cron/v3` computes an
+      informational, display-only `nextDueAt` in the same zone.
+- [x] **5.6** `overlap_policy` (`skip`/`queue`/`concurrent`) enforced in the
+      trigger endpoint via `GetLatestRunForSchedule`. `queue` and
+      `concurrent` are behaviorally identical today — the supervisor still
+      executes runs strictly one at a time.
+- [x] **5.7** Schedule CRUD (`POST`/`GET /api/v1/jobs/{id}/schedules`,
+      `GET`/`PATCH`/`DELETE /api/v1/schedules/{id}`) as a plain Postgres
+      write, plus `POST /api/v1/schedules/{id}/trigger` (the first endpoint
+      in this codebase to enforce a scope) and `descendence schedule
+      list/get/create/update/delete/trigger`.
 
 **Exit check:** restart the supervisor mid-schedule; no duplicate and no missed runs.
+**→ Passed**, through the real stack with a real systemd user timer firing
+every minute: killed the supervisor mid-window, confirmed the timer still
+fired and queued a run with the supervisor entirely down, restarted the
+supervisor, and it claimed and executed that run with nothing duplicated or
+lost. Also proved live: the overlap `skip` policy actually skipping a
+second concurrent fire, `queue` allowing one, a scopeless token correctly
+getting `403` on trigger, and `systemctl --user` cleanly removing a
+schedule's unit files (and stopping its timer) on delete.
 
 ---
 
