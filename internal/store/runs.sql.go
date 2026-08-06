@@ -414,6 +414,44 @@ func (q *Queries) GetRunByIdempotencyKey(ctx context.Context, arg GetRunByIdempo
 	return i, err
 }
 
+const getRunStats = `-- name: GetRunStats :one
+SELECT
+    count(*) FILTER (WHERE state = 'queued') AS queued,
+    count(*) FILTER (WHERE state = 'succeeded' AND finished_at >= $1::timestamptz) AS succeeded,
+    count(*) FILTER (WHERE state = 'failed' AND finished_at >= $1::timestamptz) AS failed,
+    count(*) FILTER (WHERE state = 'cancelled' AND finished_at >= $1::timestamptz) AS cancelled,
+    count(*) FILTER (WHERE state = 'lost' AND finished_at >= $1::timestamptz) AS lost
+FROM runs
+`
+
+type GetRunStatsRow struct {
+	Queued    int64 `json:"queued"`
+	Succeeded int64 `json:"succeeded"`
+	Failed    int64 `json:"failed"`
+	Cancelled int64 `json:"cancelled"`
+	Lost      int64 `json:"lost"`
+}
+
+// Off-plan web UI dashboard work: a handful of aggregate counts, not a list,
+// so no pagination and no new endpoint pattern to establish - one query, one
+// row. queued is a live count (never time-windowed - "currently queued" has
+// no "since"); the four terminal states are counted since sqlc.arg(since),
+// keyed off finished_at, which runs_state_timestamps_check guarantees is set
+// on every terminal run regardless of which of the two cancel paths reached
+// it (task 2.8's CancelQueuedRun sets it too, not just FinishRun).
+func (q *Queries) GetRunStats(ctx context.Context, since pgtype.Timestamptz) (GetRunStatsRow, error) {
+	row := q.db.QueryRow(ctx, getRunStats, since)
+	var i GetRunStatsRow
+	err := row.Scan(
+		&i.Queued,
+		&i.Succeeded,
+		&i.Failed,
+		&i.Cancelled,
+		&i.Lost,
+	)
+	return i, err
+}
+
 const isRunCancelRequested = `-- name: IsRunCancelRequested :one
 SELECT (cancel_requested_at IS NOT NULL)::boolean AS cancel_requested
 FROM runs

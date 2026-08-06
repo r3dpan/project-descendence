@@ -5,6 +5,7 @@ export type Run = components['schemas']['Run']
 export type RunList = components['schemas']['RunList']
 export type RunLogLine = components['schemas']['RunLogLine']
 export type RunLogList = components['schemas']['RunLogList']
+export type RunStats = components['schemas']['RunStats']
 
 // Run states, as constrained by the Run schema's enum in api/openapi.yaml -
 // same list internal/client's runs.go keeps for the CLI/TUI.
@@ -27,6 +28,12 @@ export function listRuns(params: ListRunsParams = {}): Promise<RunList> {
 
 export function getRun(id: number | string): Promise<Run> {
   return request<Run>(`/api/v1/runs/${id}`)
+}
+
+// Aggregate counts for the dashboard, never a list. since, if given, is a Go
+// duration string (e.g. "24h") - omit for the server's default window.
+export function getRunStats(since?: string): Promise<RunStats> {
+  return request<RunStats>('/api/v1/runs/stats', { query: since ? { since } : {} })
 }
 
 export function cancelRun(id: number | string): Promise<Run> {

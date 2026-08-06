@@ -62,9 +62,21 @@ Update the marker on each task as it moves:
   `form`) - an `AppShell` sidebar layout, a shared `statusColor` Badge helper,
   a one-time-secret reveal `Modal` (token/password creation), and every
   page's tables/forms converted to Mantine components. Not a numbered PLAN.md
-  phase - purely a visual pass, no API/behavior changes. Browser-verified
-  (see HISTORY.md) with a headless Chromium in this session, in both light
-  and dark color schemes.
+  phase - purely a visual pass, no API/behavior changes initially.
+  Browser-verified with a headless Chromium in both light and dark color
+  schemes. Two follow-ups landed in the same off-plan thread: (1) "New X"
+  create forms and Settings' password form, which read as loose inputs
+  flush against the sidebar, wrapped in a bordered `Paper` card; (2) a new
+  `/` Dashboard page (Runs moved to `/runs`) showing a KPI row (currently
+  queued; succeeded/failed/cancelled/lost since a 24h window) plus "last
+  login" - this one **did** touch the API: migration `00010` adds
+  `principals.last_login_at` (set by `LoginHandler` only, never on token
+  auth), and a new `GET /api/v1/runs/stats` endpoint (`RunStatsHandler`,
+  `runs:read`-gated) backs the KPI row. Both got Go client parity
+  (`internal/client`) alongside the API per the project's established
+  API→client→CLI→web sequencing, though no CLI subcommand was added for
+  either (web-only ask). See HISTORY.md for the full rationale, especially
+  the last-login "previous value, not now" sequencing trick.
 - **Blocked on:** nothing.
 - **Notes carried from 7.6/7.7 - resolved this phase:** the dev Postgres
   instance's `kind='user'` principal `webui-716` (owns runs 245/246,

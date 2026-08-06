@@ -235,11 +235,12 @@ func (c *Client) Health(ctx context.Context) (ServerHealth, error) {
 // Principal is the GET /api/v1/whoami response (Principal schema). Role and
 // Permissions replace the old flat Scopes field (Phase 8).
 type Principal struct {
-	ID          int64    `json:"id"`
-	Name        string   `json:"name"`
-	Kind        string   `json:"kind"`
-	Role        string   `json:"role"`
-	Permissions []string `json:"permissions"`
+	ID          int64      `json:"id"`
+	Name        string     `json:"name"`
+	Kind        string     `json:"kind"`
+	Role        string     `json:"role"`
+	Permissions []string   `json:"permissions"`
+	LastLoginAt *time.Time `json:"lastLoginAt,omitempty"`
 }
 
 // WhoAmI calls GET /api/v1/whoami, resolving the token to its principal.

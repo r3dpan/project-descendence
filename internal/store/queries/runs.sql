@@ -236,3 +236,19 @@ FROM runs
 WHERE schedule_id = $1
 ORDER BY id DESC
 LIMIT 1;
+
+-- name: GetRunStats :one
+-- Off-plan web UI dashboard work: a handful of aggregate counts, not a list,
+-- so no pagination and no new endpoint pattern to establish - one query, one
+-- row. queued is a live count (never time-windowed - "currently queued" has
+-- no "since"); the four terminal states are counted since sqlc.arg(since),
+-- keyed off finished_at, which runs_state_timestamps_check guarantees is set
+-- on every terminal run regardless of which of the two cancel paths reached
+-- it (task 2.8's CancelQueuedRun sets it too, not just FinishRun).
+SELECT
+    count(*) FILTER (WHERE state = 'queued') AS queued,
+    count(*) FILTER (WHERE state = 'succeeded' AND finished_at >= sqlc.arg(since)::timestamptz) AS succeeded,
+    count(*) FILTER (WHERE state = 'failed' AND finished_at >= sqlc.arg(since)::timestamptz) AS failed,
+    count(*) FILTER (WHERE state = 'cancelled' AND finished_at >= sqlc.arg(since)::timestamptz) AS cancelled,
+    count(*) FILTER (WHERE state = 'lost' AND finished_at >= sqlc.arg(since)::timestamptz) AS lost
+FROM runs;

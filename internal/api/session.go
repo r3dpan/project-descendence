@@ -95,13 +95,23 @@ func (s *APIServer) LoginHandler(w http.ResponseWriter, r *http.Request) {
 		SameSite: http.SameSiteLaxMode,
 	})
 
+	// principal.LastLoginAt still holds the pre-login value here - the
+	// update below overwrites the row, but the response is built from what
+	// was already read, so "last login" in the response means "before this
+	// one" rather than "just now" (see GetUserPrincipalByName's comment).
+	if _, err := s.queries.TouchPrincipalLastLogin(r.Context(), principal.ID); err != nil {
+		log.Printf("login: last-login update failed: %v", err)
+		// Not fatal to the login itself - a missed timestamp update is not
+		// worth failing an otherwise-successful login over.
+	}
+
 	perms, err := s.resolvePermissions(r.Context(), principal.ID)
 	if err != nil {
 		log.Printf("login: permission resolution failed: %v", err)
 		writeProblem(w, http.StatusInternalServerError, "failed resolving principal's permissions")
 		return
 	}
-	resp, err := s.toWhoamiResponse(r.Context(), store.Principal{ID: principal.ID, Kind: principal.Kind, Name: principal.Name}, perms)
+	resp, err := s.toWhoamiResponse(r.Context(), store.Principal{ID: principal.ID, Kind: principal.Kind, Name: principal.Name, LastLoginAt: principal.LastLoginAt}, perms)
 	if err != nil {
 		log.Printf("login: role resolution failed: %v", err)
 		writeProblem(w, http.StatusInternalServerError, "failed resolving principal's role")

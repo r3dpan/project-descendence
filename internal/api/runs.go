@@ -459,3 +459,50 @@ func (s *APIServer) ListRunsHandler(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, runListResponse{Items: items, NextCursor: nextCursor})
 }
+
+// defaultRunStatsWindow is used when the caller omits ?since. 24h matches a
+// homelab-scale scheduler's typical single day of activity (off-plan web UI
+// dashboard work - see docs/HISTORY.md).
+const defaultRunStatsWindow = 24 * time.Hour
+
+type runStatsResponse struct {
+	Queued    int64     `json:"queued"`
+	Succeeded int64     `json:"succeeded"`
+	Failed    int64     `json:"failed"`
+	Cancelled int64     `json:"cancelled"`
+	Lost      int64     `json:"lost"`
+	Since     time.Time `json:"since"`
+}
+
+// RunStatsHandler answers a handful of aggregate counts for the web UI's
+// dashboard - never a list, so no pagination. ?since is a Go duration string
+// (e.g. "24h", "7d" is not valid Go duration syntax - use "168h") measured
+// back from now; queued is always a live count regardless of since, since
+// "currently queued" has no time window (see GetRunStats's comment).
+func (s *APIServer) RunStatsHandler(w http.ResponseWriter, r *http.Request) {
+	window := defaultRunStatsWindow
+	if raw := r.URL.Query().Get("since"); raw != "" {
+		parsed, err := time.ParseDuration(raw)
+		if err != nil || parsed <= 0 {
+			writeProblem(w, http.StatusBadRequest, "since must be a positive Go duration string (e.g. 24h)")
+			return
+		}
+		window = parsed
+	}
+	since := time.Now().Add(-window)
+
+	stats, err := s.queries.GetRunStats(r.Context(), pgtype.Timestamptz{Time: since, Valid: true})
+	if err != nil {
+		writeProblem(w, http.StatusInternalServerError, "failed fetching run stats")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, runStatsResponse{
+		Queued:    stats.Queued,
+		Succeeded: stats.Succeeded,
+		Failed:    stats.Failed,
+		Cancelled: stats.Cancelled,
+		Lost:      stats.Lost,
+		Since:     since,
+	})
+}

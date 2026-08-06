@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"sort"
+	"time"
 
 	"github.com/r3dpan/project-descendence/internal/gitrepo"
 	"github.com/r3dpan/project-descendence/internal/logstream"
@@ -165,6 +166,12 @@ type whoamiResponse struct {
 	Kind        string   `json:"kind"`
 	Role        string   `json:"role"`
 	Permissions []string `json:"permissions"`
+	// Nil for a principal that has never completed a password login (e.g.
+	// kind=token, or a user that has so far only used a token). Set from
+	// GetUserPrincipalByName's *pre-update* read in LoginHandler, so a login
+	// response shows the previous login time, not this instant - see that
+	// query's comment.
+	LastLoginAt *time.Time `json:"lastLoginAt,omitempty"`
 }
 
 // toWhoamiResponse assembles the identity response shared by WhoAmIHandler
@@ -182,12 +189,18 @@ func (s *APIServer) toWhoamiResponse(ctx context.Context, principal store.Princi
 	}
 	sort.Strings(keys)
 
+	var lastLoginAt *time.Time
+	if principal.LastLoginAt.Valid {
+		lastLoginAt = &principal.LastLoginAt.Time
+	}
+
 	return whoamiResponse{
 		ID:          principal.ID,
 		Name:        principal.Name,
 		Kind:        principal.Kind,
 		Role:        role,
 		Permissions: keys,
+		LastLoginAt: lastLoginAt,
 	}, nil
 }
 

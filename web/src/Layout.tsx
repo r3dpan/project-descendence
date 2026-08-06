@@ -35,7 +35,8 @@ export default function Layout({ children }: { children: ReactNode }) {
         </Group>
       </AppShell.Header>
       <AppShell.Navbar p="md">
-        <NavLink component={RouterNavLink} to="/" label="Runs" active={isActive('/', true)} />
+        <NavLink component={RouterNavLink} to="/" label="Dashboard" active={isActive('/', true)} />
+        <NavLink component={RouterNavLink} to="/runs" label="Runs" active={isActive('/runs')} />
         <NavLink component={RouterNavLink} to="/jobs" label="Jobs" active={isActive('/jobs')} />
         <NavLink component={RouterNavLink} to="/runtimes" label="Runtimes" active={isActive('/runtimes')} />
         {canSeeUsers && (

@@ -52,6 +52,7 @@ type Principal struct {
 	ExpiresAt    pgtype.Timestamptz `json:"expires_at"`
 	RevokedAt    pgtype.Timestamptz `json:"revoked_at"`
 	PasswordHash []byte             `json:"password_hash"`
+	LastLoginAt  pgtype.Timestamptz `json:"last_login_at"`
 }
 
 type PrincipalRole struct {

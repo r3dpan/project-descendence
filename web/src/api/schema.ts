@@ -102,6 +102,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/runs/stats": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Aggregate counts for the web UI's dashboard - never a list, so no pagination. `queued` is always a live count regardless of `since`, since "currently queued" has no time window; the four terminal counts are since the given window. */
+        get: operations["getRunStats"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/runs/{id}": {
         parameters: {
             query?: never;
@@ -605,6 +622,11 @@ export interface components {
             /** @enum {string} */
             role: "admin" | "operator" | "viewer";
             permissions: string[];
+            /**
+             * Format: date-time
+             * @description When this principal last completed a password login (never set for kind=token, which authenticates per-request with no login event). A login response's value is the login *before* this one - see LoginHandler's comment - so it reads as history, not "now".
+             */
+            lastLoginAt?: string;
         };
         Role: {
             id: number;
@@ -739,6 +761,20 @@ export interface components {
             items: components["schemas"]["Run"][];
             /** @description Opaque cursor for the next page. Absent (or null) on the last page. */
             nextCursor?: string | null;
+        };
+        /** @description Off-plan web UI dashboard work - aggregate counts, not a list. */
+        RunStats: {
+            /** @description Live count, not time-windowed. */
+            queued: number;
+            succeeded: number;
+            failed: number;
+            cancelled: number;
+            lost: number;
+            /**
+             * Format: date-time
+             * @description The start of the window the four terminal counts are measured over.
+             */
+            since: string;
         };
         /** @description One captured line of output. Sequence numbers are per run and dense from 1, covering both streams - they record the order output arrived, which is not always the order the script printed it, since stdout and stderr are buffered independently inside the container. */
         RunLogLine: {
@@ -1235,6 +1271,47 @@ export interface operations {
                 };
             };
             /** @description Validation failed (e.g. empty argv, non-positive timeout) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Missing, malformed, unknown, expired or revoked token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    getRunStats: {
+        parameters: {
+            query?: {
+                /** @description A Go duration string (e.g. "24h") measured back from now. Omit for the server's default (24h). */
+                since?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Aggregate run counts */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunStats"];
+                };
+            };
+            /** @description Malformed since parameter */
             400: {
                 headers: {
                     [name: string]: unknown;

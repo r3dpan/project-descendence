@@ -186,6 +186,43 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/Problem"
+  /api/v1/runs/stats:
+    get:
+      operationId: getRunStats
+      description: >
+        Aggregate counts for the web UI's dashboard - never a list, so no
+        pagination. `queued` is always a live count regardless of `since`,
+        since "currently queued" has no time window; the four terminal
+        counts are since the given window.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: since
+          in: query
+          description: >-
+            A Go duration string (e.g. "24h") measured back from now. Omit
+            for the server's default (24h).
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Aggregate run counts
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunStats"
+        "400":
+          description: Malformed since parameter
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "401":
+          description: Missing, malformed, unknown, expired or revoked token
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
   /api/v1/runs/{id}:
     get:
       operationId: getRun
@@ -1854,6 +1891,14 @@ components:
           type: array
           items:
             type: string
+        lastLoginAt:
+          type: string
+          format: date-time
+          description: >-
+            When this principal last completed a password login (never set
+            for kind=token, which authenticates per-request with no login
+            event). A login response's value is the login *before* this one -
+            see LoginHandler's comment - so it reads as history, not "now".
       required:
         - id
         - name
@@ -2185,6 +2230,32 @@ components:
           type: [string, "null"]
       required:
         - items
+    RunStats:
+      type: object
+      description: Off-plan web UI dashboard work - aggregate counts, not a list.
+      properties:
+        queued:
+          type: integer
+          description: Live count, not time-windowed.
+        succeeded:
+          type: integer
+        failed:
+          type: integer
+        cancelled:
+          type: integer
+        lost:
+          type: integer
+        since:
+          type: string
+          format: date-time
+          description: The start of the window the four terminal counts are measured over.
+      required:
+        - queued
+        - succeeded
+        - failed
+        - cancelled
+        - lost
+        - since
     RunLogLine:
       type: object
       description: >

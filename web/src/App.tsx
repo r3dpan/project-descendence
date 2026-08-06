@@ -3,6 +3,7 @@ import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-route
 import { AuthProvider, useAuth } from './auth'
 import Layout from './Layout'
 import Login from './pages/Login'
+import Dashboard from './pages/Dashboard'
 import RunList from './pages/RunList'
 import RunDetail from './pages/RunDetail'
 import JobList from './pages/JobList'
@@ -34,6 +35,14 @@ export default function App() {
           <Route path="/login" element={<Login />} />
           <Route
             path="/"
+            element={
+              <Protected>
+                <Dashboard />
+              </Protected>
+            }
+          />
+          <Route
+            path="/runs"
             element={
               <Protected>
                 <RunList />

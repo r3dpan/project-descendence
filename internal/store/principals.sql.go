@@ -14,7 +14,7 @@ import (
 const createTokenPrincipal = `-- name: CreateTokenPrincipal :one
 INSERT INTO principals (kind, name, token_hash, token_hint, expires_at)
 VALUES ('token', $1, $2, $3, $4)
-RETURNING id, kind, name, token_hash, token_hint, password_hash, created_at, expires_at, revoked_at
+RETURNING id, kind, name, token_hash, token_hint, password_hash, created_at, expires_at, revoked_at, last_login_at
 `
 
 type CreateTokenPrincipalParams struct {
@@ -34,6 +34,7 @@ type CreateTokenPrincipalRow struct {
 	CreatedAt    pgtype.Timestamptz `json:"created_at"`
 	ExpiresAt    pgtype.Timestamptz `json:"expires_at"`
 	RevokedAt    pgtype.Timestamptz `json:"revoked_at"`
+	LastLoginAt  pgtype.Timestamptz `json:"last_login_at"`
 }
 
 func (q *Queries) CreateTokenPrincipal(ctx context.Context, arg CreateTokenPrincipalParams) (CreateTokenPrincipalRow, error) {
@@ -54,6 +55,7 @@ func (q *Queries) CreateTokenPrincipal(ctx context.Context, arg CreateTokenPrinc
 		&i.CreatedAt,
 		&i.ExpiresAt,
 		&i.RevokedAt,
+		&i.LastLoginAt,
 	)
 	return i, err
 }
@@ -61,7 +63,7 @@ func (q *Queries) CreateTokenPrincipal(ctx context.Context, arg CreateTokenPrinc
 const createUserPrincipal = `-- name: CreateUserPrincipal :one
 INSERT INTO principals (kind, name, password_hash)
 VALUES ('user', $1, $2)
-RETURNING id, kind, name, token_hash, token_hint, password_hash, created_at, expires_at, revoked_at
+RETURNING id, kind, name, token_hash, token_hint, password_hash, created_at, expires_at, revoked_at, last_login_at
 `
 
 type CreateUserPrincipalParams struct {
@@ -79,6 +81,7 @@ type CreateUserPrincipalRow struct {
 	CreatedAt    pgtype.Timestamptz `json:"created_at"`
 	ExpiresAt    pgtype.Timestamptz `json:"expires_at"`
 	RevokedAt    pgtype.Timestamptz `json:"revoked_at"`
+	LastLoginAt  pgtype.Timestamptz `json:"last_login_at"`
 }
 
 func (q *Queries) CreateUserPrincipal(ctx context.Context, arg CreateUserPrincipalParams) (CreateUserPrincipalRow, error) {
@@ -94,12 +97,13 @@ func (q *Queries) CreateUserPrincipal(ctx context.Context, arg CreateUserPrincip
 		&i.CreatedAt,
 		&i.ExpiresAt,
 		&i.RevokedAt,
+		&i.LastLoginAt,
 	)
 	return i, err
 }
 
 const getPrincipalByID = `-- name: GetPrincipalByID :one
-SELECT id, kind, name, token_hash, token_hint, password_hash, created_at, expires_at, revoked_at
+SELECT id, kind, name, token_hash, token_hint, password_hash, created_at, expires_at, revoked_at, last_login_at
 FROM principals
 WHERE id = $1
   AND revoked_at IS NULL
@@ -116,6 +120,7 @@ type GetPrincipalByIDRow struct {
 	CreatedAt    pgtype.Timestamptz `json:"created_at"`
 	ExpiresAt    pgtype.Timestamptz `json:"expires_at"`
 	RevokedAt    pgtype.Timestamptz `json:"revoked_at"`
+	LastLoginAt  pgtype.Timestamptz `json:"last_login_at"`
 }
 
 func (q *Queries) GetPrincipalByID(ctx context.Context, id int64) (GetPrincipalByIDRow, error) {
@@ -131,12 +136,13 @@ func (q *Queries) GetPrincipalByID(ctx context.Context, id int64) (GetPrincipalB
 		&i.CreatedAt,
 		&i.ExpiresAt,
 		&i.RevokedAt,
+		&i.LastLoginAt,
 	)
 	return i, err
 }
 
 const getPrincipalByTokenHash = `-- name: GetPrincipalByTokenHash :one
-SELECT id, kind, name, token_hash, token_hint, password_hash, created_at, expires_at, revoked_at
+SELECT id, kind, name, token_hash, token_hint, password_hash, created_at, expires_at, revoked_at, last_login_at
 FROM principals
 WHERE token_hash = $1
   AND kind = 'token'
@@ -154,6 +160,7 @@ type GetPrincipalByTokenHashRow struct {
 	CreatedAt    pgtype.Timestamptz `json:"created_at"`
 	ExpiresAt    pgtype.Timestamptz `json:"expires_at"`
 	RevokedAt    pgtype.Timestamptz `json:"revoked_at"`
+	LastLoginAt  pgtype.Timestamptz `json:"last_login_at"`
 }
 
 func (q *Queries) GetPrincipalByTokenHash(ctx context.Context, tokenHash []byte) (GetPrincipalByTokenHashRow, error) {
@@ -169,12 +176,13 @@ func (q *Queries) GetPrincipalByTokenHash(ctx context.Context, tokenHash []byte)
 		&i.CreatedAt,
 		&i.ExpiresAt,
 		&i.RevokedAt,
+		&i.LastLoginAt,
 	)
 	return i, err
 }
 
 const getUserPrincipalByName = `-- name: GetUserPrincipalByName :one
-SELECT id, kind, name, token_hash, token_hint, password_hash, created_at, expires_at, revoked_at
+SELECT id, kind, name, token_hash, token_hint, password_hash, created_at, expires_at, revoked_at, last_login_at
 FROM principals
 WHERE name = $1
   AND kind = 'user'
@@ -192,8 +200,13 @@ type GetUserPrincipalByNameRow struct {
 	CreatedAt    pgtype.Timestamptz `json:"created_at"`
 	ExpiresAt    pgtype.Timestamptz `json:"expires_at"`
 	RevokedAt    pgtype.Timestamptz `json:"revoked_at"`
+	LastLoginAt  pgtype.Timestamptz `json:"last_login_at"`
 }
 
+// Returns last_login_at as it stood *before* this call - LoginHandler reads
+// it here, then overwrites it via TouchPrincipalLastLogin, so the value
+// returned to the client is genuinely "when you logged in last time", not
+// "now".
 func (q *Queries) GetUserPrincipalByName(ctx context.Context, name string) (GetUserPrincipalByNameRow, error) {
 	row := q.db.QueryRow(ctx, getUserPrincipalByName, name)
 	var i GetUserPrincipalByNameRow
@@ -207,12 +220,13 @@ func (q *Queries) GetUserPrincipalByName(ctx context.Context, name string) (GetU
 		&i.CreatedAt,
 		&i.ExpiresAt,
 		&i.RevokedAt,
+		&i.LastLoginAt,
 	)
 	return i, err
 }
 
 const listPrincipalsByKind = `-- name: ListPrincipalsByKind :many
-SELECT id, kind, name, token_hash, token_hint, password_hash, created_at, expires_at, revoked_at
+SELECT id, kind, name, token_hash, token_hint, password_hash, created_at, expires_at, revoked_at, last_login_at
 FROM principals
 WHERE kind = $1
 ORDER BY name
@@ -228,6 +242,7 @@ type ListPrincipalsByKindRow struct {
 	CreatedAt    pgtype.Timestamptz `json:"created_at"`
 	ExpiresAt    pgtype.Timestamptz `json:"expires_at"`
 	RevokedAt    pgtype.Timestamptz `json:"revoked_at"`
+	LastLoginAt  pgtype.Timestamptz `json:"last_login_at"`
 }
 
 // Task 8.2/8.3: the users/tokens list endpoints. Unpaginated - a homelab has
@@ -252,6 +267,7 @@ func (q *Queries) ListPrincipalsByKind(ctx context.Context, kind string) ([]List
 			&i.CreatedAt,
 			&i.ExpiresAt,
 			&i.RevokedAt,
+			&i.LastLoginAt,
 		); err != nil {
 			return nil, err
 		}
@@ -276,6 +292,23 @@ WHERE id = $1
 // history stays queryable and explainable.
 func (q *Queries) RevokePrincipal(ctx context.Context, id int64) (int64, error) {
 	result, err := q.db.Exec(ctx, revokePrincipal, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const touchPrincipalLastLogin = `-- name: TouchPrincipalLastLogin :execrows
+UPDATE principals
+SET last_login_at = now()
+WHERE id = $1
+`
+
+// Called by LoginHandler right after password verification succeeds - see
+// GetUserPrincipalByName's comment for why the two queries are sequenced
+// this way rather than combined into one.
+func (q *Queries) TouchPrincipalLastLogin(ctx context.Context, id int64) (int64, error) {
+	result, err := q.db.Exec(ctx, touchPrincipalLastLogin, id)
 	if err != nil {
 		return 0, err
 	}

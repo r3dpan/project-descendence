@@ -2323,3 +2323,117 @@ Notes to future me:
     screenshot-based UI verification again, the chromium binary is still
     cached locally (`~/.cache/ms-playwright`) so only `npm install -D
     playwright` is needed, not a re-download.
+
+## 2026-08-06 (Web UI, continued — form layout + dashboard)
+Worked on: two follow-up requests from the operator after using the Mantine
+migration live: (1) create-forms (Runtimes/Tokens/Users, plus Settings'
+password form) looked "aligned on the navbar" - naked inputs directly under
+the page heading with no visual boundary; (2) a home dashboard instead of
+landing straight on the Runs list, showing simple stats (queued count,
+succeeded/failed/cancelled/lost since a time window, last login).
+Completed:
+  - **Form layout fix**: wrapped each affected form in a bordered `Paper`
+    (matching `Login.tsx`'s existing card treatment) - `RuntimeList.tsx`,
+    `TokenList.tsx`, `UserList.tsx`, `Settings.tsx`. Purely cosmetic,
+    browser-verified, committed separately before starting the dashboard
+    work.
+  - **Dashboard feasibility check first**: researched what the API could
+    already answer before writing any UI. Verdict: nothing. `GET
+    /api/v1/runs` (and jobs/runtimes) have no `state`/date-range filter and,
+    by design (keyset pagination, ARCHITECTURE.md §4.9), no total count -
+    counting anything means paging through everything client-side. "Last
+    login" wasn't tracked at all - no column, no write path. Took this back
+    to the operator before writing backend code; they chose the full scope
+    (last-login column + migration, new aggregate endpoint, dashboard page)
+    over a client-side-only approximation, with the time window "fixed now,
+    parameterized for later" (24h default, `?since` accepts any Go duration
+    string).
+  - **`principals.last_login_at`** (migration `00010_principal_last_login.sql`):
+    nullable timestamptz, written only by `LoginHandler` on a successful
+    password login - never by token auth (a bearer token authenticates
+    per-request, not via a login event) and never by `WhoAmIHandler` (which
+    would otherwise overwrite "last login" with "this page load" on every
+    request). The trick worth remembering: `GetUserPrincipalByName` (the
+    lookup at the top of `LoginHandler`) reads the column *before*
+    `TouchPrincipalLastLogin` (new query) overwrites it to `now()` - the
+    login response is built from that pre-update read, so what the client
+    sees is genuinely "when you logged in last time," not "just now."
+    `RequireAuth`'s session-cookie path (`GetPrincipalBySessionTokenHash`)
+    reads the column fresh on every request, so during an ongoing session
+    it reflects that session's own login time (already written) rather than
+    the one before it - a minor asymmetry between the login response and
+    later `whoami` calls, accepted deliberately rather than adding a second
+    column to fix a "very simple dashboard" stat with dual bookkeeping.
+    Threaded through `assemblePrincipal` (now nine args, not eight) and both
+    its `RequireAuth` call sites, `store.Principal` (via `sqlc generate`,
+    automatic once the migration landed), `whoamiResponse` (new
+    `lastLoginAt` field, omitted when nil), and `api/openapi.yaml`'s
+    `Principal` schema.
+  - **`GET /api/v1/runs/stats`** (`RunStatsHandler`, gated on the existing
+    `runs:read` permission - no new permission key needed): one query
+    (`GetRunStats`, new in `runs.sql`), one row, five `count(*) FILTER
+    (WHERE ...)` aggregates - `queued` unconditional (live, no time window;
+    "currently queued" doesn't have a "since"), the four terminal states
+    filtered on `finished_at >= since`. Confirmed `finished_at` is set on
+    every terminal run regardless of which of the two cancel paths reached
+    it (`runs_state_timestamps_check` enforces this, and task 2.8's
+    `CancelQueuedRun` sets it same as `FinishRun`) before relying on it here.
+    `?since` is a Go duration string (`time.ParseDuration`), defaulting to
+    24h; malformed or non-positive → 400 via `writeProblem`, matching every
+    other handler's validation style. Registered at
+    `GET /api/v1/runs/stats`, ahead of `GET /api/v1/runs/{id}` in
+    `cmd/api/main.go` for readability - Go 1.22 `ServeMux`'s "most specific
+    wins" rule means registration order doesn't actually matter here, same
+    as the existing `{id}/cancel` and `{id}/logs` routes already coexisting
+    with `{id}`.
+  - **Go client parity** (`internal/client`): `Principal.LastLoginAt
+    *time.Time`, and `RunStats`/`GetRunStats` mirroring the new schema/route -
+    added because every existing endpoint has a hand-written client method
+    (the API→client→CLI→web sequencing Phase 8 established), but no CLI
+    subcommand was built on top of either - this was a web-only ask, and
+    a CLI dashboard command would be scope nobody requested.
+  - **`Dashboard.tsx`** (new, becomes the web SPA's `/`): a KPI row (five
+    `Paper` tiles - Queued/Succeeded/Failed/Cancelled/Lost) plus a "Last
+    login" card. Consulted the dataviz skill before building it, since "stat
+    tile/KPI row" is one of its explicit triggers - its guidance was to keep
+    the big number in normal text color and reserve the status color to a
+    small dot beside the label (never color the digits themselves), which
+    is what shipped: the same `statusColor()` helper already used for
+    `Badge`s elsewhere, applied as an 8px dot, not a fill. Runs moved from
+    `/` to `/runs` (`App.tsx`, `Layout.tsx`'s nav) to make room; grepped for
+    every hardcoded `to="/"` first to confirm nothing else assumed `/` meant
+    the run list.
+Verified live: `go build ./...`, `go vet ./...`, and `go test -short
+./internal/store/... ./internal/api/... ./internal/client/...` all clean (no
+supervisor was running against this Postgres instance, so the store/api
+suite was safe to run - CLAUDE.md's warning about a live supervisor claiming
+throwaway test runs didn't apply). Browser-verified end to end with a
+temporary `playwright` devDependency (removed again afterward, same as last
+session): seeded a fresh admin, logged in once (dashboard showed "This is
+your first login"), signed out, logged back in (dashboard now showed the
+first login's real timestamp, confirming the pre-update-read trick works),
+checked the KPI tiles against real run data (8 queued, 44 succeeded, 25
+cancelled, 0 lost matched what `/runs` showed), and confirmed `/runs` still
+works at its new path with sidebar highlighting correctly on "Runs" rather
+than "Dashboard".
+Broken / unresolved: nothing new. The `react-router-dom` npm audit finding
+noted in the previous session's entry is still unaddressed (still a
+deliberate non-fix - breaking downgrade, out of scope).
+Next action: none specific - this was a self-contained, operator-requested
+follow-up to the Mantine migration. PLAN.md's deferred-work menu (Phase 8's
+"Next action") is unchanged.
+Notes to future me:
+  - The verification admin (`verify-dash`) was revoked via `DELETE
+    /api/v1/users/{id}` before ending the session, same cleanup pattern as
+    every prior session. `web/dist/index.html` was reverted to its tracked
+    placeholder again after `npm run build` runs - same recurring gotcha,
+    third time it's been noted now.
+  - If a future session wants to show `lastLoginAt` for *other* principals
+    (not just "who am I"), remember it is currently only selected by the
+    handful of principal-lookup queries `LoginHandler`/`RequireAuth` use
+    (`GetUserPrincipalByName`, `GetPrincipalByID`, `GetPrincipalByTokenHash`,
+    `GetPrincipalBySessionTokenHash`) - `ListPrincipalsByKind` (the
+    `/users`/`/tokens` list endpoints) was deliberately left alone, so
+    `UserList`/`TokenList` do not currently show it. Adding it there is a
+    small, separate change, not something this session's plumbing already
+    covers.

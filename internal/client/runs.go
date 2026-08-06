@@ -192,6 +192,31 @@ func (c *Client) ListRuns(ctx context.Context, params ListRunsParams) (RunList, 
 	return list, err
 }
 
+// RunStats mirrors the RunStats schema - aggregate counts for the web UI's
+// dashboard, never a list.
+type RunStats struct {
+	Queued    int64     `json:"queued"`
+	Succeeded int64     `json:"succeeded"`
+	Failed    int64     `json:"failed"`
+	Cancelled int64     `json:"cancelled"`
+	Lost      int64     `json:"lost"`
+	Since     time.Time `json:"since"`
+}
+
+// GetRunStats calls GET /api/v1/runs/stats. since, if non-zero, is sent as
+// the ?since query parameter (a Go duration string); the zero value asks
+// for the server's default window.
+func (c *Client) GetRunStats(ctx context.Context, since time.Duration) (RunStats, error) {
+	query := url.Values{}
+	if since > 0 {
+		query.Set("since", since.String())
+	}
+
+	var stats RunStats
+	err := c.do(ctx, http.MethodGet, "/api/v1/runs/stats", requestOptions{query: query}, &stats)
+	return stats, err
+}
+
 // PollRun polls GET /api/v1/runs/{id} every interval until the run reaches a
 // terminal state, ctx is cancelled, or a request fails. onUpdate, if
 // non-nil, is called with every observed run - including the first and the

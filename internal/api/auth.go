@@ -44,7 +44,7 @@ func permissionsFromContext(ctx context.Context) (permissionSet, bool) {
 // auth" commit already learned once), and Go has no structural typing to
 // convert between them generically, so this is the shared middle ground:
 // one conversion each caller supplies its row's fields to.
-func assemblePrincipal(id int64, kind, name string, tokenHash []byte, tokenHint pgtype.Text, passwordHash []byte, createdAt, expiresAt, revokedAt pgtype.Timestamptz) store.Principal {
+func assemblePrincipal(id int64, kind, name string, tokenHash []byte, tokenHint pgtype.Text, passwordHash []byte, createdAt, expiresAt, revokedAt, lastLoginAt pgtype.Timestamptz) store.Principal {
 	return store.Principal{
 		ID:           id,
 		Kind:         kind,
@@ -55,6 +55,7 @@ func assemblePrincipal(id int64, kind, name string, tokenHash []byte, tokenHint 
 		CreatedAt:    createdAt,
 		ExpiresAt:    expiresAt,
 		RevokedAt:    revokedAt,
+		LastLoginAt:  lastLoginAt,
 	}
 }
 
@@ -85,7 +86,7 @@ func (s *APIServer) RequireAuth(next http.HandlerFunc) http.HandlerFunc {
 			// principal in context", not a 401 - this was live and unnoticed
 			// since Phase 7.1-7.5's sqlc regen gave this query the same
 			// distinct-row treatment).
-			principal := assemblePrincipal(row.ID, row.Kind, row.Name, row.TokenHash, row.TokenHint, row.PasswordHash, row.CreatedAt, row.ExpiresAt, row.RevokedAt)
+			principal := assemblePrincipal(row.ID, row.Kind, row.Name, row.TokenHash, row.TokenHint, row.PasswordHash, row.CreatedAt, row.ExpiresAt, row.RevokedAt, row.LastLoginAt)
 
 			perms, err := s.resolvePermissions(r.Context(), principal.ID)
 			if err != nil {
@@ -118,7 +119,7 @@ func (s *APIServer) RequireAuth(next http.HandlerFunc) http.HandlerFunc {
 			// store.Principal type assertion stays honest instead of silently
 			// failing it - that failure mode looks like "no principal in
 			// context" (a 500), not a 401, and is easy to miss in testing.
-			principal := assemblePrincipal(row.ID, row.Kind, row.Name, row.TokenHash, row.TokenHint, row.PasswordHash, row.CreatedAt, row.ExpiresAt, row.RevokedAt)
+			principal := assemblePrincipal(row.ID, row.Kind, row.Name, row.TokenHash, row.TokenHint, row.PasswordHash, row.CreatedAt, row.ExpiresAt, row.RevokedAt, row.LastLoginAt)
 
 			perms, err := s.resolvePermissions(r.Context(), principal.ID)
 			if err != nil {

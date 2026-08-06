@@ -123,6 +123,7 @@ func main() {
 	descendenceMux.HandleFunc("POST /api/v1/auth/logout", descendenceAPI.LogoutHandler)
 	descendenceMux.HandleFunc("POST /api/v1/runs", descendenceAPI.RequireAuth(descendenceAPI.RequirePermission("runs:trigger", descendenceAPI.CreateRunHandler)))
 	descendenceMux.HandleFunc("GET /api/v1/runs/{id}", descendenceAPI.RequireAuth(descendenceAPI.RequirePermission("runs:read", descendenceAPI.GetRunHandler)))
+	descendenceMux.HandleFunc("GET /api/v1/runs/stats", descendenceAPI.RequireAuth(descendenceAPI.RequirePermission("runs:read", descendenceAPI.RunStatsHandler)))
 	descendenceMux.HandleFunc("GET /api/v1/runs", descendenceAPI.RequireAuth(descendenceAPI.RequirePermission("runs:read", descendenceAPI.ListRunsHandler)))
 	descendenceMux.HandleFunc("GET /api/v1/runs/{id}/logs", descendenceAPI.RequireAuth(descendenceAPI.RequirePermission("runs:read", descendenceAPI.GetRunLogsHandler)))
 	descendenceMux.HandleFunc("POST /api/v1/runs/{id}/cancel", descendenceAPI.RequireAuth(descendenceAPI.RequirePermission("runs:cancel", descendenceAPI.CancelRunHandler)))
