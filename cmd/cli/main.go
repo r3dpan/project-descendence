@@ -32,6 +32,9 @@ Commands:
   repos   Manage the git repositories that job definitions live in
   runtime List, create and build runtimes; prune their images
   schedule List, create, update, delete and trigger a job's schedules
+  user    List, create users, reassign roles, revoke access; change your password
+  token   List, create and revoke bearer tokens
+  role    Show the built-in roles and their permissions
   whoami  Show which principal the configured token resolves to
   config  Show where the URL and token are being read from
   ui      Open the interactive application explicitly
@@ -125,6 +128,12 @@ func run() int {
 		return cmdRuntime(ctx, c, rest)
 	case "schedule":
 		return cmdSchedule(ctx, c, rest)
+	case "user":
+		return cmdUser(ctx, c, rest)
+	case "token":
+		return cmdToken(ctx, c, rest)
+	case "role":
+		return cmdRole(ctx, c, rest)
 	case "whoami":
 		return cmdWhoAmI(ctx, c)
 	case "config":
