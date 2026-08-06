@@ -1,9 +1,21 @@
 import { useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
-import { Alert, Badge, Button, Code, Group, Loader, Paper, Stack, Text, Title } from '@mantine/core'
+import { Alert, Button, Code, Group, Loader, Paper, Stack, Text } from '@mantine/core'
 import { buildRuntime, getRuntime, TERMINAL_BUILD_STATUSES, type Runtime } from '../api/runtimes'
 import { APIError } from '../api/client'
-import { statusColor } from '../statusColor'
+import PageHeader from '../components/PageHeader'
+import StatusTag from '../components/StatusTag'
+
+function Row({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <Group justify="space-between" gap="md" align="flex-start" wrap="nowrap">
+      <Text size="13px" c="dimmed" w={150} style={{ flex: 'none' }}>
+        {label}
+      </Text>
+      <div style={{ flex: 1, minWidth: 0 }}>{children}</div>
+    </Group>
+  )
+}
 
 export default function RuntimeDetail() {
   const { id } = useParams<{ id: string }>()
@@ -46,83 +58,74 @@ export default function RuntimeDetail() {
     }
   }
 
-  if (error) return <Alert color="red" role="alert">{error}</Alert>
-  if (!runtime) return <Loader />
+  if (error)
+    return (
+      <PageHeader title="Runtime" backTo="/runtimes" backLabel="Runtimes">
+        <Alert color="red" role="alert">
+          {error}
+        </Alert>
+      </PageHeader>
+    )
+  if (!runtime)
+    return (
+      <PageHeader title="Runtime" backTo="/runtimes" backLabel="Runtimes">
+        <Loader />
+      </PageHeader>
+    )
 
   const rebuildDisabled = rebuilding || runtime.buildStatus === 'pending' || runtime.buildStatus === 'building'
+  const rebuildLabel =
+    rebuilding || runtime.buildStatus === 'building' || runtime.buildStatus === 'pending' ? 'Building…' : 'Rebuild'
 
   return (
-    <>
-      <Title order={2} mb="md">
-        {runtime.name}
-      </Title>
-      <Paper withBorder p="md" maw={640}>
-        <Stack gap="xs">
-          <Group>
-            <Text fw={500} w={160}>
-              Language
-            </Text>
-            <Text>{runtime.lang}</Text>
-          </Group>
-          <Group>
-            <Text fw={500} w={160}>
-              Base image
-            </Text>
-            <Text>{runtime.baseImage}</Text>
-          </Group>
-          <Group>
-            <Text fw={500} w={160}>
-              System packages
-            </Text>
-            <Text>{runtime.sysPackages.length > 0 ? runtime.sysPackages.join(', ') : '(none)'}</Text>
-          </Group>
-          <Group>
-            <Text fw={500} w={160}>
-              Build status
-            </Text>
-            <Badge color={statusColor(runtime.buildStatus)}>{runtime.buildStatus}</Badge>
-          </Group>
-          {runtime.buildError && (
-            <Group align="flex-start">
-              <Text fw={500} w={160}>
-                Build error
-              </Text>
-              <Text c="red">{runtime.buildError}</Text>
-            </Group>
-          )}
-          <Group>
-            <Text fw={500} w={160}>
-              Image digest
-            </Text>
-            <Code>{runtime.imageDigest ?? '(not built)'}</Code>
-          </Group>
-          {runtime.imagePruned && (
-            <Group>
-              <Text fw={500} w={160}>
-                Image pruned
-              </Text>
-              <Text>Yes - a job naming this runtime cannot run until it is rebuilt.</Text>
-            </Group>
-          )}
-          <Group align="flex-start">
-            <Text fw={500} w={160}>
-              Language manifest
-            </Text>
-            <Code block>{runtime.langManifest ?? '(none)'}</Code>
-          </Group>
-        </Stack>
-      </Paper>
+    <PageHeader title={runtime.name} subtitle="Runtime detail" backTo="/runtimes" backLabel="Runtimes">
+      <Stack gap="md" maw={640}>
+        <Paper p="md" radius="md" bg="dark.6">
+          <Stack gap="10px">
+            <Row label="Language">
+              <Text size="13px">{runtime.lang}</Text>
+            </Row>
+            <Row label="Base image">
+              <Text size="13px">{runtime.baseImage}</Text>
+            </Row>
+            <Row label="System packages">
+              <Text size="13px">{runtime.sysPackages.length > 0 ? runtime.sysPackages.join(', ') : '(none)'}</Text>
+            </Row>
+            <Row label="Build status">
+              <StatusTag status={runtime.buildStatus} />
+            </Row>
+            {runtime.buildError && (
+              <Row label="Build error">
+                <Text size="13px" c="red.3">
+                  {runtime.buildError}
+                </Text>
+              </Row>
+            )}
+            <Row label="Image digest">
+              <Code style={{ fontSize: '12.5px' }}>{runtime.imageDigest ?? '(not built)'}</Code>
+            </Row>
+            {runtime.imagePruned && (
+              <Row label="Image pruned">
+                <Text size="13px">Yes — a job naming this runtime cannot run until it is rebuilt.</Text>
+              </Row>
+            )}
+            <Row label="Language manifest">
+              <Code block style={{ fontSize: '12px', whiteSpace: 'pre-wrap' }}>
+                {runtime.langManifest ?? '(none)'}
+              </Code>
+            </Row>
+          </Stack>
+        </Paper>
 
-      <Button mt="md" onClick={handleRebuild} disabled={rebuildDisabled}>
-        {rebuilding || runtime.buildStatus === 'building' || runtime.buildStatus === 'pending'
-          ? 'Building…'
-          : 'Rebuild'}
-      </Button>
-      {rebuildError && (
-        <Alert color="red" role="alert" mt="md">
-          {rebuildError}
-        </Alert>
-      )}
-    </>
+        <Button w="fit-content" onClick={handleRebuild} disabled={rebuildDisabled}>
+          {rebuildLabel}
+        </Button>
+        {rebuildError && (
+          <Alert color="red" role="alert">
+            {rebuildError}
+          </Alert>
+        )}
+      </Stack>
+    </PageHeader>
   )
 }

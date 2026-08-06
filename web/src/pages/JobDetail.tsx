@@ -1,9 +1,12 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { Alert, Button, Fieldset, Group, Loader, Text, Title } from '@mantine/core'
+import { Alert, Button, Group, Loader, Paper, Stack, Text } from '@mantine/core'
 import { createJobRun, getJob, patchJob, type Job } from '../api/jobs'
 import { APIError } from '../api/client'
 import { ParamField } from '../paramField'
+import PageHeader from '../components/PageHeader'
+import StatusTag from '../components/StatusTag'
+import FadeRule from '../components/FadeRule'
 
 export default function JobDetail() {
   const { id } = useParams<{ id: string }>()
@@ -79,44 +82,71 @@ export default function JobDetail() {
     }
   }
 
-  if (loadError) return <Alert color="red" role="alert">{loadError}</Alert>
-  if (!job) return <Loader />
+  if (loadError)
+    return (
+      <PageHeader title="Job" backTo="/jobs" backLabel="Jobs">
+        <Alert color="red" role="alert">
+          {loadError}
+        </Alert>
+      </PageHeader>
+    )
+  if (!job)
+    return (
+      <PageHeader title="Job" backTo="/jobs" backLabel="Jobs">
+        <Loader />
+      </PageHeader>
+    )
 
   return (
-    <>
-      <Title order={2} mb="xs">
-        {job.name}
-      </Title>
-      {job.description && <Text mb="md">{job.description}</Text>}
-      {job.deletedAt && (
-        <Alert color="red" role="alert" mb="md">
-          This job's manifest has been removed from the repository and can no longer be run.
-        </Alert>
-      )}
-      {!job.enabled && !job.deletedAt && (
-        <Alert color="orange" role="alert" mb="md">
-          This job is disabled and cannot be run until it is re-enabled.
-        </Alert>
-      )}
-
-      {!job.deletedAt && (
-        <Group mb="md">
-          <Button size="xs" variant="light" onClick={handleToggle} disabled={toggling}>
-            {toggling ? 'Updating…' : job.enabled ? 'Disable job' : 'Enable job'}
-          </Button>
-          <Text component={Link} to={`/jobs/${job.id}/edit`} size="sm">
-            Edit manifest
+    <PageHeader title={job.name} subtitle="Job detail" backTo="/jobs" backLabel="Jobs">
+      <Stack gap="md" maw={480}>
+        <Group gap="sm">
+          <StatusTag status={job.enabled ? 'enabled' : 'disabled'} label={job.enabled ? 'Enabled' : 'Disabled'} />
+        </Group>
+        {job.description && (
+          <Text c="dimmed" mt={-8}>
+            {job.description}
           </Text>
-          {toggleError && (
-            <Text role="alert" c="red" size="sm">
-              {toggleError}
+        )}
+
+        {job.deletedAt && (
+          <Alert color="red" role="alert">
+            This job's manifest has been removed from the repository and can no longer be run.
+          </Alert>
+        )}
+        {!job.enabled && !job.deletedAt && (
+          <Alert color="orange" role="alert">
+            This job is disabled and cannot be run until it is re-enabled.
+          </Alert>
+        )}
+
+        {!job.deletedAt && (
+          <Group gap="sm">
+            <Button size="xs" variant="default" onClick={handleToggle} disabled={toggling}>
+              {toggling ? 'Updating…' : job.enabled ? 'Disable' : 'Enable'}
+            </Button>
+            <Button size="xs" variant="subtle" component={Link} to={`/jobs/${job.id}/edit`}>
+              Edit manifest
+            </Button>
+            {toggleError && (
+              <Text role="alert" c="red" size="sm">
+                {toggleError}
+              </Text>
+            )}
+          </Group>
+        )}
+
+        <FadeRule />
+
+        <Paper p="md" radius="md" bg="dark.6" component="form" onSubmit={handleSubmit}>
+          <Text size="10px" tt="uppercase" c="accent.4" fw={600} style={{ letterSpacing: '.1em' }} mb="xs">
+            Parameters
+          </Text>
+          {job.params.length === 0 && (
+            <Text size="13px" c="dimmed">
+              This job has no declared parameters.
             </Text>
           )}
-        </Group>
-      )}
-
-      <form onSubmit={handleSubmit}>
-        <Fieldset legend="Parameters" maw={480}>
           {job.params.map((param) => (
             <ParamField
               key={param.name}
@@ -125,18 +155,18 @@ export default function JobDetail() {
               onChange={(value) => setValues((prev) => ({ ...prev, [param.name]: value }))}
             />
           ))}
-        </Fieldset>
 
-        {error && (
-          <Alert color="red" role="alert" mt="md">
-            {error}
-          </Alert>
-        )}
+          {error && (
+            <Alert color="red" role="alert" mt="md">
+              {error}
+            </Alert>
+          )}
 
-        <Button type="submit" mt="md" loading={submitting} disabled={!job.enabled || !!job.deletedAt}>
-          {submitting ? 'Triggering…' : 'Run'}
-        </Button>
-      </form>
-    </>
+          <Button type="submit" mt="md" loading={submitting} disabled={!job.enabled || !!job.deletedAt}>
+            Run
+          </Button>
+        </Paper>
+      </Stack>
+    </PageHeader>
   )
 }

@@ -1,55 +1,20 @@
-import { useEffect, useState, type ReactNode } from 'react'
-import { Alert, Group, Paper, SimpleGrid, Text, Title } from '@mantine/core'
+import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
+import { Alert, Group, Paper, Stack, Text } from '@mantine/core'
+import { IconArrowRight } from '@tabler/icons-react'
 import { useAuth } from '../auth'
-import { getRunStats, type RunStats } from '../api/runs'
+import { getRunStats, listRuns, type Run, type RunStats } from '../api/runs'
 import { getSystemStatus, type SystemStatus } from '../api/system'
 import { APIError } from '../api/client'
 import { statusColor } from '../statusColor'
+import PageHeader from '../components/PageHeader'
+import StatTileGrid, { type Tile } from '../components/StatTile'
+import StatusTag from '../components/StatusTag'
 
 // 24h, matching the server's own default window (RunStatsHandler) - kept in
 // sync deliberately rather than omitting `since` and trusting the server's
 // default, so the window shown in the "since" label is never a guess.
 const STATS_WINDOW = '24h'
-
-interface Tile {
-  label: string
-  value: ReactNode
-  color: string
-  caption?: string
-}
-
-function TileGrid({ tiles }: { tiles: Tile[] }) {
-  return (
-    <SimpleGrid cols={{ base: 2, sm: 3, lg: 5 }} mb="lg">
-      {tiles.map((tile) => (
-        <Paper key={tile.label} withBorder p="md">
-          <Group gap="xs" mb={4}>
-            <span
-              style={{
-                width: 8,
-                height: 8,
-                borderRadius: '50%',
-                background: `var(--mantine-color-${tile.color}-6)`,
-                display: 'inline-block',
-              }}
-            />
-            <Text size="sm" c="dimmed">
-              {tile.label}
-            </Text>
-          </Group>
-          <Text size="28px" fw={600} lh={1.1}>
-            {tile.value}
-          </Text>
-          {tile.caption && (
-            <Text size="xs" c="dimmed" mt={2}>
-              {tile.caption}
-            </Text>
-          )}
-        </Paper>
-      ))}
-    </SimpleGrid>
-  )
-}
 
 export default function Dashboard() {
   const { principal } = useAuth()
@@ -57,6 +22,8 @@ export default function Dashboard() {
   const [statsError, setStatsError] = useState<string | null>(null)
   const [status, setStatus] = useState<SystemStatus | null>(null)
   const [statusError, setStatusError] = useState<string | null>(null)
+  const [recentRuns, setRecentRuns] = useState<Run[]>([])
+  const [recentError, setRecentError] = useState<string | null>(null)
 
   useEffect(() => {
     getRunStats(STATS_WINDOW)
@@ -68,6 +35,12 @@ export default function Dashboard() {
     getSystemStatus()
       .then(setStatus)
       .catch((err) => setStatusError(err instanceof APIError ? err.message : 'Failed loading system status'))
+  }, [])
+
+  useEffect(() => {
+    listRuns({ limit: 5 })
+      .then((page) => setRecentRuns(page.items))
+      .catch((err) => setRecentError(err instanceof APIError ? err.message : 'Failed loading recent runs'))
   }, [])
 
   const statsTiles: Tile[] = stats
@@ -104,35 +77,102 @@ export default function Dashboard() {
     : []
 
   return (
-    <>
-      <Title order={2} mb="md">
-        Dashboard
-      </Title>
-      {statsError && (
-        <Alert color="red" role="alert" mb="md">
-          {statsError}
-        </Alert>
-      )}
-      <TileGrid tiles={statsTiles} />
+    <PageHeader
+      title="Dashboard"
+      subtitle={
+        principal?.lastLoginAt
+          ? `Last login ${new Date(principal.lastLoginAt).toLocaleString()}`
+          : 'Overview of your automations'
+      }
+    >
+      <Stack gap="xl" maw={1080}>
+        <div>
+          <Text size="11px" tt="uppercase" c="dimmed" fw={600} style={{ letterSpacing: '.08em' }} mb="sm">
+            Run activity
+          </Text>
+          {statsError && (
+            <Alert color="red" role="alert" mb="md">
+              {statsError}
+            </Alert>
+          )}
+          <StatTileGrid tiles={statsTiles} />
+        </div>
 
-      <Title order={3} mb="md">
-        System status
-      </Title>
-      {statusError && (
-        <Alert color="red" role="alert" mb="md">
-          {statusError}
-        </Alert>
-      )}
-      <TileGrid tiles={statusTiles} />
+        <div>
+          <Text size="11px" tt="uppercase" c="dimmed" fw={600} style={{ letterSpacing: '.08em' }} mb="sm">
+            System status
+          </Text>
+          {statusError && (
+            <Alert color="red" role="alert" mb="md">
+              {statusError}
+            </Alert>
+          )}
+          <StatTileGrid tiles={statusTiles} cols={3} />
+        </div>
 
-      <Paper withBorder p="md" maw={360}>
-        <Text size="sm" c="dimmed">
-          Last login
-        </Text>
-        <Text>
-          {principal?.lastLoginAt ? new Date(principal.lastLoginAt).toLocaleString() : 'This is your first login'}
-        </Text>
-      </Paper>
-    </>
+        <Paper p="md" radius="md" bg="dark.6">
+          <Group justify="space-between" mb="sm">
+            <Text fw={500} size="17px">
+              Recent activity
+            </Text>
+            <Text
+              component={Link}
+              to="/runs"
+              size="sm"
+              c="accent.4"
+              display="flex"
+              style={{ alignItems: 'center', gap: 4, textDecoration: 'none' }}
+            >
+              View all runs
+              <IconArrowRight size={12} />
+            </Text>
+          </Group>
+          {recentError && (
+            <Alert color="red" role="alert" mb="md">
+              {recentError}
+            </Alert>
+          )}
+          {recentRuns.length === 0 && !recentError && (
+            <Text c="dimmed" size="sm">
+              No runs yet.
+            </Text>
+          )}
+          <Stack gap={0}>
+            {recentRuns.map((run) => (
+              <Link
+                key={run.id}
+                to={`/runs/${run.id}`}
+                style={{ textDecoration: 'none', color: 'inherit' }}
+              >
+                <Group
+                  gap="md"
+                  py={10}
+                  px={4}
+                  wrap="nowrap"
+                  style={{ borderBottom: '1px solid var(--mantine-color-dark-4)' }}
+                >
+                  <StatusTag status={run.state} />
+                  <Text size="13.5px" fw={500} miw={150} truncate>
+                    {run.imageRef}
+                  </Text>
+                  <Text size="12.5px" c="dimmed" style={{ flex: 1 }}>
+                    #{run.id}
+                  </Text>
+                  <Text size="12.5px" c="dimmed">
+                    {new Date(run.queuedAt).toLocaleString()}
+                  </Text>
+                </Group>
+              </Link>
+            ))}
+          </Stack>
+        </Paper>
+      </Stack>
+    </PageHeader>
   )
 }
+
+// Note: the mockup also shows a "Run volume, last 7 days" bar chart on this
+// row. There is no day-bucketed run-count endpoint to drive it (RunStats is
+// a live/24h snapshot, not a time series) and this rework is presentation-
+// only - adding one is real backend work, out of scope here. Omitted rather
+// than faked with placeholder numbers.

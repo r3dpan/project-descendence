@@ -1,3 +1,30 @@
-body {
+html,
+body,
+#root {
+  height: 100%;
   margin: 0;
+}
+
+/* Nocturne signature: status tags for in-progress states (running/building)
+   pulse gently rather than sitting static - used by StatusTag.tsx. */
+@keyframes pulseTag {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--mantine-color-dark-5);
+  border-radius: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
 }

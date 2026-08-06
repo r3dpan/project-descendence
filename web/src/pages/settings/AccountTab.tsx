@@ -1,4 +1,4 @@
-import { Stack, Text, Title } from '@mantine/core'
+import { Paper, Stack, Text } from '@mantine/core'
 import { useAuth } from '../../auth'
 
 // Read-only identity info - the one Settings tab every authenticated user
@@ -9,21 +9,27 @@ export default function AccountTab() {
   const { principal } = useAuth()
 
   return (
-    <>
-      <Title order={3} mb="md">
-        Account
-      </Title>
+    <Paper p="md" radius="md" bg="dark.6" maw={440}>
       <Stack gap="xs">
-        <Text>
-          <strong>Name:</strong> {principal?.name}
+        <Text size="sm">
+          <Text component="span" c="dimmed">
+            Name{' '}
+          </Text>
+          {principal?.name}
         </Text>
-        <Text>
-          <strong>Kind:</strong> {principal?.kind}
+        <Text size="sm">
+          <Text component="span" c="dimmed">
+            Kind{' '}
+          </Text>
+          {principal?.kind}
         </Text>
-        <Text>
-          <strong>Role:</strong> {principal?.role || '(none)'}
+        <Text size="sm">
+          <Text component="span" c="dimmed">
+            Role{' '}
+          </Text>
+          {principal?.role || '(none)'}
         </Text>
       </Stack>
-    </>
+    </Paper>
   )
 }

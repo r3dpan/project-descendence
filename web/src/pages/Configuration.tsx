@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react'
-import { Alert, Button, Paper, Stack, Text, TextInput, Title } from '@mantine/core'
+import { Alert, Button, Paper, Stack, Text, TextInput } from '@mantine/core'
 import { notifications } from '@mantine/notifications'
 import { getConfig, putConfig } from '../api/config'
 import { APIError } from '../api/client'
@@ -46,52 +46,47 @@ export default function Configuration() {
   }
 
   return (
-    <>
-      <Title order={2} mb="md">
-        Configuration
-      </Title>
+    <Stack gap="md">
       {loadError && (
-        <Alert color="red" role="alert" mb="md">
+        <Alert color="red" role="alert">
           {loadError}
         </Alert>
       )}
       {saved && (
-        <Alert color="yellow" role="alert" mb="md">
+        <Alert color="yellow" role="alert">
           Saved. Restart the api and supervisor processes to apply these changes.
         </Alert>
       )}
-      <Paper withBorder p="md" maw={480}>
-        <form onSubmit={handleSubmit}>
-          <Stack>
-            <TextInput
-              label="Database URL"
-              value={databaseUrl}
-              onChange={(e) => setDatabaseUrl(e.target.value)}
-              disabled={loading}
-              required
-            />
-            <Text size="xs" c="dimmed">
-              Shown with the password masked as "***". Leave it as-is to keep the current password, or
-              overwrite the whole value to change it.
-            </Text>
-            <TextInput
-              label="Podman socket path"
-              value={podmanSocket}
-              onChange={(e) => setPodmanSocket(e.target.value)}
-              disabled={loading}
-              required
-            />
-            {error && (
-              <Alert color="red" role="alert">
-                {error}
-              </Alert>
-            )}
-            <Button type="submit" loading={saving}>
-              {saving ? 'Saving…' : 'Save'}
-            </Button>
-          </Stack>
-        </form>
+      <Paper p="md" radius="md" bg="dark.6" maw={520} component="form" onSubmit={handleSubmit}>
+        <Stack gap="sm">
+          <TextInput
+            label="Database URL"
+            value={databaseUrl}
+            onChange={(e) => setDatabaseUrl(e.target.value)}
+            disabled={loading}
+            required
+          />
+          <Text size="xs" c="dimmed">
+            Shown with the password masked as "***". Leave it as-is to keep the current password, or
+            overwrite the whole value to change it.
+          </Text>
+          <TextInput
+            label="Podman socket path"
+            value={podmanSocket}
+            onChange={(e) => setPodmanSocket(e.target.value)}
+            disabled={loading}
+            required
+          />
+          {error && (
+            <Alert color="red" role="alert">
+              {error}
+            </Alert>
+          )}
+          <Button type="submit" w="fit-content" loading={saving}>
+            Save configuration
+          </Button>
+        </Stack>
       </Paper>
-    </>
+    </Stack>
   )
 }

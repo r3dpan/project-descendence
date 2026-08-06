@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { listUsers, type User } from '../api/users'
 import { APIError } from '../api/client'
-import { Alert, Badge, LoadingOverlay, Table, Text, Title } from '@mantine/core'
+import { Alert, Badge, LoadingOverlay, Table, Text } from '@mantine/core'
 
 // There is no "New user" form (Phase 9, task 9.11): a user principal is
 // created by its first OIDC login (JIT-provisioned with no role, task 9.6),
@@ -22,10 +22,7 @@ export default function UserList() {
   }, [])
 
   return (
-    <>
-      <Title order={2} mb="md">
-        Users
-      </Title>
+    <div>
       {error && (
         <Alert color="red" role="alert" mb="md">
           {error}
@@ -33,25 +30,35 @@ export default function UserList() {
       )}
       <Table.ScrollContainer minWidth={500} pos="relative">
         <LoadingOverlay visible={loading && users.length === 0} />
-        <Table highlightOnHover>
+        <Table verticalSpacing="sm">
           <Table.Thead>
             <Table.Tr>
-              <Table.Th>Name</Table.Th>
+              <Table.Th>Username</Table.Th>
               <Table.Th>Role</Table.Th>
               <Table.Th>Created</Table.Th>
-              <Table.Th>Status</Table.Th>
+              <Table.Th></Table.Th>
             </Table.Tr>
           </Table.Thead>
           <Table.Tbody>
             {users.map((u) => (
               <Table.Tr key={u.id}>
                 <Table.Td>
-                  <Link to={`/settings/users/${u.id}`}>{u.name}</Link>
+                  <Text component={Link} to={`/settings/users/${u.id}`} fw={500} c="var(--mantine-color-text)" style={{ textDecoration: 'none' }}>
+                    {u.name}
+                  </Text>
                 </Table.Td>
-                <Table.Td>{u.role || '(none)'}</Table.Td>
-                <Table.Td>{u.createdAt}</Table.Td>
                 <Table.Td>
-                  <Badge color={u.revokedAt ? 'red' : 'green'}>{u.revokedAt ? `revoked ${u.revokedAt}` : 'active'}</Badge>
+                  <Badge variant="light" color="gray" tt="none">
+                    {u.role || '(none)'}
+                  </Badge>
+                </Table.Td>
+                <Table.Td>
+                  <Text c="dimmed">{u.createdAt}</Text>
+                </Table.Td>
+                <Table.Td style={{ textAlign: 'right' }}>
+                  <Badge variant={u.revokedAt ? 'filled' : 'light'} color={u.revokedAt ? 'dark' : 'accent'} tt="none">
+                    {u.revokedAt ? `revoked ${u.revokedAt}` : 'active'}
+                  </Badge>
                 </Table.Td>
               </Table.Tr>
             ))}
@@ -59,6 +66,6 @@ export default function UserList() {
         </Table>
       </Table.ScrollContainer>
       {!loading && users.length === 0 && <Text c="dimmed">No users yet.</Text>}
-    </>
+    </div>
   )
 }

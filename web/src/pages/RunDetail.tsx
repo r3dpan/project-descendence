@@ -1,9 +1,19 @@
 import { useEffect, useRef, useState } from 'react'
-import { useParams } from 'react-router-dom'
-import { Alert, Badge, Code, Group, Loader, Paper, ScrollArea, Stack, Text, Title } from '@mantine/core'
+import { Link, useParams } from 'react-router-dom'
+import { Alert, Code, Group, Loader, Paper, SimpleGrid, Stack, Text } from '@mantine/core'
 import { getRun, isTerminal, runLogsStreamURL, type Run, type RunLogLine } from '../api/runs'
 import { APIError } from '../api/client'
-import { statusColor } from '../statusColor'
+import PageHeader from '../components/PageHeader'
+import StatusTag from '../components/StatusTag'
+
+function formatDuration(startedAt?: string | null, finishedAt?: string | null): string {
+  if (!startedAt) return '—'
+  const end = finishedAt ? new Date(finishedAt) : new Date()
+  const seconds = Math.max(0, Math.round((end.getTime() - new Date(startedAt).getTime()) / 1000))
+  const m = Math.floor(seconds / 60)
+  const s = seconds % 60
+  return m > 0 ? `${m}m ${s}s` : `${s}s`
+}
 
 export default function RunDetail() {
   const { id } = useParams<{ id: string }>()
@@ -54,60 +64,120 @@ export default function RunDetail() {
     logRef.current?.scrollTo({ top: logRef.current.scrollHeight })
   }, [lines])
 
-  if (error) return <Alert color="red" role="alert">{error}</Alert>
-  if (!run) return <Loader />
+  if (error)
+    return (
+      <PageHeader title="Run" backTo="/runs" backLabel="Runs">
+        <Alert color="red" role="alert">
+          {error}
+        </Alert>
+      </PageHeader>
+    )
+  if (!run)
+    return (
+      <PageHeader title="Run" backTo="/runs" backLabel="Runs">
+        <Loader />
+      </PageHeader>
+    )
 
   return (
-    <>
-      <Title order={2} mb="md">
-        Run {run.id}
-      </Title>
-      <Paper withBorder p="md" maw={640} mb="lg">
-        <Stack gap="xs">
-          <Group>
-            <Text fw={500} w={120}>
-              State
+    <PageHeader title={`Run #${run.id}`} subtitle={run.imageRef} backTo="/runs" backLabel="Runs">
+      <Stack gap="lg" maw={1080}>
+        <Group gap="sm">
+          <StatusTag status={run.state} />
+          <Text
+            component={Link}
+            to={`/runs/${run.id}`}
+            c="accent.4"
+            fw={500}
+            style={{ textDecoration: 'none' }}
+          >
+            {run.imageRef}
+          </Text>
+        </Group>
+
+        <SimpleGrid cols={{ base: 2, sm: 4 }}>
+          <Paper p="sm" radius="md" bg="dark.6">
+            <Text size="10px" tt="uppercase" c="accent.4" fw={600} style={{ letterSpacing: '.1em' }} mb={2}>
+              Started
             </Text>
-            <Badge color={statusColor(run.state)}>{run.state}</Badge>
-          </Group>
-          <Group>
-            <Text fw={500} w={120}>
-              Image
+            <Text size="13px">{run.startedAt ? new Date(run.startedAt).toLocaleString() : 'Not started'}</Text>
+          </Paper>
+          <Paper p="sm" radius="md" bg="dark.6">
+            <Text size="10px" tt="uppercase" c="accent.4" fw={600} style={{ letterSpacing: '.1em' }} mb={2}>
+              Duration
             </Text>
-            <Text>{run.imageRef}</Text>
-          </Group>
-          <Group align="flex-start">
-            <Text fw={500} w={120}>
-              Argv
+            <Text size="13px">{formatDuration(run.startedAt, run.finishedAt)}</Text>
+          </Paper>
+          <Paper p="sm" radius="md" bg="dark.6">
+            <Text size="10px" tt="uppercase" c="accent.4" fw={600} style={{ letterSpacing: '.1em' }} mb={2}>
+              Exit code
             </Text>
-            <Code>{run.argv.join(' ')}</Code>
-          </Group>
-          {run.exitCode !== null && run.exitCode !== undefined && (
-            <Group>
-              <Text fw={500} w={120}>
-                Exit code
+            <Text size="13px">{run.exitCode ?? '—'}</Text>
+          </Paper>
+          <Paper p="sm" radius="md" bg="dark.6">
+            <Text size="10px" tt="uppercase" c="accent.4" fw={600} style={{ letterSpacing: '.1em' }} mb={2}>
+              Timeout
+            </Text>
+            <Text size="13px">{run.timeoutSeconds}s</Text>
+          </Paper>
+        </SimpleGrid>
+
+        <Paper p="md" radius="md" bg="dark.6">
+          <Stack gap="xs">
+            <Group align="flex-start" gap="md">
+              <Text fw={500} w={120} size="sm">
+                Argv
               </Text>
-              <Text>{run.exitCode}</Text>
+              <Code>{run.argv.join(' ')}</Code>
             </Group>
-          )}
-          {run.failureReason && (
-            <Group align="flex-start">
-              <Text fw={500} w={120}>
-                Failure reason
+            {run.failureReason && (
+              <Group align="flex-start" gap="md">
+                <Text fw={500} w={120} size="sm">
+                  Failure reason
+                </Text>
+                <Text size="sm">{run.failureReason}</Text>
+              </Group>
+            )}
+            {run.cancelRequestedAt && (
+              <Group align="flex-start" gap="md">
+                <Text fw={500} w={120} size="sm">
+                  Cancel requested
+                </Text>
+                <Text size="sm">{new Date(run.cancelRequestedAt).toLocaleString()}</Text>
+              </Group>
+            )}
+          </Stack>
+        </Paper>
+
+        <Paper radius="md" bg="dark.6" style={{ overflow: 'hidden' }}>
+          <Group justify="space-between" px="md" py="sm" style={{ borderBottom: '1px solid var(--mantine-color-dark-4)' }}>
+            <Text fw={500} size="17px">
+              Logs
+            </Text>
+          </Group>
+          <div
+            ref={logRef}
+            style={{
+              padding: 'var(--mantine-spacing-md)',
+              fontFamily: 'var(--mantine-font-family-monospace)',
+              fontSize: '12.5px',
+              lineHeight: 1.9,
+              maxHeight: 360,
+              overflowY: 'auto',
+              whiteSpace: 'pre-wrap',
+            }}
+          >
+            {lines.length === 0 && (
+              <Text c="dimmed" size="sm">
+                No log output yet.
               </Text>
-              <Text>{run.failureReason}</Text>
-            </Group>
-          )}
-        </Stack>
-      </Paper>
-      <Title order={3} mb="sm">
-        Logs
-      </Title>
-      <ScrollArea.Autosize mah="60vh" viewportRef={logRef} type="auto">
-        <Code block style={{ whiteSpace: 'pre-wrap' }}>
-          {lines.map((line) => `${line.text}\n`).join('')}
-        </Code>
-      </ScrollArea.Autosize>
-    </>
+            )}
+            {lines.map((line, i) => (
+              <div key={i}>{line.text}</div>
+            ))}
+          </div>
+        </Paper>
+      </Stack>
+    </PageHeader>
   )
 }

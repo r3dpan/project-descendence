@@ -11,10 +11,12 @@
     "gen:api": "openapi-typescript ../api/openapi.yaml -o src/api/schema.ts"
   },
   "dependencies": {
+    "@fontsource/inter": "^5.3.0",
     "@mantine/core": "^9.5.1",
     "@mantine/form": "^9.5.1",
     "@mantine/hooks": "^9.5.1",
     "@mantine/notifications": "^9.5.1",
+    "@tabler/icons-react": "^3.46.0",
     "js-yaml": "^5.2.3",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",

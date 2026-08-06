@@ -5,7 +5,8 @@ import { createRepoFile, getRepoFile, listRepos } from '../api/repos'
 import { APIError } from '../api/client'
 import { parseManifestPreview } from '../manifestPreview'
 import { ParamField } from '../paramField'
-import { Alert, Button, Fieldset, Grid, Loader, Text, TextInput, Textarea, Title } from '@mantine/core'
+import { Alert, Button, Fieldset, Grid, Loader, Paper, Stack, Text, TextInput, Textarea } from '@mantine/core'
+import PageHeader from '../components/PageHeader'
 
 const PLACEHOLDER = `apiVersion: descendence/v1
 name: my-job
@@ -120,18 +121,29 @@ export default function ManifestEditor({ mode }: ManifestEditorProps) {
     }
   }
 
-  if (loading) return <Loader />
-  if (loadError) return <Alert color="red" role="alert">{loadError}</Alert>
+  const title = mode === 'create' ? 'New job' : 'Edit manifest'
+  const backTo = mode === 'edit' && id ? `/jobs/${id}` : '/jobs'
+
+  if (loading)
+    return (
+      <PageHeader title={title} backTo={backTo} backLabel={mode === 'edit' ? 'Job' : 'Jobs'}>
+        <Loader />
+      </PageHeader>
+    )
+  if (loadError)
+    return (
+      <PageHeader title={title} backTo={backTo} backLabel={mode === 'edit' ? 'Job' : 'Jobs'}>
+        <Alert color="red" role="alert">
+          {loadError}
+        </Alert>
+      </PageHeader>
+    )
 
   return (
-    <>
-      <Title order={2} mb="md">
-        {mode === 'create' ? 'New job' : 'Edit manifest'}
-      </Title>
-
-      <Grid>
+    <PageHeader title={title} backTo={backTo} backLabel={mode === 'edit' ? 'Job' : 'Jobs'}>
+      <Grid maw={1080}>
         <Grid.Col span={{ base: 12, md: 6 }}>
-          <form onSubmit={handleSubmit}>
+          <Stack gap="sm" component="form" onSubmit={handleSubmit}>
             <TextInput
               label="Manifest path"
               id="me-path"
@@ -142,7 +154,6 @@ export default function ManifestEditor({ mode }: ManifestEditorProps) {
               required
             />
             <TextInput
-              mt="sm"
               label="Commit message"
               description="Optional"
               id="me-message"
@@ -151,7 +162,6 @@ export default function ManifestEditor({ mode }: ManifestEditorProps) {
               placeholder={`Update ${path || '<path>'}`}
             />
             <Textarea
-              mt="sm"
               label="Manifest YAML"
               id="me-content"
               value={content}
@@ -162,60 +172,62 @@ export default function ManifestEditor({ mode }: ManifestEditorProps) {
             />
 
             {submitError && (
-              <Alert color="red" role="alert" mt="md">
+              <Alert color="red" role="alert">
                 {submitError}
               </Alert>
             )}
 
-            <Button type="submit" mt="md" loading={submitting}>
-              {submitting ? 'Committing…' : 'Commit'}
+            <Button type="submit" w="fit-content" loading={submitting}>
+              Commit
             </Button>
-          </form>
+          </Stack>
         </Grid.Col>
 
         <Grid.Col span={{ base: 12, md: 6 }}>
-          <Title order={3} mb="sm">
-            Preview
-          </Title>
-          {parseError && (
-            <Alert color="red" role="alert" mb="md">
-              {parseError}
-            </Alert>
-          )}
-          {preview && preview.params.length === 0 && !parseError && <Text c="dimmed">No params declared.</Text>}
-          {preview?.sections.map((section, i) => (
-            <Fieldset key={i} legend={section.title || undefined} mb="md">
-              {section.help && (
-                <Text size="sm" c="dimmed" mt={0} mb="xs">
-                  {section.help}
-                </Text>
-              )}
-              {section.fields.map((f) => (
-                <ParamField
-                  key={f.param.name}
-                  param={f.param}
-                  label={f.label}
-                  help={f.help}
-                  value={previewValues[f.param.name] ?? f.param.default ?? (f.param.type === 'bool' ? 'false' : '')}
-                  onChange={(value) => setPreviewValues((prev) => ({ ...prev, [f.param.name]: value }))}
-                />
-              ))}
-            </Fieldset>
-          ))}
-          {preview && preview.unplaced.length > 0 && (
-            <Fieldset legend={preview.sections.length > 0 ? 'Other' : undefined}>
-              {preview.unplaced.map((f) => (
-                <ParamField
-                  key={f.param.name}
-                  param={f.param}
-                  value={previewValues[f.param.name] ?? f.param.default ?? (f.param.type === 'bool' ? 'false' : '')}
-                  onChange={(value) => setPreviewValues((prev) => ({ ...prev, [f.param.name]: value }))}
-                />
-              ))}
-            </Fieldset>
-          )}
+          <Paper p="md" radius="md" bg="dark.6">
+            <Text size="10px" tt="uppercase" c="accent.4" fw={600} style={{ letterSpacing: '.1em' }} mb="sm">
+              Preview
+            </Text>
+            {parseError && (
+              <Alert color="red" role="alert" mb="md">
+                {parseError}
+              </Alert>
+            )}
+            {preview && preview.params.length === 0 && !parseError && <Text c="dimmed">No params declared.</Text>}
+            {preview?.sections.map((section, i) => (
+              <Fieldset key={i} legend={section.title || undefined} mb="md">
+                {section.help && (
+                  <Text size="sm" c="dimmed" mt={0} mb="xs">
+                    {section.help}
+                  </Text>
+                )}
+                {section.fields.map((f) => (
+                  <ParamField
+                    key={f.param.name}
+                    param={f.param}
+                    label={f.label}
+                    help={f.help}
+                    value={previewValues[f.param.name] ?? f.param.default ?? (f.param.type === 'bool' ? 'false' : '')}
+                    onChange={(value) => setPreviewValues((prev) => ({ ...prev, [f.param.name]: value }))}
+                  />
+                ))}
+              </Fieldset>
+            ))}
+            {preview && preview.unplaced.length > 0 && (
+              <Fieldset legend={preview.sections.length > 0 ? 'Other' : undefined}>
+                {preview.unplaced.map((f) => (
+                  <ParamField
+                    key={f.param.name}
+                    param={f.param}
+                    value={previewValues[f.param.name] ?? f.param.default ?? (f.param.type === 'bool' ? 'false' : '')}
+                    onChange={(value) => setPreviewValues((prev) => ({ ...prev, [f.param.name]: value }))}
+                  />
+                ))}
+              </Fieldset>
+            )}
+          </Paper>
         </Grid.Col>
       </Grid>
-    </>
+    </PageHeader>
   )
 }

@@ -18,7 +18,6 @@ import {
   Table,
   Text,
   TextInput,
-  Title,
 } from '@mantine/core'
 
 export default function TokenList() {
@@ -82,85 +81,94 @@ export default function TokenList() {
   }
 
   return (
-    <>
-      <Title order={2} mb="md">
-        Tokens
-      </Title>
-      {error && (
-        <Alert color="red" role="alert" mb="md">
-          {error}
-        </Alert>
-      )}
-      <Table.ScrollContainer minWidth={700} pos="relative">
-        <LoadingOverlay visible={loading && tokens.length === 0} />
-        <Table highlightOnHover>
-          <Table.Thead>
-            <Table.Tr>
-              <Table.Th>Name</Table.Th>
-              <Table.Th>Role</Table.Th>
-              <Table.Th>Hint</Table.Th>
-              <Table.Th>Created</Table.Th>
-              <Table.Th>Expires</Table.Th>
-              <Table.Th>Status</Table.Th>
-              {canManage && <Table.Th></Table.Th>}
-            </Table.Tr>
-          </Table.Thead>
-          <Table.Tbody>
-            {tokens.map((t) => (
-              <Table.Tr key={t.id}>
-                <Table.Td>{t.name}</Table.Td>
-                <Table.Td>{t.role}</Table.Td>
-                <Table.Td>
-                  <Code>{t.tokenHint}</Code>
-                </Table.Td>
-                <Table.Td>{t.createdAt}</Table.Td>
-                <Table.Td>{t.expiresAt ?? '-'}</Table.Td>
-                <Table.Td>
-                  <Badge color={t.revokedAt ? 'red' : 'green'}>{t.revokedAt ? `revoked ${t.revokedAt}` : 'active'}</Badge>
-                </Table.Td>
-                {canManage && (
-                  <Table.Td>
-                    {!t.revokedAt && (
-                      <Button size="xs" color="red" variant="light" onClick={() => handleRevoke(t)} disabled={revokingId === t.id}>
-                        {revokingId === t.id ? 'Revoking…' : 'Revoke'}
-                      </Button>
-                    )}
-                  </Table.Td>
-                )}
+    <Stack gap="xl">
+      <div>
+        {error && (
+          <Alert color="red" role="alert" mb="md">
+            {error}
+          </Alert>
+        )}
+        <Table.ScrollContainer minWidth={700} pos="relative">
+          <LoadingOverlay visible={loading && tokens.length === 0} />
+          <Table verticalSpacing="sm">
+            <Table.Thead>
+              <Table.Tr>
+                <Table.Th>Name</Table.Th>
+                <Table.Th>Scope</Table.Th>
+                <Table.Th>Hint</Table.Th>
+                <Table.Th>Created</Table.Th>
+                <Table.Th>Expires</Table.Th>
+                <Table.Th></Table.Th>
+                {canManage && <Table.Th></Table.Th>}
               </Table.Tr>
-            ))}
-          </Table.Tbody>
-        </Table>
-      </Table.ScrollContainer>
-      {!loading && tokens.length === 0 && <Text c="dimmed">No tokens yet.</Text>}
+            </Table.Thead>
+            <Table.Tbody>
+              {tokens.map((t) => (
+                <Table.Tr key={t.id}>
+                  <Table.Td>
+                    <Text fw={500}>{t.name}</Text>
+                  </Table.Td>
+                  <Table.Td>
+                    <Badge variant="outline" color="accent" tt="none">
+                      {t.role}
+                    </Badge>
+                  </Table.Td>
+                  <Table.Td>
+                    <Code>{t.tokenHint}</Code>
+                  </Table.Td>
+                  <Table.Td>
+                    <Text c="dimmed">{t.createdAt}</Text>
+                  </Table.Td>
+                  <Table.Td>
+                    <Text c="dimmed">{t.expiresAt ?? '-'}</Text>
+                  </Table.Td>
+                  <Table.Td>
+                    <Badge variant={t.revokedAt ? 'filled' : 'light'} color={t.revokedAt ? 'dark' : 'accent'} tt="none">
+                      {t.revokedAt ? `revoked ${t.revokedAt}` : 'active'}
+                    </Badge>
+                  </Table.Td>
+                  {canManage && (
+                    <Table.Td style={{ textAlign: 'right' }}>
+                      {!t.revokedAt && (
+                        <Button size="xs" color="red" variant="subtle" onClick={() => handleRevoke(t)} disabled={revokingId === t.id}>
+                          {revokingId === t.id ? 'Revoking…' : 'Revoke'}
+                        </Button>
+                      )}
+                    </Table.Td>
+                  )}
+                </Table.Tr>
+              ))}
+            </Table.Tbody>
+          </Table>
+        </Table.ScrollContainer>
+        {!loading && tokens.length === 0 && <Text c="dimmed">No tokens yet.</Text>}
+      </div>
 
       {canManage && (
-        <>
-          <Title order={3} mt="xl" mb="md">
+        <div>
+          <Text fw={500} size="17px" mb="sm">
             New token
-          </Title>
-          <Paper withBorder p="md" maw={400}>
-            <form onSubmit={handleCreate}>
-              <Stack>
-                <TextInput label="Name" id="token-name" value={name} onChange={(e) => setName(e.target.value)} required />
-                <Select
-                  label="Role"
-                  id="token-role"
-                  value={role}
-                  onChange={(v) => setRole(v ?? '')}
-                  data={roles.map((r) => r.name)}
-                  allowDeselect={false}
-                />
-                {createError && (
-                  <Alert color="red" role="alert">
-                    {createError}
-                  </Alert>
-                )}
-                <Button type="submit" loading={creating}>
-                  {creating ? 'Creating…' : 'Create token'}
-                </Button>
-              </Stack>
-            </form>
+          </Text>
+          <Paper p="md" radius="md" bg="dark.6" maw={400} component="form" onSubmit={handleCreate}>
+            <Stack gap="sm">
+              <TextInput label="Name" id="token-name" value={name} onChange={(e) => setName(e.target.value)} required />
+              <Select
+                label="Role"
+                id="token-role"
+                value={role}
+                onChange={(v) => setRole(v ?? '')}
+                data={roles.map((r) => r.name)}
+                allowDeselect={false}
+              />
+              {createError && (
+                <Alert color="red" role="alert">
+                  {createError}
+                </Alert>
+              )}
+              <Button type="submit" w="fit-content" loading={creating}>
+                Create token
+              </Button>
+            </Stack>
           </Paper>
 
           <Modal opened={generatedToken !== null} onClose={() => setGeneratedToken(null)} title="Token created" centered>
@@ -171,15 +179,15 @@ export default function TokenList() {
               <Code style={{ flex: 1, wordBreak: 'break-all' }}>{generatedToken}</Code>
               <CopyButton value={generatedToken ?? ''} timeout={2000}>
                 {({ copied, copy }) => (
-                  <Button size="xs" color={copied ? 'teal' : 'blue'} onClick={copy}>
+                  <Button size="xs" color={copied ? 'teal' : 'accent'} onClick={copy}>
                     {copied ? 'Copied' : 'Copy'}
                   </Button>
                 )}
               </CopyButton>
             </Group>
           </Modal>
-        </>
+        </div>
       )}
-    </>
+    </Stack>
   )
 }

@@ -4,7 +4,8 @@ import { useAuth } from '../auth'
 import { getUser, revokeUser, updateUserRole, type User } from '../api/users'
 import { listRoles, type Role } from '../api/roles'
 import { APIError } from '../api/client'
-import { Alert, Button, Group, Loader, Select, Text, Title } from '@mantine/core'
+import { Alert, Badge, Button, Group, Loader, Paper, Select, Stack, Text } from '@mantine/core'
+import PageHeader from '../components/PageHeader'
 
 export default function UserDetail() {
   const { id } = useParams<{ id: string }>()
@@ -64,62 +65,75 @@ export default function UserDetail() {
     }
   }
 
-  if (loadError) return <Alert color="red" role="alert">{loadError}</Alert>
-  if (!user) return <Loader />
+  if (loadError)
+    return (
+      <PageHeader title="User" backTo="/settings/users" backLabel="Users">
+        <Alert color="red" role="alert">
+          {loadError}
+        </Alert>
+      </PageHeader>
+    )
+  if (!user)
+    return (
+      <PageHeader title="User" backTo="/settings/users" backLabel="Users">
+        <Loader />
+      </PageHeader>
+    )
 
   return (
-    <>
-      <Title order={2} mb="xs">
-        {user.name}
-      </Title>
-      {user.revokedAt ? (
-        <Alert color="red" role="alert" mb="xs">
-          Revoked {user.revokedAt}
-        </Alert>
-      ) : (
-        <Text mb="xs">Active</Text>
-      )}
-      <Text c="dimmed" mb="md">
-        Created {user.createdAt}
-      </Text>
+    <PageHeader title={user.name} subtitle={`Created ${user.createdAt}`} backTo="/settings/users" backLabel="Users">
+      <Stack gap="md" maw={480}>
+        <Group gap="sm">
+          <Badge variant={user.revokedAt ? 'filled' : 'light'} color={user.revokedAt ? 'dark' : 'accent'} tt="none">
+            {user.revokedAt ? `Revoked ${user.revokedAt}` : 'Active'}
+          </Badge>
+        </Group>
 
-      {canManage && !user.revokedAt ? (
-        <div>
-          <Group align="flex-end">
-            <Select
-              label="Role"
-              id="role-select"
-              value={selectedRole}
-              onChange={(v) => setSelectedRole(v ?? '')}
-              data={roles.map((r) => r.name)}
-              allowDeselect={false}
-            />
-            <Button onClick={handleRoleChange} loading={roleUpdating} disabled={selectedRole === user.role}>
-              Save role
+        <Paper p="md" radius="md" bg="dark.6">
+          {canManage && !user.revokedAt ? (
+            <Stack gap="sm">
+              <Group align="flex-end" gap="sm">
+                <Select
+                  label="Role"
+                  id="role-select"
+                  value={selectedRole}
+                  onChange={(v) => setSelectedRole(v ?? '')}
+                  data={roles.map((r) => r.name)}
+                  allowDeselect={false}
+                />
+                <Button onClick={handleRoleChange} loading={roleUpdating} disabled={selectedRole === user.role}>
+                  Save role
+                </Button>
+              </Group>
+              {roleError && (
+                <Alert color="red" role="alert">
+                  {roleError}
+                </Alert>
+              )}
+            </Stack>
+          ) : (
+            <Text size="sm">
+              <Text component="span" c="dimmed">
+                Role{' '}
+              </Text>
+              {user.role}
+            </Text>
+          )}
+        </Paper>
+
+        {canManage && !user.revokedAt && (
+          <div>
+            <Button color="red" variant="subtle" onClick={handleRevoke} loading={revoking}>
+              Revoke access
             </Button>
-          </Group>
-          {roleError && (
-            <Alert color="red" role="alert" mt="sm">
-              {roleError}
-            </Alert>
-          )}
-        </div>
-      ) : (
-        <Text>Role: {user.role}</Text>
-      )}
-
-      {canManage && !user.revokedAt && (
-        <div style={{ marginTop: '1.5rem' }}>
-          <Button color="red" variant="light" onClick={handleRevoke} loading={revoking}>
-            Revoke access
-          </Button>
-          {revokeError && (
-            <Alert color="red" role="alert" mt="sm">
-              {revokeError}
-            </Alert>
-          )}
-        </div>
-      )}
-    </>
+            {revokeError && (
+              <Alert color="red" role="alert" mt="sm">
+                {revokeError}
+              </Alert>
+            )}
+          </div>
+        )}
+      </Stack>
+    </PageHeader>
   )
 }
