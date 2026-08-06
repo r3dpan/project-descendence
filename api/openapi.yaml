@@ -1359,11 +1359,458 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/Problem"
+  /api/v1/users:
+    get:
+      operationId: listUsers
+      description: >-
+        Admin-only (users:read). Unpaginated - a homelab has a handful of
+        users, not thousands (Phase 8, task 8.2).
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: All kind='user' principals
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserList"
+        "401":
+          description: Missing, malformed, unknown, expired or revoked token
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "403":
+          description: Principal is missing the users:read permission
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+    post:
+      operationId: createUser
+      description: Admin-only (users:write).
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UserCreate"
+      responses:
+        "201":
+          description: The created user, with its one-time plaintext password
+          headers:
+            Location:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserCreateResponse"
+        "400":
+          description: Missing name, or unknown role
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "401":
+          description: Missing, malformed, unknown, expired or revoked token
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "403":
+          description: Principal is missing the users:write permission
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "409":
+          description: Name already in use
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+  /api/v1/users/me/password:
+    patch:
+      operationId: changeOwnPassword
+      description: >-
+        Self-service only - gated by "acting on self", not a permission key
+        (ARCHITECTURE.md §6 decision #30's carve-out). Any authenticated
+        user principal may call this on itself.
+      security:
+        - bearerAuth: []
+        - sessionAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SelfPasswordChange"
+      responses:
+        "204":
+          description: Password changed
+        "400":
+          description: Missing newPassword
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "401":
+          description: >-
+            Missing/invalid credential, or currentPassword did not match
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "403":
+          description: Caller is not a user-kind principal
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+  /api/v1/users/{id}:
+    get:
+      operationId: getUser
+      description: Admin-only (users:read).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: The user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "401":
+          description: Missing, malformed, unknown, expired or revoked token
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "403":
+          description: Principal is missing the users:read permission
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "404":
+          description: No user with this id
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+    patch:
+      operationId: patchUser
+      description: Role reassignment only. Admin-only (users:write).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UserPatch"
+      responses:
+        "200":
+          description: The updated user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "400":
+          description: Unknown role
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "401":
+          description: Missing, malformed, unknown, expired or revoked token
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "403":
+          description: Principal is missing the users:write permission
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "404":
+          description: No user with this id
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+    delete:
+      operationId: revokeUser
+      description: >-
+        Soft-revoke (sets revokedAt), never a hard delete -
+        runs.principal_id is ON DELETE RESTRICT. Admin-only (users:write).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Revoked
+        "401":
+          description: Missing, malformed, unknown, expired or revoked token
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "403":
+          description: Principal is missing the users:write permission
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "404":
+          description: No user with this id
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+  /api/v1/tokens:
+    get:
+      operationId: listTokens
+      description: Admin-only (users:read). Unpaginated, same as listUsers.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: All kind='token' principals
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenList"
+        "401":
+          description: Missing, malformed, unknown, expired or revoked token
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "403":
+          description: Principal is missing the users:read permission
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+    post:
+      operationId: createToken
+      description: >-
+        The API-driven equivalent of `cmd/seed -kind token`. Admin-only
+        (users:write).
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TokenCreate"
+      responses:
+        "201":
+          description: The created token, with its one-time plaintext value
+          headers:
+            Location:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenCreateResponse"
+        "400":
+          description: Missing name, or unknown role
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "401":
+          description: Missing, malformed, unknown, expired or revoked token
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "403":
+          description: Principal is missing the users:write permission
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "409":
+          description: Name already in use
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+  /api/v1/tokens/{id}:
+    get:
+      operationId: getToken
+      description: Admin-only (users:read).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: The token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Token"
+        "401":
+          description: Missing, malformed, unknown, expired or revoked token
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "403":
+          description: Principal is missing the users:read permission
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "404":
+          description: No token with this id
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+    delete:
+      operationId: revokeToken
+      description: >-
+        Soft-revoke (sets revokedAt), never a hard delete. Admin-only
+        (users:write).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Revoked
+        "401":
+          description: Missing, malformed, unknown, expired or revoked token
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "403":
+          description: Principal is missing the users:write permission
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "404":
+          description: No token with this id
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+  /api/v1/roles:
+    get:
+      operationId: listRoles
+      description: >-
+        List-only (ARCHITECTURE.md §6 decision #30 - fixed built-in roles,
+        no admin-editable builder). Admin-only (users:read).
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: The three built-in roles and their permissions
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RoleList"
+        "401":
+          description: Missing, malformed, unknown, expired or revoked token
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "403":
+          description: Principal is missing the users:read permission
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+  /api/v1/roles/{name}:
+    get:
+      operationId: getRole
+      description: Admin-only (users:read).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The role
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Role"
+        "401":
+          description: Missing, malformed, unknown, expired or revoked token
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "403":
+          description: Principal is missing the users:read permission
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "404":
+          description: No role with this name
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
 components:
   securitySchemes:
     bearerAuth:
       type: http
       scheme: bearer
+    # RequireAuth (internal/api/auth.go) has always accepted this cookie
+    # too - the spec previously only declared bearerAuth. Documented here
+    # opportunistically (Phase 8, task 8.5) rather than retrofitted onto
+    # every existing operation's `security:` list, since a client picking
+    # either credential type already works against the real server.
+    sessionAuth:
+      type: apiKey
+      in: cookie
+      name: descendence_session
   parameters:
     IdempotencyKey:
       name: Idempotency-Key
@@ -1389,6 +1836,9 @@ components:
         - podmanUp
     Principal:
       type: object
+      description: >-
+        Phase 8: role/permissions replace the earlier flat `scopes` array
+        (ARCHITECTURE.md §6 decision #30).
       properties:
         id:
           type: integer
@@ -1397,16 +1847,182 @@ components:
         kind:
           type: string
           enum: [user, token]
-        scopes:
+        role:
+          type: string
+          enum: [admin, operator, viewer]
+        permissions:
           type: array
           items:
             type: string
-            enum: [read, run, admin]
       required:
         - id
         - name
         - kind
-        - scopes
+        - role
+        - permissions
+    Role:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+          enum: [admin, operator, viewer]
+        description:
+          type: string
+        permissions:
+          type: array
+          items:
+            type: string
+      required:
+        - id
+        - name
+        - description
+        - permissions
+    RoleList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Role"
+      required:
+        - items
+    User:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        role:
+          type: string
+          enum: [admin, operator, viewer]
+        createdAt:
+          type: string
+          format: date-time
+        revokedAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - name
+        - role
+        - createdAt
+    UserCreate:
+      type: object
+      properties:
+        name:
+          type: string
+        password:
+          type: string
+          description: Generated server-side and returned once if omitted.
+        role:
+          type: string
+          enum: [admin, operator, viewer]
+      required:
+        - name
+        - role
+    UserCreateResponse:
+      allOf:
+        - $ref: "#/components/schemas/User"
+        - type: object
+          properties:
+            password:
+              type: string
+              description: >-
+                Shown exactly once - not retrievable again after this
+                response.
+          required:
+            - password
+    UserPatch:
+      type: object
+      description: Role reassignment only - name/password change elsewhere.
+      properties:
+        role:
+          type: string
+          enum: [admin, operator, viewer]
+    UserList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/User"
+      required:
+        - items
+    SelfPasswordChange:
+      type: object
+      properties:
+        currentPassword:
+          type: string
+        newPassword:
+          type: string
+      required:
+        - currentPassword
+        - newPassword
+    Token:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        role:
+          type: string
+          enum: [admin, operator, viewer]
+        tokenHint:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        expiresAt:
+          type: string
+          format: date-time
+        revokedAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - name
+        - role
+        - tokenHint
+        - createdAt
+    TokenCreate:
+      type: object
+      properties:
+        name:
+          type: string
+        role:
+          type: string
+          enum: [admin, operator, viewer]
+        expiresAt:
+          type: string
+          format: date-time
+      required:
+        - name
+        - role
+    TokenCreateResponse:
+      allOf:
+        - $ref: "#/components/schemas/Token"
+        - type: object
+          properties:
+            token:
+              type: string
+              description: >-
+                Shown exactly once - not retrievable again after this
+                response.
+          required:
+            - token
+    TokenList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Token"
+      required:
+        - items
     LoginRequest:
       type: object
       properties:
