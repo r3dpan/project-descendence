@@ -42,21 +42,23 @@ Update the marker on each task as it moves:
 
 > **Update this block every session.**
 
-- **Phase:** 8 — **complete** (8.1–8.11, exit check passed). Real RBAC
-  (`roles`/`permissions`/`role_permissions`/`principal_roles`, three fixed
-  built-in roles, `RequirePermission` middleware enforced on every existing
-  route) plus full user/token management across the API, the Go client, the
-  CLI (flags + TUI) and the web UI - closing the gap where `cmd/seed` was
-  the only way to create a principal at all.
-- **Next action:** no phase is currently open. Pick the next item from
-  ARCHITECTURE.md §7's deferred list (OIDC/Authentik, external git repo sync
-  + webhooks, or 7.8's own deferred follow-ups: a PowerShell-AST "guess the
-  fields" suggestion feature per decision #28, and a drag-and-drop visual
-  builder) and scope it properly on arrival, the same way Phases 7 and 8
-  were. Also worth doing before Phase 8 grows further: promote the exit
-  check's curl-based permission assertions (viewer 403s, operator's
-  read/write split) into real `internal/api/*_test.go` cases - none were
-  added this phase, only live-verified.
+- **Phase:** 9 — **code complete, not yet live-verified** (9.1–9.13 all
+  landed: migration, sqlc, `internal/oidc`, login/callback handlers,
+  bootstrap-admin, password surface removed, `/about` split, client/CLI/
+  `cmd/seed` trimmed, web UI, tests, docs). OIDC browser authentication
+  replaces Phase 7's local password login outright (decision #29
+  superseded by #34) - no group claim read, roles stay local. See this
+  section's "Exit check" note above for what's left: a real Authentik
+  OAuth2 provider/application didn't exist yet at the start of this
+  session, so the actual browser round-trip is still pending, planned as a
+  guided interactive session (the operator drives the browser, walked
+  through step by step).
+- **Next action:** create the Authentik OAuth2 provider + application to
+  get real `OIDC_ISSUER_URL`/`OIDC_CLIENT_ID`/`OIDC_CLIENT_SECRET`, then run
+  Phase 9's exit check for real against a fresh DB. After that: Phase 8's
+  own carried-over item is still outstanding - promote the exit check's
+  curl-based permission assertions (viewer 403s, operator's read/write
+  split) into real `internal/api/*_test.go` cases.
 - **Off-plan work since Phase 8:** the web SPA (`web/src/`) was migrated from
   raw unstyled HTML to Mantine v9 (`@mantine/core`/`hooks`/`notifications`/
   `form`) - an `AppShell` sidebar layout, a shared `statusColor` Badge helper,
@@ -843,3 +845,84 @@ check was verified in earlier phases. A follow-up worth doing before this
 grows further: promote the exit-check's curl sequence into
 `internal/api/*_test.go` cases so a regression doesn't require another manual
 pass.
+
+## Phase 9 — OIDC browser authentication
+
+**Goal:** the browser logs in through any OIDC provider; local password auth is gone.
+**Done when:** an IdP user logs in, gets a session, and an admin can assign them a
+role — with no `password_hash` column left in the database.
+
+Scope is OIDC only; per-schedule service tokens and a web setup wizard were split
+out into later phases. The IdP authenticates, roles stay local in `principal_roles`
+— no group claim is read, which is what keeps this provider-agnostic. Supersedes
+decision #29.
+
+- [x] **9.1** Audit first: how many `kind='user'` principals exist, and which are
+      referenced by `runs.principal_id` (`ON DELETE RESTRICT`)? Decides 9.2's
+      delete-vs-revoke split — see `webui-716` in Phase 7's notes.
+- [x] **9.2** Migration `00013_oidc.sql`: drop `password_hash` and its CHECK; add
+      `oidc_issuer`/`oidc_subject`, `UNIQUE` on the pair, plus a CHECK tying them
+      to `kind='user'` the way `token_hash` is tied to `kind='token'`. Existing
+      users: delete those with no runs, soft-revoke the rest. `Down` cannot
+      restore hashes — say so in the file.
+- [x] **9.3** sqlc: lookup by `(oidc_issuer, oidc_subject)`, JIT insert; delete the
+      password-only queries.
+- [x] **9.4** `internal/oidc`: discovery, `oauth2.Config`, ID token verifier, built
+      once at `cmd/api` startup from `OIDC_ISSUER_URL`, `_CLIENT_ID`,
+      `_CLIENT_SECRET`, `_REDIRECT_URL` (default
+      `http://127.0.0.1:8080/api/v1/auth/callback`), `_SCOPES` (default
+      `openid profile email`). Discovery failure is fatal, not degraded. New deps:
+      `github.com/coreos/go-oidc/v3`, `golang.org/x/oauth2`.
+- [x] **9.5** `GET /api/v1/auth/login`: state, nonce and PKCE verifier into 5-minute
+      `SameSite=Lax` cookies, then 302 to the authorization endpoint. Lax not
+      Strict — the IdP returns via a top-level navigation. Replaces
+      `POST /api/v1/auth/login`.
+- [x] **9.6** `GET /api/v1/auth/callback`: verify state → exchange with PKCE →
+      verify ID token → verify nonce → resolve `(iss, sub)` → mint the existing
+      session cookie → 302 to `/`. A revoked subject is refused, never
+      resurrected. An unknown subject is JIT-provisioned with **no role**; `name`
+      comes from `preferred_username` (fallback `sub`; handle the UNIQUE collision)
+      and is never refreshed on later logins.
+- [x] **9.7** `OIDC_BOOTSTRAP_USERNAME`: a matching `preferred_username` gets `admin`
+      in the same transaction as the JIT insert, at creation only.
+- [x] **9.8** Remove the bcrypt login path, `ChangeOwnPasswordHandler`,
+      `PATCH /api/v1/users/me/password`, and `POST /api/v1/users` — an
+      admin-created user has no `oidc_subject` and could never log in. Role patch
+      and revoke stay. Update `openapi.yaml` in the same change.
+- [x] **9.9** `GET /` serves the SPA (drop the `GET /{$}` route); server info moves
+      to `GET /about`, beside `/healthz`. Update `internal/client.Info()`,
+      `openapi.yaml`, and regenerate `web/src/api/schema.ts`.
+- [x] **9.10** `internal/client` and CLI: drop user-create and password-change.
+      `cmd/seed` loses `-kind user`; its token path is now the sole recovery route
+      with the IdP down.
+- [x] **9.11** Web UI: the login page becomes a navigation to
+      `/api/v1/auth/login` (not `fetch` — an XHR can't follow the redirect to the
+      IdP); remove the password form and the Users create form; render one
+      explanatory screen when `whoami` returns zero permissions instead of a wall
+      of 403s.
+- [x] **9.12** Tests: state mismatch, nonce mismatch, revoked subject refused, JIT
+      creates a roleless principal, bootstrap match assigns `admin`. Phase 8's
+      missing permission tests are already a flagged gap — don't widen it.
+- [x] **9.13** Docs: ARCHITECTURE.md §4.10 (authentication half only), §6 new
+      decisions with #29 marked superseded, §7 loses the OIDC item; `.env.sample`;
+      HISTORY.md, including the authentik provider config that actually worked.
+
+**Exit check:** fresh DB, `OIDC_BOOTSTRAP_USERNAME` set, real browser login → a
+principal created with `admin`, landing on `/`. Log out, cookie cleared. A second
+IdP user logs in → the roleless screen, not 403 toasts; admin assigns `viewer`;
+viewer reads and cannot write. Revoke that user and log in again → refused, no new
+principal, no session. Stop the IdP: `descendence runs list` and `cmd/seed` still
+work. Wrong `OIDC_ISSUER_URL` → non-zero exit, not a half-started server.
+`GET /about` returns JSON, `GET /` returns the SPA. Use `127.0.0.1` everywhere —
+the session cookie is host-scoped, and mixing it with `localhost` breaks login
+silently.
+
+**→ Code complete, 9.1–9.13 all landed** (migration applied against the real dev
+DB, `go build`/`go vet`/full `go test ./...` clean, `internal/api/oidc_test.go`
+covers state mismatch/nonce mismatch/revoked-refused/JIT-roleless/bootstrap-admin
+against a fake in-process IdP, `npm run build` clean). **Not yet live-verified**
+against a real Authentik instance — no OAuth2 provider/application existed in
+Authentik at the start of this session. Next action for this exit check: create
+the Authentik OAuth2 provider + application (getting real `OIDC_ISSUER_URL`/
+`OIDC_CLIENT_ID`/`OIDC_CLIENT_SECRET`), then walk the exit check's steps above for
+real. See HISTORY.md for what's landed so far.

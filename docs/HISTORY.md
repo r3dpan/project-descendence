@@ -2592,3 +2592,125 @@ Notes to future me:
     other sessions' fixtures without knowing their purpose felt riskier than
     leaving them - flagging here so a future session recognizes them as
     pre-existing rather than fresh mess.
+
+## 2026-08-06 (Phase 9 — OIDC browser authentication, code complete)
+Worked on: replacing Phase 7's local username+password login with real OIDC
+against an external Authentik instance, per decision #29's own framing
+("only how the cookie gets issued changes"). Scoped and planned in
+plan-mode first (docs/PLAN.md's 9.1-9.13, written up at the end of the
+previous session, executed this one), then implemented task by task with a
+commit per finished group.
+
+Completed:
+  - **9.1 audit**: `kind='user'` principals cross-referenced against
+    `runs.principal_id`. Seven test/verify principals had zero runs
+    (`verify-ui`, `verify-ui2`, `verify-dash`, `verify-config`,
+    `verify-viewer`, `verify-cleanup`, `testuser`); one (`webui-716`, 29
+    runs) did not.
+  - **9.2 migration `00013_oidc.sql`**: dropped `password_hash` and its
+    CHECK; added `oidc_issuer`/`oidc_subject` with a `UNIQUE` pair and a
+    one-directional CHECK (`oidc_subject` only valid on `kind='user'`, but
+    not required of every such row). Data migration matching 9.1's
+    findings: the seven runless principals hard-deleted, `webui-716`
+    soft-revoked (no OIDC identity, and password auth is gone, so it can
+    never log in again - its run history stays queryable). Applied against
+    the real dev DB with the operator's explicit go-ahead (the auto-mode
+    classifier correctly flagged this as a real DB mutation and blocked it
+    until asked).
+  - **9.3 sqlc**: `GetUserPrincipalByOIDCSubject` (deliberately does not
+    filter `revoked_at` - the callback needs "unknown" and "known but
+    revoked" to stay distinguishable) and `CreateUserPrincipalOIDC`;
+    `GetUserPrincipalByName`/`UpdatePrincipalPasswordHash` deleted.
+  - **9.4 `internal/oidc`**: wraps `go-oidc/v3` discovery + `oauth2.Config`
+    + ID-token verifier, built once at `cmd/api` startup, fatal on
+    discovery failure. New deps `github.com/coreos/go-oidc/v3`,
+    `golang.org/x/oauth2` (and transitively `go-jose/v4`, later promoted to
+    a direct dependency by the test suite).
+  - **9.5/9.6 login + callback**: `session.go` rewritten.
+    `GET /api/v1/auth/login` sets 5-minute `SameSite=Lax` state/nonce/PKCE-
+    verifier cookies and 302s to the IdP. `GET /api/v1/auth/callback`
+    verifies state, exchanges the code with PKCE, verifies the ID token and
+    its nonce (go-oidc parses `nonce` onto `IDToken.Nonce` but does not
+    verify it itself - confirmed by reading its source), then resolves
+    `(iss, sub)`: known+active mints a session, known+revoked is refused
+    (`403`, never resurrected), unknown is JIT-provisioned with **no
+    role** and a `principals.name` collision (two subjects sharing a
+    `preferred_username`) retried once with a deterministic suffix.
+    `CreateSession`/`GetPrincipalBySessionTokenHash`/cookie mechanics
+    untouched, exactly as decision #29 predicted.
+  - **9.7 bootstrap admin**: `OIDC_BOOTSTRAP_USERNAME` (this deployment:
+    `descendence`) matched against `preferred_username` in the same
+    transaction as the JIT insert.
+  - **9.8/9.9**: `CreateUserHandler`, `ChangeOwnPasswordHandler`,
+    `POST /users`, `PATCH /users/me/password` all removed (an admin-created
+    principal would have no `oidc_subject` and could never log in); role
+    patch and revoke stay. `GET /{$}` dropped so `/` falls through to the
+    SPA catch-all; server info moved to `GET /about`
+    (`internal/client.Info()` updated to match). `openapi.yaml` updated in
+    the same change: `LoginRequest`/`UserCreate`/`UserCreateResponse`/
+    `SelfPasswordChange` schemas gone, `GET /auth/login` and
+    `GET /auth/callback` added.
+  - **9.10**: `internal/client` and the CLI (`descendence user`) lost
+    `create`/`passwd`; `cmd/seed` lost `-kind user` entirely - its token
+    path is now the only way to mint a principal outside a real IdP login.
+  - **9.11 web UI**: `Login.tsx` is now a plain `<a href="/api/v1/auth/login">`
+    (an XHR cannot follow the redirect to a third-party origin, so this
+    could never have been a `fetch`); a new `RolelessScreen.tsx` renders
+    for any authenticated principal with zero permissions, wired into
+    `App.tsx`'s `Protected` wrapper - the single choke point every
+    authenticated route passes through, so this is the one place needed
+    for "one explanatory screen instead of a wall of 403s." `AccountTab.tsx`
+    lost its password form (now read-only identity: name/kind/role);
+    `UserList.tsx` lost its "New user" form/modal. `npm run build` clean.
+  - **9.12 tests**: `internal/api/oidc_test.go` spins up a real
+    `httptest.Server` as a fake IdP - genuine OIDC discovery, a real RSA
+    keypair, RS256-signed JWTs via `go-jose` directly (already a transitive
+    dependency of `go-oidc`), served from `/jwks` - so `CallbackHandler`
+    runs through real signature verification without needing a live
+    Authentik instance. Five tests, all passing against the real dev DB:
+    state mismatch, nonce mismatch, JIT provisions a roleless principal,
+    `OIDC_BOOTSTRAP_USERNAME` assigns admin at creation, a revoked subject
+    is refused and never resurrected. Confirmed no test principals leaked
+    afterward (`oidc-test-%` name pattern, all cleaned up via `t.Cleanup`).
+  - **9.13 docs**: ARCHITECTURE.md §4.10 rewritten for the OIDC flow;
+    decision #29 marked superseded by new decision #34 (documents *why*
+    no group claim is read and *why* JIT gets no default role); §7's
+    deferred list lost "OIDC / Authentik integration," gained the two
+    items Phase 9 explicitly split out (per-schedule service tokens, a web
+    setup wizard). `.env.sample` gained the six `OIDC_*` vars. This entry.
+Broken / unresolved: none found. One process note, not a defect: `web/dist/
+index.html` got committed with real build output (hashed asset filenames)
+in the first Phase 9 commit instead of being reverted to its checked-in
+placeholder first - HISTORY.md already flagged this as a recurring gotcha
+("the fourth time this exact gotcha has been noted") before this session
+made it a fifth. Fixed in a follow-up commit; still no automated guard
+against it recurring a sixth time.
+Next action: **live-verify against a real Authentik instance.** No OAuth2
+provider/application existed in Authentik at the start of this session, so
+everything above was verified with `go build`/`go vet`/`go test ./...` and
+the fake-IdP test suite, never a real browser round-trip. Planned as a
+guided interactive session immediately following this one: walk the
+operator through creating the Authentik OAuth2 provider + application (to
+get real `OIDC_ISSUER_URL`/`OIDC_CLIENT_ID`/`OIDC_CLIENT_SECRET`), then
+drive PLAN.md's Phase 9 exit check for real. Record the actual working
+Authentik provider config in a future HISTORY.md entry once that happens,
+per 9.13's own instruction - deliberately not guessed at here.
+Notes to future me:
+  - The auto-mode permission classifier blocked `goose up` on sight (a real
+    DB mutation - deleting 7 principals, revoking an 8th) and required an
+    explicit operator go-ahead before proceeding. Correct behavior, not a
+    bug - flagging so a future session doesn't read the block as broken
+    tooling.
+  - `principals.oidc_issuer`/`oidc_subject`'s CHECK is deliberately
+    *not* symmetric like `token_hash`'s or the old `password_hash`'s (which
+    both required the column whenever `kind` matched) - `webui-716` needed
+    to survive the cutover as a soft-revoked `kind='user'` row with no OIDC
+    identity, which a fully symmetric CHECK would have rejected outright.
+    If a future migration ever wants "every active user principal must
+    have an OIDC identity," that would need to specifically exempt revoked
+    rows rather than reintroducing full symmetry.
+  - `internal/oidc`'s discovery-based `New()` needs a reachable issuer at
+    `cmd/api` startup and fails fast (fatal) if it isn't - this means
+    `cmd/api` cannot start at all with the IdP down, by design (a server
+    accepting traffic against a login path that can never work is worse
+    than refusing to start). Only `cmd/seed`'s token path is unaffected.
