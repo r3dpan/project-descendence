@@ -2843,3 +2843,138 @@ Notes to future me:
     first commit) - the fifth and sixth times this exact gotcha has now
     been hit across this project's history. Worth a pre-commit hook or
     Makefile target if it keeps recurring, which it keeps doing.
+
+## 2026-08-07 (off-plan: web UI visual rework, then feature-gap closure)
+Worked on: two related off-plan threads, same session, both web-UI-only.
+(1) A full visual rework of the SPA to a dark "Nocturne" design system, from
+a Claude Design mockup project the operator shared (imported live via the
+`claude_design` MCP/`DesignSync` tool - `list_files`/`get_file` against
+project `39fee90d-612d-48ad-8ed2-13120de659fb`, no local file upload needed).
+(2) An audit, requested explicitly by the operator, of what the API server
+already implements that the webapp doesn't expose, followed by implementing
+the gaps the operator chose.
+Completed:
+  - **Design tokens & chrome**: `web/src/theme.ts` rewritten with a custom
+    Mantine `colors.accent`/`colors.dark` ramp (ported from the mockup's own
+    OKLCH-documented hex values), `spacing`/`radius` scales matching the
+    mockup's `--space-*`/`--radius-*`, Inter via a new `@fontsource/inter`
+    dependency. `main.tsx` now forces `forceColorScheme="dark"` - the OS
+    auto light/dark from the earlier Mantine migration (see the entry above)
+    is gone; this app is dark-only by deliberate choice, confirmed with the
+    operator before building it (`@tabler/icons-react` added the same way,
+    over literal SVG copies from the mockup, also confirmed with the
+    operator). `Layout.tsx` rebuilt: fixed 240px sidebar with grouped nav
+    (Overview/Automate/Administer) replacing the flat `NavLink` list, a user
+    footer (avatar-initials circle, name, role, sign-out icon), zero
+    `AppShell.Main` padding so each page's own `PageHeader` can sit
+    full-bleed. Four new shared primitives in `web/src/components/`:
+    `PageHeader` (title/subtitle/back-link/action slot, becomes each page's
+    top-level wrapper), `StatTile`/`StatTileGrid` (dashboard KPI cards,
+    replacing Dashboard's local `TileGrid`), `StatusTag` (replaces bare
+    `Badge` everywhere a run/job/runtime status shows - maps to the
+    mockup's solid/outline/neutral "tag" convention via a new
+    `statusColor.ts` export, `statusKind`/`statusPulses`, and pulses via a
+    new `pulseTag` keyframe for running/building states), `FadeRule` (the
+    mockup's signature fade-to-transparent divider).
+  - **Every page restyled** against the new tokens/primitives: Login (kept
+    the OIDC-only single sign-in button, dropped the mockup's
+    username/password fields - this app has no local password login,
+    Phase 9 removed it outright), RolelessScreen, Dashboard, JobList,
+    JobDetail, ManifestEditor, RunList, RunDetail, RuntimeList,
+    RuntimeDetail, Settings (all four tabs), UserDetail. Two mockup elements
+    intentionally not built, since faking them would mean fabricating data
+    the API doesn't provide: a 7-day "run volume" bar chart on the
+    dashboard (`RunStats` is a live/24h snapshot, not a time series) and a
+    "recent runs for this job" panel on JobDetail (no per-job run filter
+    exists in `listRuns`) - documented as comments in the source rather than
+    silently dropped.
+  - **Feature-gap audit**, cross-referencing `api/openapi.yaml`'s
+    `operationId`s against `web/src/api/*.ts`'s actual `request()` call
+    sites and PLAN.md's completed-task list. Found: **schedules** (Phase
+    5.7's full CRUD + trigger - zero web trace despite being CLI-complete),
+    **cancel run** (`cancelRun()` already existed in `runs.ts`, called by
+    nothing), **runtime prune** (`POST /runtimes/prune`, task 4.7, CLI-only),
+    and **script editor** (`Job.scriptPath` - the sidecar script a manifest
+    points at - had no UI at all, only the manifest YAML itself did). Also
+    checked and ruled out as non-gaps: the "form builder" (task 7.8's own
+    note says it shipped as YAML+preview, deliberately not drag-and-drop -
+    `ManifestEditor.tsx` already is it), `createRepo`/`syncRepo` (repo
+    creation is a one-time setup step, out of scope at homelab/single-repo
+    scale), and single-item `getToken`/`getRole`/server-info endpoints
+    (the list views already cover what they'd show). Presented as a menu,
+    operator picked all four real gaps.
+  - **Schedules**: new `web/src/api/schedules.ts`
+    (`listSchedulesByJob`/`createSchedule`/`patchSchedule`/`deleteSchedule`/
+    `triggerSchedule`). `JobDetail.tsx` became a two-column `Grid` (the
+    mockup's original intent, dropped earlier for lack of real "recent
+    runs" data) with a new `SchedulesPanel` on the right: list with
+    trigger/enable-disable/delete actions and a "new schedule" form
+    (cron/timezone/catch-up/overlap/enabled), every action gated on
+    `schedules:read`/`schedules:write`/`schedules:trigger` from
+    `principal.permissions`, matching the gating pattern `Settings.tsx`
+    already used for `canSeeUsers`/`canSeeConfig`.
+  - **Cancel run**: `RunDetail.tsx`'s `PageHeader` gained an `action` slot
+    button, shown only for non-terminal runs (`!isTerminal(run.state)`) with
+    `runs:cancel`, confirmed via `window.confirm` (matching
+    `TokenList`/`UserDetail`'s existing revoke-confirmation convention).
+  - **Runtime prune**: `pruneRuntimes()` added to `runtimes.ts`.
+    `RuntimeList.tsx` gained a checkbox column (`runtimes:write`-gated),
+    "Prune selected (N)" and a small "prune unused, older than N days"
+    control, both reporting `RuntimePruneResult`'s pruned/skipped/errors
+    lists via a notification and refetching the list afterward.
+  - **Script editor**: new `web/src/pages/ScriptEditor.tsx` at
+    `/jobs/:id/script` (route added to `App.tsx`), reusing `getJob` (for
+    `repoId`/`scriptPath`) plus the existing generic
+    `getRepoFile`/`createRepoFile` - no new backend endpoint needed, since a
+    script is just another repo-relative file path. Read-only (disabled
+    textarea, no Save) when the principal only has `repos:read`, not
+    `repos:write`. `JobDetail.tsx` links to it next to "Edit manifest".
+  - **Live-verified against the real stack**, not just `npm run
+    build`/lint: Postgres, Authentik, and freshly-built `cmd/api`/
+    `cmd/supervisor` binaries, driven with Playwright (`npm install
+    playwright --no-save` + the already-cached `chromium` from a prior
+    session, same disposable pattern the Phase 9 live-verification session
+    used). Logged in as `claude-devtest-c000ce1e` after discovering *why*
+    login 403'd at first: two DB rows share the same `oidc_subject` but
+    different `oidc_issuer` strings (`.../o/descendence/` vs a stale
+    `.../o/decendence/` typo from an earlier Authentik config) - the
+    revoked row matching the *current* issuer was the one that needed
+    un-revoking, not the differently-spelled duplicate. Exercised every new
+    feature for real: created/triggered/disabled/deleted a schedule
+    (trigger produced a real queued run), cancelled a freshly-queued run,
+    selected-and-pruned a runtime (confirmed `imagePruned: Yes` on its
+    detail page after), loaded and round-tripped a script edit. Found one
+    real bug this way (not from a `grep`-and-guess pass): the Schedules
+    panel's per-schedule row packed the enabled tag, cron expression,
+    timezone, and three action buttons onto a single `wrap="nowrap"` line,
+    which truncated content once real data (not the empty seed state) was
+    on screen - `"On"` rendered as `"O."`, `"0 3 * * *"` as `"0 3 *..."`.
+    Fixed by splitting the row into three stacked, wrapping lines (tag/
+    cron/timezone, policy details, actions); rebuilt the binary, re-tested,
+    confirmed clean.
+Broken / unresolved: nothing left broken.
+Next action: none specific from this session - it was off-plan UI work, same
+as the Mantine migration before it. The Phase 8 carried-over item (promote
+the exit check's curl-based permission assertions into real
+`internal/api/*_test.go` cases) is still the next real backlog item.
+Notes to future me:
+  - **Two `claude-devtest*` DB rows, one dead.** `claude-devtest` (id 56,
+    `oidc_issuer` ends `/o/decendence/`, a typo) is a stale duplicate from
+    whenever that typo'd Authentik slug existed - it will never be the row a
+    real login resolves to under the current `.env`, since `OIDC_ISSUER_URL`
+    is the correctly-spelled `/o/descendence/`. `claude-devtest-c000ce1e`
+    (id 59) is the live one. Both were left `revoked_at` set / role
+    `viewer`, their state before this session, same "revoke test principals
+    before ending the session" convention as the Phase 9 live-verification
+    entry above - briefly un-revoked and admin-granted mid-session (operator
+    okayed it explicitly) to drive the Playwright login, restored after.
+  - Three throwaway runs this session's testing created against the real
+    supervisor (a cancel-run test, two schedule-trigger tests) were deleted
+    from `runs` after their containers were removed via `podman rm -f`, so
+    no session test data survives in the shared dev DB.
+  - The runtime prune test actually pruned `ps-nameit`'s built image for
+    real (`imagePrunedAt` set, image deleted) - left as-is rather than
+    rebuilt, since pruning is a normal reversible-by-rebuild operation, not
+    corrupted state, and the row/history stayed intact.
+  - `web/dist/index.html` reverted to its placeholder again at the end of
+    this session (see the recurring note above) - seventh and eighth time.

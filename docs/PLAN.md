@@ -106,6 +106,40 @@ Update the marker on each task as it moves:
   why `DATABASE_URL` couldn't just move into a `settings` Postgres table
   (the bootstrap problem) and the reasoning behind the 5s/15s heartbeat
   cadence.
+- **Off-plan work, this session - web UI visual rework + feature-gap
+  closure:** two parts, same session. (1) The web SPA was reskinned to a
+  bespoke dark "Nocturne" design (a Claude Design mockup provided by the
+  operator) - forced dark color scheme (`MantineProvider
+  forceColorScheme="dark"`, dropping the OS-driven auto light/dark from the
+  earlier Mantine migration), a custom `theme.ts` token set (indigo ground,
+  purple accent ramp, Inter type, bespoke spacing/radius scale), a rebuilt
+  `Layout.tsx` (grouped sidebar nav + per-page `PageHeader` chrome replacing
+  `AppShell.Header`), and four new shared primitives
+  (`components/{PageHeader,StatTile,StatusTag,FadeRule}.tsx`) applied across
+  every page. Presentation-only - no API or data-flow changes. Two mockup
+  elements were deliberately dropped rather than faked: a 7-day run-volume
+  bar chart (no day-bucketed endpoint exists) and job-scoped "recent runs" on
+  JobDetail (no per-job run filter in the API). (2) A follow-up audit (asked
+  for explicitly: "what's implemented on the API but missing from the
+  webapp?") found four backend-complete, CLI-exposed features with zero web
+  UI: **schedules** (Phase 5's full CRUD + trigger - now a permission-gated
+  panel on JobDetail, `web/src/api/schedules.ts`), **cancel run** (the
+  `cancelRun()` client already existed, unused - now a header button on
+  RunDetail for non-terminal runs), **runtime prune** (`pruneRuntimes()`
+  added to `runtimes.ts`; selection-checkbox + "prune selected"/"prune older
+  than N days" on RuntimeList), and a **script editor** (a job is a manifest
+  *plus* a sidecar script at `Job.scriptPath` that `ManifestEditor` never
+  touched - new `ScriptEditor.tsx` at `/jobs/:id/script`, reusing the
+  existing generic `getRepoFile`/`createRepoFile` endpoints, no backend
+  changes). All four gated on the existing RBAC permission keys
+  (`schedules:read/write/trigger`, `runs:cancel`, `runtimes:write`,
+  `repos:read/write`). Live-verified end to end against a real Authentik +
+  Postgres + Podman stack via Playwright (not just `npm run build`/lint) -
+  found and fixed one real bug in the process: the Schedules panel's row
+  layout crammed the enabled tag, cron expression, timezone, and three
+  action buttons onto one non-wrapping line, truncating text (`"On"` →
+  `"O."`, `"0 3 * * *"` → `"0 3 *..."`). Not a numbered PLAN.md phase,
+  same as the earlier Mantine migration.
 - **Blocked on:** nothing.
 - **Notes carried from 7.6/7.7 - resolved this phase:** the dev Postgres
   instance's `kind='user'` principal `webui-716` (owns runs 245/246,
