@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { Alert, Code, Group, Loader, Paper, SimpleGrid, Stack, Text } from '@mantine/core'
-import { getRun, isTerminal, runLogsStreamURL, type Run, type RunLogLine } from '../api/runs'
+import { Alert, Button, Code, Group, Loader, Paper, SimpleGrid, Stack, Text } from '@mantine/core'
+import { cancelRun, getRun, isTerminal, runLogsStreamURL, type Run, type RunLogLine } from '../api/runs'
 import { APIError } from '../api/client'
+import { useAuth } from '../auth'
 import PageHeader from '../components/PageHeader'
 import StatusTag from '../components/StatusTag'
 
@@ -17,10 +18,29 @@ function formatDuration(startedAt?: string | null, finishedAt?: string | null): 
 
 export default function RunDetail() {
   const { id } = useParams<{ id: string }>()
+  const { principal } = useAuth()
+  const canCancel = principal?.permissions.includes('runs:cancel') ?? false
   const [run, setRun] = useState<Run | null>(null)
   const [lines, setLines] = useState<RunLogLine[]>([])
   const [error, setError] = useState<string | null>(null)
+  const [cancelling, setCancelling] = useState(false)
+  const [cancelError, setCancelError] = useState<string | null>(null)
   const logRef = useRef<HTMLDivElement>(null)
+
+  async function handleCancel() {
+    if (!run) return
+    if (!window.confirm(`Cancel run #${run.id}? This cannot be undone.`)) return
+    setCancelError(null)
+    setCancelling(true)
+    try {
+      const updated = await cancelRun(run.id)
+      setRun(updated)
+    } catch (err) {
+      setCancelError(err instanceof APIError ? err.message : 'Failed cancelling run')
+    } finally {
+      setCancelling(false)
+    }
+  }
 
   useEffect(() => {
     if (!id) return
@@ -80,8 +100,26 @@ export default function RunDetail() {
     )
 
   return (
-    <PageHeader title={`Run #${run.id}`} subtitle={run.imageRef} backTo="/runs" backLabel="Runs">
+    <PageHeader
+      title={`Run #${run.id}`}
+      subtitle={run.imageRef}
+      backTo="/runs"
+      backLabel="Runs"
+      action={
+        canCancel &&
+        !isTerminal(run.state) && (
+          <Button size="xs" color="red" variant="subtle" onClick={handleCancel} loading={cancelling}>
+            Cancel run
+          </Button>
+        )
+      }
+    >
       <Stack gap="lg" maw={1080}>
+        {cancelError && (
+          <Alert color="red" role="alert">
+            {cancelError}
+          </Alert>
+        )}
         <Group gap="sm">
           <StatusTag status={run.state} />
           <Text

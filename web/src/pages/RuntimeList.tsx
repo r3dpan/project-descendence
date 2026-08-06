@@ -3,8 +3,11 @@ import { Link } from 'react-router-dom'
 import {
   Alert,
   Button,
+  Checkbox,
   Code,
+  Group,
   LoadingOverlay,
+  NumberInput,
   Paper,
   SegmentedControl,
   Stack,
@@ -13,17 +16,38 @@ import {
   Textarea,
   TextInput,
 } from '@mantine/core'
-import { createRuntime, listRuntimes, type Runtime } from '../api/runtimes'
+import { notifications } from '@mantine/notifications'
+import { createRuntime, listRuntimes, pruneRuntimes, type Runtime, type RuntimePruneResult } from '../api/runtimes'
 import { APIError } from '../api/client'
+import { useAuth } from '../auth'
 import PageHeader from '../components/PageHeader'
 import StatusTag from '../components/StatusTag'
 
+function showPruneResult(result: RuntimePruneResult) {
+  const parts: string[] = []
+  if (result.pruned.length > 0) parts.push(`pruned: ${result.pruned.join(', ')}`)
+  if (result.skipped.length > 0) parts.push(`skipped: ${result.skipped.join(', ')}`)
+  if (result.errors.length > 0) parts.push(`errors: ${result.errors.join(', ')}`)
+  notifications.show({
+    color: result.errors.length > 0 ? 'red' : 'green',
+    message: parts.length > 0 ? parts.join(' · ') : 'Nothing to prune.',
+  })
+}
+
 export default function RuntimeList() {
+  const { principal } = useAuth()
+  const canPrune = principal?.permissions.includes('runtimes:write') ?? false
+
   const [runtimes, setRuntimes] = useState<Runtime[]>([])
   const [cursor, setCursor] = useState<string | undefined>(undefined)
   const [nextCursor, setNextCursor] = useState<string | null | undefined>(undefined)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+
+  const [selected, setSelected] = useState<Set<number>>(new Set())
+  const [pruningSelected, setPruningSelected] = useState(false)
+  const [olderThanDays, setOlderThanDays] = useState<number | ''>('')
+  const [pruningByAge, setPruningByAge] = useState(false)
 
   const [name, setName] = useState('')
   const [lang, setLang] = useState<'python' | 'powershell' | 'node'>('python')
@@ -33,16 +57,58 @@ export default function RuntimeList() {
   const [createError, setCreateError] = useState<string | null>(null)
   const [creating, setCreating] = useState(false)
 
-  useEffect(() => {
+  function load(nextCursorArg?: string) {
     setLoading(true)
-    listRuntimes({ cursor })
+    listRuntimes({ cursor: nextCursorArg })
       .then((page) => {
-        setRuntimes((prev) => (cursor ? [...prev, ...page.items] : page.items))
+        setRuntimes((prev) => (nextCursorArg ? [...prev, ...page.items] : page.items))
         setNextCursor(page.nextCursor)
       })
       .catch((err) => setError(err instanceof APIError ? err.message : 'Failed loading runtimes'))
       .finally(() => setLoading(false))
-  }, [cursor])
+  }
+
+  useEffect(() => load(cursor), [cursor])
+
+  function toggleSelected(id: number) {
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  async function handlePruneSelected() {
+    if (selected.size === 0) return
+    setPruningSelected(true)
+    try {
+      const result = await pruneRuntimes({ ids: Array.from(selected) })
+      showPruneResult(result)
+      setSelected(new Set())
+      setCursor(undefined)
+      load(undefined)
+    } catch (err) {
+      notifications.show({ color: 'red', message: err instanceof APIError ? err.message : 'Failed pruning runtimes' })
+    } finally {
+      setPruningSelected(false)
+    }
+  }
+
+  async function handlePruneByAge() {
+    if (olderThanDays === '') return
+    setPruningByAge(true)
+    try {
+      const result = await pruneRuntimes({ olderThanDays })
+      showPruneResult(result)
+      setCursor(undefined)
+      load(undefined)
+    } catch (err) {
+      notifications.show({ color: 'red', message: err instanceof APIError ? err.message : 'Failed pruning runtimes' })
+    } finally {
+      setPruningByAge(false)
+    }
+  }
 
   async function handleCreate(e: FormEvent) {
     e.preventDefault()
@@ -87,6 +153,7 @@ export default function RuntimeList() {
             <Table verticalSpacing="sm">
               <Table.Thead>
                 <Table.Tr>
+                  {canPrune && <Table.Th></Table.Th>}
                   <Table.Th>Name</Table.Th>
                   <Table.Th>Lang</Table.Th>
                   <Table.Th>Build status</Table.Th>
@@ -95,7 +162,16 @@ export default function RuntimeList() {
               </Table.Thead>
               <Table.Tbody>
                 {runtimes.map((runtime) => (
-                  <Table.Tr key={runtime.id} style={{ cursor: 'pointer' }}>
+                  <Table.Tr key={runtime.id}>
+                    {canPrune && (
+                      <Table.Td>
+                        <Checkbox
+                          checked={selected.has(runtime.id)}
+                          onChange={() => toggleSelected(runtime.id)}
+                          aria-label={`Select ${runtime.name}`}
+                        />
+                      </Table.Td>
+                    )}
                     <Table.Td>
                       <Text component={Link} to={`/runtimes/${runtime.id}`} c="accent.4" fw={500} style={{ textDecoration: 'none' }}>
                         {runtime.name}
@@ -120,6 +196,36 @@ export default function RuntimeList() {
             <Button variant="default" mt="md" onClick={() => setCursor(nextCursor)}>
               Load more
             </Button>
+          )}
+
+          {canPrune && (
+            <Group gap="lg" mt="md" align="flex-end" wrap="wrap">
+              <Button
+                size="xs"
+                variant="default"
+                onClick={handlePruneSelected}
+                disabled={selected.size === 0}
+                loading={pruningSelected}
+              >
+                Prune selected ({selected.size})
+              </Button>
+              <Group gap="xs" align="flex-end">
+                <NumberInput
+                  label="Prune unused, older than"
+                  size="xs"
+                  w={90}
+                  min={0}
+                  value={olderThanDays}
+                  onChange={(v) => setOlderThanDays(v === '' ? '' : Number(v))}
+                />
+                <Text size="xs" c="dimmed" mb={6}>
+                  days
+                </Text>
+                <Button size="xs" variant="default" onClick={handlePruneByAge} disabled={olderThanDays === ''} loading={pruningByAge}>
+                  Prune
+                </Button>
+              </Group>
+            </Group>
           )}
         </div>
 

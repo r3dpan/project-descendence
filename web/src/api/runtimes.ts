@@ -4,6 +4,8 @@ import type { components } from './schema'
 export type Runtime = components['schemas']['Runtime']
 export type RuntimeList = components['schemas']['RuntimeList']
 export type RuntimeCreate = components['schemas']['RuntimeCreate']
+export type RuntimePrune = components['schemas']['RuntimePrune']
+export type RuntimePruneResult = components['schemas']['RuntimePruneResult']
 
 export const TERMINAL_BUILD_STATUSES = new Set(['ready', 'failed'])
 
@@ -33,4 +35,10 @@ export function createRuntime(params: RuntimeCreate): Promise<Runtime> {
 // the new buildStatus rather than trusting a body that isn't there.
 export function buildRuntime(id: number | string): Promise<void> {
   return request<void>(`/api/v1/runtimes/${id}/build`, { method: 'POST' })
+}
+
+// The runtime row always survives - only the image is deleted. Exactly one
+// of ids/olderThanDays must be set (server-enforced, task 4.7).
+export function pruneRuntimes(body: RuntimePrune): Promise<RuntimePruneResult> {
+  return request<RuntimePruneResult>('/api/v1/runtimes/prune', { method: 'POST', body })
 }

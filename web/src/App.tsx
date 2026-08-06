@@ -10,6 +10,7 @@ import RunDetail from './pages/RunDetail'
 import JobList from './pages/JobList'
 import JobDetail from './pages/JobDetail'
 import ManifestEditor from './pages/ManifestEditor'
+import ScriptEditor from './pages/ScriptEditor'
 import RuntimeList from './pages/RuntimeList'
 import RuntimeDetail from './pages/RuntimeDetail'
 import UserDetail from './pages/UserDetail'
@@ -104,6 +105,14 @@ export default function App() {
             element={
               <Protected>
                 <ManifestEditor mode="edit" />
+              </Protected>
+            }
+          />
+          <Route
+            path="/jobs/:id/script"
+            element={
+              <Protected>
+                <ScriptEditor />
               </Protected>
             }
           />
