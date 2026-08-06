@@ -163,6 +163,11 @@ func main() {
 	descendenceMux.HandleFunc("PATCH /api/v1/users/{id}", descendenceAPI.RequireAuth(descendenceAPI.RequirePermission("users:write", descendenceAPI.PatchUserHandler)))
 	descendenceMux.HandleFunc("DELETE /api/v1/users/{id}", descendenceAPI.RequireAuth(descendenceAPI.RequirePermission("users:write", descendenceAPI.RevokeUserHandler)))
 
+	descendenceMux.HandleFunc("GET /api/v1/tokens", descendenceAPI.RequireAuth(descendenceAPI.RequirePermission("users:read", descendenceAPI.ListTokensHandler)))
+	descendenceMux.HandleFunc("POST /api/v1/tokens", descendenceAPI.RequireAuth(descendenceAPI.RequirePermission("users:write", descendenceAPI.CreateTokenHandler)))
+	descendenceMux.HandleFunc("GET /api/v1/tokens/{id}", descendenceAPI.RequireAuth(descendenceAPI.RequirePermission("users:read", descendenceAPI.GetTokenHandler)))
+	descendenceMux.HandleFunc("DELETE /api/v1/tokens/{id}", descendenceAPI.RequireAuth(descendenceAPI.RequirePermission("users:write", descendenceAPI.RevokeTokenHandler)))
+
 	descendenceMux.HandleFunc("POST /api/v1/runtimes", descendenceAPI.RequireAuth(descendenceAPI.CreateRuntimeHandler))
 	descendenceMux.HandleFunc("GET /api/v1/runtimes", descendenceAPI.RequireAuth(descendenceAPI.ListRuntimesHandler))
 	descendenceMux.HandleFunc("GET /api/v1/runtimes/{id}", descendenceAPI.RequireAuth(descendenceAPI.GetRuntimeHandler))
