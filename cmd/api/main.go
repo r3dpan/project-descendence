@@ -153,6 +153,16 @@ func main() {
 	descendenceMux.HandleFunc("DELETE /api/v1/schedules/{id}", descendenceAPI.RequireAuth(descendenceAPI.DeleteScheduleHandler))
 	descendenceMux.HandleFunc("POST /api/v1/schedules/{id}/trigger", descendenceAPI.RequireAuth(descendenceAPI.RequirePermission("schedules:trigger", descendenceAPI.TriggerScheduleHandler)))
 
+	// Users and tokens (Phase 8) - both principals rows, admin-only
+	// (users:read/users:write) except self password-change, which is gated
+	// by "acting on self" inline rather than a permission key (decision #5).
+	descendenceMux.HandleFunc("PATCH /api/v1/users/me/password", descendenceAPI.RequireAuth(descendenceAPI.ChangeOwnPasswordHandler))
+	descendenceMux.HandleFunc("GET /api/v1/users", descendenceAPI.RequireAuth(descendenceAPI.RequirePermission("users:read", descendenceAPI.ListUsersHandler)))
+	descendenceMux.HandleFunc("POST /api/v1/users", descendenceAPI.RequireAuth(descendenceAPI.RequirePermission("users:write", descendenceAPI.CreateUserHandler)))
+	descendenceMux.HandleFunc("GET /api/v1/users/{id}", descendenceAPI.RequireAuth(descendenceAPI.RequirePermission("users:read", descendenceAPI.GetUserHandler)))
+	descendenceMux.HandleFunc("PATCH /api/v1/users/{id}", descendenceAPI.RequireAuth(descendenceAPI.RequirePermission("users:write", descendenceAPI.PatchUserHandler)))
+	descendenceMux.HandleFunc("DELETE /api/v1/users/{id}", descendenceAPI.RequireAuth(descendenceAPI.RequirePermission("users:write", descendenceAPI.RevokeUserHandler)))
+
 	descendenceMux.HandleFunc("POST /api/v1/runtimes", descendenceAPI.RequireAuth(descendenceAPI.CreateRuntimeHandler))
 	descendenceMux.HandleFunc("GET /api/v1/runtimes", descendenceAPI.RequireAuth(descendenceAPI.ListRuntimesHandler))
 	descendenceMux.HandleFunc("GET /api/v1/runtimes/{id}", descendenceAPI.RequireAuth(descendenceAPI.GetRuntimeHandler))

@@ -7,7 +7,44 @@ package store
 
 import (
 	"context"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
+
+const getPrincipalByIDWithRole = `-- name: GetPrincipalByIDWithRole :one
+SELECT p.id, p.kind, p.name, p.token_hint, p.created_at, p.expires_at, p.revoked_at, r.name AS role_name
+FROM principals p
+LEFT JOIN principal_roles pr ON pr.principal_id = p.id
+LEFT JOIN roles r ON r.id = pr.role_id
+WHERE p.id = $1
+`
+
+type GetPrincipalByIDWithRoleRow struct {
+	ID        int64              `json:"id"`
+	Kind      string             `json:"kind"`
+	Name      string             `json:"name"`
+	TokenHint pgtype.Text        `json:"token_hint"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	ExpiresAt pgtype.Timestamptz `json:"expires_at"`
+	RevokedAt pgtype.Timestamptz `json:"revoked_at"`
+	RoleName  pgtype.Text        `json:"role_name"`
+}
+
+func (q *Queries) GetPrincipalByIDWithRole(ctx context.Context, id int64) (GetPrincipalByIDWithRoleRow, error) {
+	row := q.db.QueryRow(ctx, getPrincipalByIDWithRole, id)
+	var i GetPrincipalByIDWithRoleRow
+	err := row.Scan(
+		&i.ID,
+		&i.Kind,
+		&i.Name,
+		&i.TokenHint,
+		&i.CreatedAt,
+		&i.ExpiresAt,
+		&i.RevokedAt,
+		&i.RoleName,
+	)
+	return i, err
+}
 
 const getPrincipalPermissions = `-- name: GetPrincipalPermissions :many
 SELECT p.key
@@ -72,6 +109,57 @@ func (q *Queries) GetRoleByName(ctx context.Context, name string) (Role, error) 
 		&i.CreatedAt,
 	)
 	return i, err
+}
+
+const listPrincipalsByKindWithRole = `-- name: ListPrincipalsByKindWithRole :many
+SELECT p.id, p.kind, p.name, p.token_hint, p.created_at, p.expires_at, p.revoked_at, r.name AS role_name
+FROM principals p
+LEFT JOIN principal_roles pr ON pr.principal_id = p.id
+LEFT JOIN roles r ON r.id = pr.role_id
+WHERE p.kind = $1
+ORDER BY p.name
+`
+
+type ListPrincipalsByKindWithRoleRow struct {
+	ID        int64              `json:"id"`
+	Kind      string             `json:"kind"`
+	Name      string             `json:"name"`
+	TokenHint pgtype.Text        `json:"token_hint"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	ExpiresAt pgtype.Timestamptz `json:"expires_at"`
+	RevokedAt pgtype.Timestamptz `json:"revoked_at"`
+	RoleName  pgtype.Text        `json:"role_name"`
+}
+
+// The users/tokens list endpoints (task 8.2/8.3), joined so the list view
+// doesn't do an N+1 role lookup per row.
+func (q *Queries) ListPrincipalsByKindWithRole(ctx context.Context, kind string) ([]ListPrincipalsByKindWithRoleRow, error) {
+	rows, err := q.db.Query(ctx, listPrincipalsByKindWithRole, kind)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListPrincipalsByKindWithRoleRow
+	for rows.Next() {
+		var i ListPrincipalsByKindWithRoleRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Kind,
+			&i.Name,
+			&i.TokenHint,
+			&i.CreatedAt,
+			&i.ExpiresAt,
+			&i.RevokedAt,
+			&i.RoleName,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listRolePermissionKeys = `-- name: ListRolePermissionKeys :many

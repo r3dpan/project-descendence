@@ -33,6 +33,23 @@ JOIN permissions p ON p.id = rp.permission_id
 WHERE rp.role_id = $1
 ORDER BY p.key;
 
+-- name: ListPrincipalsByKindWithRole :many
+-- The users/tokens list endpoints (task 8.2/8.3), joined so the list view
+-- doesn't do an N+1 role lookup per row.
+SELECT p.id, p.kind, p.name, p.token_hint, p.created_at, p.expires_at, p.revoked_at, r.name AS role_name
+FROM principals p
+LEFT JOIN principal_roles pr ON pr.principal_id = p.id
+LEFT JOIN roles r ON r.id = pr.role_id
+WHERE p.kind = $1
+ORDER BY p.name;
+
+-- name: GetPrincipalByIDWithRole :one
+SELECT p.id, p.kind, p.name, p.token_hint, p.created_at, p.expires_at, p.revoked_at, r.name AS role_name
+FROM principals p
+LEFT JOIN principal_roles pr ON pr.principal_id = p.id
+LEFT JOIN roles r ON r.id = pr.role_id
+WHERE p.id = $1;
+
 -- name: SetPrincipalRole :exec
 -- Used both by cmd/seed (bootstrap, bypassing the API/RequirePermission by
 -- construction the same way it already bypasses "you need users:write" by
