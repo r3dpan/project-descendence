@@ -1,95 +1,57 @@
-import { useState, type FormEvent } from 'react'
+import { Tabs, Title } from '@mantine/core'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth'
-import { changeOwnPassword } from '../api/users'
-import { APIError } from '../api/client'
-import { Alert, Button, Paper, PasswordInput, Stack, Text, Title } from '@mantine/core'
-import { notifications } from '@mantine/notifications'
+import AccountTab from './settings/AccountTab'
+import UserList from './UserList'
+import TokenList from './TokenList'
+import Configuration from './Configuration'
 
-// Self-service password change - the one page every authenticated user can
-// reach, unlike /users and /tokens which are gated on users:write. Gated by
-// "acting on self" server-side (decision #5's carve-out), not a permission
-// key, so there is nothing to check client-side beyond being logged in.
+// Off-plan web UI work: Users/Tokens/Configuration used to be unrelated
+// top-level nav entries even though they're all "administer this instance"
+// concerns - folded here as Settings sub-tabs, alongside the pre-existing
+// self-service Account tab. activeTab is derived from location.pathname
+// (not internal state) so a deep-link or App.tsx's old-path redirects land
+// on the right tab without a click ever happening.
 export default function Settings() {
   const { principal } = useAuth()
-  const [currentPassword, setCurrentPassword] = useState('')
-  const [newPassword, setNewPassword] = useState('')
-  const [confirmPassword, setConfirmPassword] = useState('')
-  const [error, setError] = useState<string | null>(null)
-  const [submitting, setSubmitting] = useState(false)
+  const navigate = useNavigate()
+  const location = useLocation()
+  const canSeeUsers = principal?.permissions.includes('users:read') ?? false
+  const canSeeConfig = principal?.permissions.includes('config:read') ?? false
 
-  const isTokenPrincipal = principal?.kind === 'token'
-
-  async function handleSubmit(e: FormEvent) {
-    e.preventDefault()
-    setError(null)
-    if (newPassword !== confirmPassword) {
-      setError('New password and confirmation do not match')
-      return
-    }
-    setSubmitting(true)
-    try {
-      await changeOwnPassword(currentPassword, newPassword)
-      notifications.show({ color: 'green', message: 'Password changed.' })
-      setCurrentPassword('')
-      setNewPassword('')
-      setConfirmPassword('')
-    } catch (err) {
-      setError(err instanceof APIError ? err.message : 'Failed changing password')
-    } finally {
-      setSubmitting(false)
-    }
-  }
+  const activeTab = location.pathname.split('/')[2] || 'account'
 
   return (
     <>
       <Title order={2} mb="md">
         Settings
       </Title>
-      <Title order={3} mb="md">
-        Change password
-      </Title>
-      {isTokenPrincipal ? (
-        <Text>Token principals have no password to change.</Text>
-      ) : (
-        <Paper withBorder p="md" maw={320}>
-          <form onSubmit={handleSubmit}>
-            <Stack>
-              <PasswordInput
-                label="Current password"
-                id="current-password"
-                value={currentPassword}
-                onChange={(e) => setCurrentPassword(e.target.value)}
-                autoComplete="current-password"
-                required
-              />
-              <PasswordInput
-                label="New password"
-                id="new-password"
-                value={newPassword}
-                onChange={(e) => setNewPassword(e.target.value)}
-                autoComplete="new-password"
-                required
-              />
-              <PasswordInput
-                label="Confirm new password"
-                id="confirm-password"
-                value={confirmPassword}
-                onChange={(e) => setConfirmPassword(e.target.value)}
-                autoComplete="new-password"
-                required
-              />
-              {error && (
-                <Alert color="red" role="alert">
-                  {error}
-                </Alert>
-              )}
-              <Button type="submit" loading={submitting}>
-                {submitting ? 'Saving…' : 'Change password'}
-              </Button>
-            </Stack>
-          </form>
-        </Paper>
-      )}
+      <Tabs value={activeTab} onChange={(value) => navigate(`/settings/${value}`)}>
+        <Tabs.List mb="md">
+          <Tabs.Tab value="account">Account</Tabs.Tab>
+          {canSeeUsers && <Tabs.Tab value="users">Users</Tabs.Tab>}
+          {canSeeUsers && <Tabs.Tab value="tokens">Tokens</Tabs.Tab>}
+          {canSeeConfig && <Tabs.Tab value="configuration">Configuration</Tabs.Tab>}
+        </Tabs.List>
+        <Tabs.Panel value="account">
+          <AccountTab />
+        </Tabs.Panel>
+        {canSeeUsers && (
+          <Tabs.Panel value="users">
+            <UserList />
+          </Tabs.Panel>
+        )}
+        {canSeeUsers && (
+          <Tabs.Panel value="tokens">
+            <TokenList />
+          </Tabs.Panel>
+        )}
+        {canSeeConfig && (
+          <Tabs.Panel value="configuration">
+            <Configuration />
+          </Tabs.Panel>
+        )}
+      </Tabs>
     </>
   )
 }

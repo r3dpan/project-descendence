@@ -2437,3 +2437,158 @@ Notes to future me:
     `UserList`/`TokenList` do not currently show it. Adding it there is a
     small, separate change, not something this session's plumbing already
     covers.
+
+## 2026-08-06 (Web UI, continued — system status, Configuration page, Settings sub-nav)
+Worked on: two more operator requests on top of the existing Dashboard: (1)
+a Dashboard block showing whether the database, Podman socket, and
+supervisor are actually up; (2) a Configuration page to edit
+`DATABASE_URL`/`PODMAN_SOCKET` at runtime, with the operator explicitly
+asked to weigh in on where that should persist. Folded in a third,
+related request: move Users/Tokens/Configuration/Account under one
+Settings area instead of unrelated top-level nav entries.
+Decisions taken (asked via AskUserQuestion, all went with the recommended
+option): config persists to a **dedicated file** (`internal/appconfig`),
+not by editing `.env` in place; **no hot-reload/auto-restart** - save
+persists and the UI shows a "restart required" banner; supervisor liveness
+via a **new heartbeat table**, not `pg_locks` introspection; new
+**`config:read`/`config:write`** permissions, admin-role-only. See
+ARCHITECTURE.md §6 decisions #31-#33 for the full reasoning, especially #31
+on why `DATABASE_URL` couldn't move into a Postgres `settings` table (the
+bootstrap problem: it can't be stored inside the database it connects to).
+Completed:
+  - **Supervisor heartbeat**: migration `00011_supervisor_heartbeat.sql` - a
+    true singleton table (`id smallint PRIMARY KEY DEFAULT 1 CHECK (id=1)`),
+    `last_beat_at`/`started_at`. New queries in the existing
+    `internal/store/queries/supervisor.sql` (already held the advisory-lock
+    queries): `UpsertSupervisorHeartbeat` (upsert that never overwrites
+    `started_at` after the first insert) and `GetSupervisorHeartbeat`. New
+    `cmd/supervisor/heartbeat.go` - `runHeartbeatLoop`, same one-loop-per-file
+    shape as `schedule.go`'s sync loop, beats immediately then every 5s,
+    launched from `main()` only after `acquireSingletonLock` succeeds (so a
+    beat always means the lock-holder is alive). Staleness threshold (used
+    by the status endpoint) is 15s, 3x the beat interval.
+  - **`internal/appconfig`** (new package): `Load`/`Save`/`Resolve`/
+    `DefaultPath` for a hand-parsed `KEY=value` file holding just
+    `DatabaseURL`/`PodmanSocket` - deliberately narrow, `RUN_LOG_DIR`/
+    `GIT_REPO_DIR`/etc. stay env-only. Default path
+    `$HOME/.config/descendence/config.env`, override via
+    `DESCENDENCE_CONFIG_FILE`. `Resolve(envVar, fileValue)` lets an actual
+    environment variable of the same name always win - both `cmd/api` and
+    `cmd/supervisor`'s existing `os.Getenv("DATABASE_URL")`/
+    `os.Getenv("PODMAN_SOCKET")` call sites now load the file first and
+    route through this, unchanged everywhere else.
+  - **Permissions migration** `00012_config_permissions.sql`: `config:read`/
+    `config:write`, admin-only. Necessary as its own migration because
+    `00009_rbac.sql`'s admin grant (`WHERE r.name = 'admin'`, no `p.key`
+    filter) ran once at migration time and does not retroactively cover
+    permissions inserted later - confirmed by reading that migration before
+    writing this one, not assumed.
+  - **`GET /api/v1/system/status`** (`internal/api/system.go`,
+    `RequireAuth`-only, no specific permission - operational visibility for
+    any logged-in principal): pings the database (`s.queries.Ping`, same
+    call `/healthz` already makes), calls Podman `Info` (ditto), and reads
+    the heartbeat row for staleness. Always returns `200` (unlike
+    `/healthz`'s `503`-on-unhealthy) since this drives per-tile UI color,
+    not an infra prober.
+  - **`GET`/`PUT /api/v1/config`** (`internal/api/config.go`,
+    `config:read`/`config:write`): `GET` returns the file's contents with
+    the database URL's password masked as `***`. `PUT` validates shape only
+    (URL scheme, non-empty socket - never a live connection attempt, since
+    the process handling the request isn't necessarily the one that will
+    boot next) and, if the incoming password is exactly `***` (the client
+    resubmitted the mask unchanged, e.g. editing only the socket field),
+    splices the real stored password back in rather than persisting the
+    literal placeholder - covered by a dedicated test
+    (`TestPutConfigPreservesPasswordWhenMaskResubmitted`). Masking itself
+    hit a real bug during testing: `url.UserPassword("user",
+    "***").String()` percent-encodes the asterisks into `%2A%2A%2A` (net/url
+    escapes userinfo characters outside a narrow unreserved set), so the
+    masked value is built by string-splicing `":***@"` in after the
+    username instead of round-tripping through `url.URL.String()`.
+  - **`api/openapi.yaml`**: `SystemStatus`/`ComponentStatus`/`Config`
+    schemas, `/api/v1/system/status` and `/api/v1/config` paths, in the
+    same change as the handlers. `internal/client/system.go` mirrors both
+    endpoints (`SystemStatus()`, `GetConfig()`, `PutConfig()`) - no CLI
+    subcommand added for either, same "web-only ask" gap already noted for
+    `RunStats`.
+  - **`Dashboard.tsx`**: refactored the existing KPI tile markup into a
+    shared `TileGrid` component (was duplicated inline before), added a
+    second "System status" tile row (Database/Podman/Supervisor,
+    Connected-or-not/Reachable-or-not/Running-or-not) fetched independently
+    from the run-stats KPIs so one endpoint failing doesn't blank the other.
+  - **`Configuration.tsx`** (new page): `Paper`-wrapped form (same
+    convention as every other create form in this SPA) for the two fields,
+    with a caption explaining the password mask and a yellow "restart
+    required" `Alert` after a successful save.
+  - **Settings restructure**: `Settings.tsx` became a Mantine `Tabs` shell
+    (first use of `Tabs` in this codebase) with Account/Users/Tokens/
+    Configuration panels, each just rendering the pre-existing page
+    component - `AccountTab.tsx` (new, under `pages/settings/`) holds
+    exactly the old `Settings.tsx` password-change body, relocated
+    verbatim. `activeTab` is derived from `location.pathname`, not
+    component state, so a deep link or redirect lands on the right tab
+    without a click happening first. New routes:
+    `/settings/{account,users,tokens,configuration}` plus
+    `/settings/users/:id` (kept as a full separate route, not a tab, since a
+    detail page has no sibling to switch between). Old `/users`, `/users/:id`,
+    `/tokens` now `<Navigate>`-redirect to their `/settings/...` equivalents -
+    `/users/:id` needed a tiny `RedirectUserDetail` wrapper since
+    `<Navigate to>` is a static string and can't interpolate a route param.
+    `Layout.tsx`'s sidebar lost the `Users`/`Tokens` links (now Settings
+    tabs) and the now-dead `canSeeUsers` variable along with them - down to
+    Dashboard/Runs/Jobs/Runtimes/Settings.
+  - **Tests**: `internal/api/system_test.go` (no-heartbeat-row,
+    stale-heartbeat, fresh-heartbeat cases) and `internal/api/config_test.go`
+    (password-mask-preserved, password-actually-changed, shape-validation-
+    rejected, GET-masks cases) - the plan called for at least the
+    password-preservation case since it's the one non-obvious piece of
+    logic; ended up covering the full matrix since both handlers are cheap
+    to exercise via `httptest` with no real dependencies (config_test.go)
+    or a disposable Postgres row (system_test.go).
+Verified live: `goose up`/`down`x2/`up` round-tripped both new migrations
+cleanly; `sqlc generate` diffed as generated-only; `go build ./...`,
+`go vet ./...`, full `go test -short ./...` all clean (one pre-existing
+flaky test, `TestAClosedStreamReleasesItsSubscription`, failed once under
+`-short` load and passed in isolation and on a full re-run - not a
+regression, not investigated further). Built and ran real `cmd/api`/
+`cmd/supervisor` binaries against the dev Postgres instance (no other
+supervisor was live) and drove the full flow: logged in as a fresh admin,
+confirmed `GET /api/v1/system/status` shows all three "up"; `PUT
+/api/v1/config` round-tripped the real `.env` values into
+`~/.config/descendence/config.env`, confirmed the file on disk, confirmed
+`GET` masks the password, confirmed resubmitting the mask while changing
+only the socket path preserved the real password on disk; confirmed a
+viewer principal gets `403` from `/api/v1/config` but `200` from
+`/api/v1/system/status`; killed the supervisor process, waited past the
+15s staleness window, confirmed the tile-backing endpoint flipped
+Supervisor to `"down"`/`"heartbeat stale"` while Database/Podman stayed
+`"up"`, restarted it, confirmed it flipped back immediately. Browser-
+verified with a temporary `playwright` install (`--no-save`, removed again
+afterward): screenshotted the Dashboard's new status tiles, the Settings
+Tabs shell (Account/Users/Tokens/Configuration), the Configuration tab's
+masked field, and confirmed `/users`/`/tokens` redirect to their
+`/settings/...` equivalents and `/settings/configuration` deep-links
+correctly.
+Broken / unresolved: nothing new. The `react-router-dom` npm audit finding
+is still unaddressed (unchanged from prior sessions - deliberate non-fix).
+Next action: none specific - this closes out both operator requests from
+this session. PLAN.md's deferred-work menu is unchanged.
+Notes to future me:
+  - Three test principals were minted this session (`verify-config`,
+    `verify-viewer`, and a throwaway `verify-cleanup` used only because the
+    first two ended up in a state where re-confirming their revocation
+    needed a working admin session) - all three were revoked via `DELETE
+    /api/v1/users/{id}` before ending the session.
+  - `web/dist/index.html` was reverted to its tracked placeholder again
+    after `npm run build` runs - the fourth time this exact gotcha has been
+    noted now. A pre-commit hook or Makefile target that does this
+    automatically would be worth it if it keeps recurring.
+  - The dev Postgres instance already had several stale queued runs
+    (`test.invalid/never-pulled` image, ids in the 247-270 range) left over
+    from a previous session's test fixtures - starting the supervisor during
+    this session's live verification let it claim and fail them (image pull
+    failures against a fake registry, as expected). Not created by this
+    session and not cleaned up, since their origin predates it and touching
+    other sessions' fixtures without knowing their purpose felt riskier than
+    leaving them - flagging here so a future session recognizes them as
+    pre-existing rather than fresh mess.

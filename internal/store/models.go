@@ -153,3 +153,9 @@ type Session struct {
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 	ExpiresAt   pgtype.Timestamptz `json:"expires_at"`
 }
+
+type SupervisorHeartbeat struct {
+	ID         int16              `json:"id"`
+	LastBeatAt pgtype.Timestamptz `json:"last_beat_at"`
+	StartedAt  pgtype.Timestamptz `json:"started_at"`
+}

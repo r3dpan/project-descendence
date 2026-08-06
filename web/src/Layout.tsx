@@ -5,13 +5,10 @@ import { useDisclosure } from '@mantine/hooks'
 import { useAuth } from './auth'
 
 export default function Layout({ children }: { children: ReactNode }) {
-  const { principal, logout } = useAuth()
+  const { logout } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
   const [navbarOpen, { toggle: toggleNavbar }] = useDisclosure()
-  // Hidden rather than shown-and-403'd on click, matching the CLI TUI's
-  // menu-gating (task 8.9) - users:read is what governs the server side too.
-  const canSeeUsers = principal?.permissions.includes('users:read') ?? false
 
   async function handleLogout() {
     await logout()
@@ -39,12 +36,6 @@ export default function Layout({ children }: { children: ReactNode }) {
         <NavLink component={RouterNavLink} to="/runs" label="Runs" active={isActive('/runs')} />
         <NavLink component={RouterNavLink} to="/jobs" label="Jobs" active={isActive('/jobs')} />
         <NavLink component={RouterNavLink} to="/runtimes" label="Runtimes" active={isActive('/runtimes')} />
-        {canSeeUsers && (
-          <>
-            <NavLink component={RouterNavLink} to="/users" label="Users" active={isActive('/users')} />
-            <NavLink component={RouterNavLink} to="/tokens" label="Tokens" active={isActive('/tokens')} />
-          </>
-        )}
         <NavLink component={RouterNavLink} to="/settings" label="Settings" active={isActive('/settings')} mt="auto" />
       </AppShell.Navbar>
       <AppShell.Main>{children}</AppShell.Main>

@@ -127,7 +127,7 @@ func newTestServer(t *testing.T) (*APIServer, *logstream.Broker, context.Context
 
 	broker := logstream.NewBroker()
 
-	return NewAPIServer("test", "test", "test", queries, nil, t.TempDir(), broker, nil), broker, ctx
+	return NewAPIServer("test", "test", "test", queries, nil, t.TempDir(), broker, nil, ""), broker, ctx
 }
 
 // A disconnecting client must cost nothing (task 2.7).

@@ -7,6 +7,8 @@ package store
 
 import (
 	"context"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const advisoryUnlock = `-- name: AdvisoryUnlock :one
@@ -18,6 +20,25 @@ func (q *Queries) AdvisoryUnlock(ctx context.Context, lockKey int64) (bool, erro
 	var was_held bool
 	err := row.Scan(&was_held)
 	return was_held, err
+}
+
+const getSupervisorHeartbeat = `-- name: GetSupervisorHeartbeat :one
+SELECT last_beat_at, started_at FROM supervisor_heartbeat WHERE id = 1
+`
+
+type GetSupervisorHeartbeatRow struct {
+	LastBeatAt pgtype.Timestamptz `json:"last_beat_at"`
+	StartedAt  pgtype.Timestamptz `json:"started_at"`
+}
+
+// pgx.ErrNoRows means no supervisor has ever beaten - callers (internal/api's
+// SystemStatusHandler) must treat that as "not running", not as a query
+// failure.
+func (q *Queries) GetSupervisorHeartbeat(ctx context.Context) (GetSupervisorHeartbeatRow, error) {
+	row := q.db.QueryRow(ctx, getSupervisorHeartbeat)
+	var i GetSupervisorHeartbeatRow
+	err := row.Scan(&i.LastBeatAt, &i.StartedAt)
+	return i, err
 }
 
 const tryAdvisoryLock = `-- name: TryAdvisoryLock :one
@@ -33,4 +54,24 @@ func (q *Queries) TryAdvisoryLock(ctx context.Context, lockKey int64) (bool, err
 	var locked bool
 	err := row.Scan(&locked)
 	return locked, err
+}
+
+const upsertSupervisorHeartbeat = `-- name: UpsertSupervisorHeartbeat :exec
+INSERT INTO supervisor_heartbeat (id, last_beat_at, started_at)
+VALUES (1, $1::timestamptz, $2::timestamptz)
+ON CONFLICT (id) DO UPDATE SET last_beat_at = EXCLUDED.last_beat_at
+`
+
+type UpsertSupervisorHeartbeatParams struct {
+	BeatAt    pgtype.Timestamptz `json:"beat_at"`
+	StartedAt pgtype.Timestamptz `json:"started_at"`
+}
+
+// Called on a timer by whichever supervisor holds the advisory lock
+// (cmd/supervisor/heartbeat.go). started_at is only ever written by the
+// first INSERT for a process's lifetime - the ON CONFLICT update
+// deliberately omits it, so it survives every later beat unchanged.
+func (q *Queries) UpsertSupervisorHeartbeat(ctx context.Context, arg UpsertSupervisorHeartbeatParams) error {
+	_, err := q.db.Exec(ctx, upsertSupervisorHeartbeat, arg.BeatAt, arg.StartedAt)
+	return err
 }

@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom'
+import { BrowserRouter, Navigate, Route, Routes, useLocation, useParams } from 'react-router-dom'
 import { AuthProvider, useAuth } from './auth'
 import Layout from './Layout'
 import Login from './pages/Login'
@@ -11,9 +11,7 @@ import JobDetail from './pages/JobDetail'
 import ManifestEditor from './pages/ManifestEditor'
 import RuntimeList from './pages/RuntimeList'
 import RuntimeDetail from './pages/RuntimeDetail'
-import UserList from './pages/UserList'
 import UserDetail from './pages/UserDetail'
-import TokenList from './pages/TokenList'
 import Settings from './pages/Settings'
 
 function Protected({ children }: { children: ReactNode }) {
@@ -25,6 +23,14 @@ function Protected({ children }: { children: ReactNode }) {
     return <Navigate to="/login" replace state={{ from: location.pathname }} />
   }
   return <Layout>{children}</Layout>
+}
+
+// react-router's <Navigate to> is a static string - it can't interpolate a
+// route param, so redirecting the old /users/:id path needs this tiny
+// wrapper rather than a literal <Navigate>.
+function RedirectUserDetail() {
+  const { id } = useParams()
+  return <Navigate to={`/settings/users/${id}`} replace />
 }
 
 export default function App() {
@@ -106,30 +112,6 @@ export default function App() {
             }
           />
           <Route
-            path="/users"
-            element={
-              <Protected>
-                <UserList />
-              </Protected>
-            }
-          />
-          <Route
-            path="/users/:id"
-            element={
-              <Protected>
-                <UserDetail />
-              </Protected>
-            }
-          />
-          <Route
-            path="/tokens"
-            element={
-              <Protected>
-                <TokenList />
-              </Protected>
-            }
-          />
-          <Route
             path="/settings"
             element={
               <Protected>
@@ -137,6 +119,25 @@ export default function App() {
               </Protected>
             }
           />
+          <Route
+            path="/settings/:tab"
+            element={
+              <Protected>
+                <Settings />
+              </Protected>
+            }
+          />
+          <Route
+            path="/settings/users/:id"
+            element={
+              <Protected>
+                <UserDetail />
+              </Protected>
+            }
+          />
+          <Route path="/users" element={<Navigate to="/settings/users" replace />} />
+          <Route path="/users/:id" element={<RedirectUserDetail />} />
+          <Route path="/tokens" element={<Navigate to="/settings/tokens" replace />} />
         </Routes>
       </BrowserRouter>
     </AuthProvider>

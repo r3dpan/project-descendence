@@ -77,6 +77,28 @@ Update the marker on each task as it moves:
   API→client→CLI→web sequencing, though no CLI subcommand was added for
   either (web-only ask). See HISTORY.md for the full rationale, especially
   the last-login "previous value, not now" sequencing trick.
+  (3) A "System status" tile row on the same Dashboard (database/Podman/
+  supervisor up-or-down), plus a new Configuration page for editing
+  `DATABASE_URL`/`PODMAN_SOCKET` at runtime, plus a Settings restructure
+  into sub-tabs (Account/Users/Tokens/Configuration under one `/settings/*`
+  URL tree, `/users`/`/tokens` now redirect there). New pieces: a
+  `supervisor_heartbeat` singleton table (migration `00011`) the supervisor
+  upserts every 5s and the API reads for staleness (>15s stale = "down"),
+  backing `GET /api/v1/system/status` (`SystemStatusHandler`,
+  `RequireAuth`-only, no specific permission); a new `internal/appconfig`
+  package loading a dedicated `config.env`-style file (default
+  `$HOME/.config/descendence/config.env`, override via
+  `DESCENDENCE_CONFIG_FILE`) that both `cmd/api` and `cmd/supervisor` consult
+  for `DATABASE_URL`/`PODMAN_SOCKET` - an actual environment variable of the
+  same name still always wins, and neither process hot-reloads the file, so
+  a Configuration-page save only takes effect on the next restart of both;
+  `GET`/`PUT /api/v1/config` (new `config:read`/`config:write` permissions,
+  migration `00012`, admin-role-only) backing the new page, with the stored
+  password masked on read and preserved (not clobbered with the literal
+  placeholder) if a client resubmits the mask unchanged. See HISTORY.md for
+  why `DATABASE_URL` couldn't just move into a `settings` Postgres table
+  (the bootstrap problem) and the reasoning behind the 5s/15s heartbeat
+  cadence.
 - **Blocked on:** nothing.
 - **Notes carried from 7.6/7.7 - resolved this phase:** the dev Postgres
   instance's `kind='user'` principal `webui-716` (owns runs 245/246,

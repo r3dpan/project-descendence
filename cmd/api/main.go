@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/r3dpan/project-descendence/internal/api"
+	"github.com/r3dpan/project-descendence/internal/appconfig"
 	"github.com/r3dpan/project-descendence/internal/gitrepo"
 	"github.com/r3dpan/project-descendence/internal/logstream"
 	"github.com/r3dpan/project-descendence/internal/podman"
@@ -57,10 +58,28 @@ func spaHandler(distFS fs.FS) http.Handler {
 }
 
 func main() {
+	// DATABASE_URL/PODMAN_SOCKET may come from a dedicated config file the
+	// web UI's Configuration page edits (internal/appconfig) - an actual
+	// environment variable of the same name always wins if set, so ops/
+	// systemd EnvironmentFile= overrides still work unchanged. Neither this
+	// process nor the supervisor hot-reloads the file; a change here only
+	// takes effect on the next restart of both.
+	configPath, err := appconfig.DefaultPath()
+	if err != nil {
+		log.Fatalf("Resolving config file path: %v", err)
+	}
+	if envPath := os.Getenv("DESCENDENCE_CONFIG_FILE"); envPath != "" {
+		configPath = envPath
+	}
+	fileCfg, err := appconfig.Load(configPath)
+	if err != nil {
+		log.Fatalf("Failed loading %s: %v", configPath, err)
+	}
+
 	// Connect to Postgres
-	databaseURL := os.Getenv("DATABASE_URL")
+	databaseURL := appconfig.Resolve("DATABASE_URL", fileCfg.DatabaseURL)
 	if databaseURL == "" {
-		log.Fatal("DATABASE_URL is not set")
+		log.Fatal("DATABASE_URL is not set (checked environment and config file)")
 	}
 
 	pool, err := pgxpool.New(context.Background(), databaseURL)
@@ -72,9 +91,9 @@ func main() {
 	queries := store.New(pool)
 
 	// Connect to Podman
-	podmanSocket := os.Getenv("PODMAN_SOCKET")
+	podmanSocket := appconfig.Resolve("PODMAN_SOCKET", fileCfg.PodmanSocket)
 	if podmanSocket == "" {
-		log.Fatal("PODMAN_SOCKET is not set")
+		log.Fatal("PODMAN_SOCKET is not set (checked environment and config file)")
 	}
 	podmanClient := podman.NewClient(podmanSocket)
 
@@ -111,7 +130,7 @@ func main() {
 	descendenceMux := http.NewServeMux()
 
 	// Create new API server
-	descendenceAPI := api.NewAPIServer(productName, productBuild, apiVersion, queries, podmanClient, logDir, logEvents, repoStore)
+	descendenceAPI := api.NewAPIServer(productName, productBuild, apiVersion, queries, podmanClient, logDir, logEvents, repoStore, configPath)
 
 	// Create api handlers
 	// Rule: the most specific pattern always wins
@@ -119,6 +138,9 @@ func main() {
 	descendenceMux.HandleFunc("GET /{$}", descendenceAPI.RootHandler)
 	descendenceMux.HandleFunc("GET /healthz", descendenceAPI.HealthHandler)
 	descendenceMux.HandleFunc("GET /api/v1/whoami", descendenceAPI.RequireAuth(descendenceAPI.WhoAmIHandler))
+	descendenceMux.HandleFunc("GET /api/v1/system/status", descendenceAPI.RequireAuth(descendenceAPI.SystemStatusHandler))
+	descendenceMux.HandleFunc("GET /api/v1/config", descendenceAPI.RequireAuth(descendenceAPI.RequirePermission("config:read", descendenceAPI.GetConfigHandler)))
+	descendenceMux.HandleFunc("PUT /api/v1/config", descendenceAPI.RequireAuth(descendenceAPI.RequirePermission("config:write", descendenceAPI.PutConfigHandler)))
 	descendenceMux.HandleFunc("POST /api/v1/auth/login", descendenceAPI.LoginHandler)
 	descendenceMux.HandleFunc("POST /api/v1/auth/logout", descendenceAPI.LogoutHandler)
 	descendenceMux.HandleFunc("POST /api/v1/runs", descendenceAPI.RequireAuth(descendenceAPI.RequirePermission("runs:trigger", descendenceAPI.CreateRunHandler)))

@@ -92,7 +92,7 @@ export default function UserList() {
             {users.map((u) => (
               <Table.Tr key={u.id}>
                 <Table.Td>
-                  <Link to={`/users/${u.id}`}>{u.name}</Link>
+                  <Link to={`/settings/users/${u.id}`}>{u.name}</Link>
                 </Table.Td>
                 <Table.Td>{u.role}</Table.Td>
                 <Table.Td>{u.createdAt}</Table.Td>

@@ -36,10 +36,17 @@ type APIServer struct {
 	// them and scans them - which is the mirror image of logDir above, where
 	// the supervisor writes and the API reads.
 	repos *gitrepo.Store
+
+	// appconfigPath is the file GetConfigHandler/PutConfigHandler read and
+	// write (internal/appconfig) - the same file cmd/api/main.go and
+	// cmd/supervisor/main.go both consult at startup for DATABASE_URL/
+	// PODMAN_SOCKET. A PUT here only takes effect on the next restart of
+	// both processes - see api/openapi.yaml's /api/v1/config description.
+	appconfigPath string
 }
 
 // --- API server constructor ---
-func NewAPIServer(productName string, productBuild string, apiVersion string, queries *store.Queries, podmanClient *podman.Client, logDir string, logEvents *logstream.Broker, repos *gitrepo.Store) *APIServer {
+func NewAPIServer(productName string, productBuild string, apiVersion string, queries *store.Queries, podmanClient *podman.Client, logDir string, logEvents *logstream.Broker, repos *gitrepo.Store, appconfigPath string) *APIServer {
 	return &APIServer{
 		productName:  productName,
 		productBuild: productBuild,
@@ -51,6 +58,8 @@ func NewAPIServer(productName string, productBuild string, apiVersion string, qu
 		logDir:    logDir,
 		logEvents: logEvents,
 		repos:     repos,
+
+		appconfigPath: appconfigPath,
 	}
 }
 

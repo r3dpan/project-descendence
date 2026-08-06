@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/r3dpan/project-descendence/internal/appconfig"
 	"github.com/r3dpan/project-descendence/internal/gitrepo"
 	"github.com/r3dpan/project-descendence/internal/podman"
 	"github.com/r3dpan/project-descendence/internal/store"
@@ -22,9 +23,25 @@ import (
 const pollInterval = 1 * time.Second
 
 func main() {
-	databaseURL := os.Getenv("DATABASE_URL")
+	// See cmd/api/main.go's identical comment: DATABASE_URL/PODMAN_SOCKET
+	// may come from the dedicated config file the web UI's Configuration
+	// page edits (internal/appconfig), with an actual environment variable
+	// of the same name always winning if set.
+	configPath, err := appconfig.DefaultPath()
+	if err != nil {
+		log.Fatalf("Resolving config file path: %v", err)
+	}
+	if envPath := os.Getenv("DESCENDENCE_CONFIG_FILE"); envPath != "" {
+		configPath = envPath
+	}
+	fileCfg, err := appconfig.Load(configPath)
+	if err != nil {
+		log.Fatalf("Failed loading %s: %v", configPath, err)
+	}
+
+	databaseURL := appconfig.Resolve("DATABASE_URL", fileCfg.DatabaseURL)
 	if databaseURL == "" {
-		log.Fatal("DATABASE_URL is not set")
+		log.Fatal("DATABASE_URL is not set (checked environment and config file)")
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -44,9 +61,9 @@ func main() {
 
 	queries := store.New(pool)
 
-	podmanSocket := os.Getenv("PODMAN_SOCKET")
+	podmanSocket := appconfig.Resolve("PODMAN_SOCKET", fileCfg.PodmanSocket)
 	if podmanSocket == "" {
-		log.Fatal("PODMAN_SOCKET is not set")
+		log.Fatal("PODMAN_SOCKET is not set (checked environment and config file)")
 	}
 	podmanClient := podman.NewClient(podmanSocket)
 
@@ -129,6 +146,9 @@ func main() {
 
 	log.Printf("Syncing schedules to systemd units every %s", scheduleSyncInterval)
 	go runScheduleSyncLoop(ctx, queries, unitMgr, cliPath, tokenFile)
+
+	log.Printf("Writing a supervisor heartbeat every %s", heartbeatInterval)
+	go runHeartbeatLoop(ctx, queries)
 
 	log.Printf("Supervisor started, polling for queued runs every %s", pollInterval)
 	runClaimLoop(ctx, queries, podmanClient, repoStore, logDir)

@@ -52,6 +52,41 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/system/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Off-plan web UI dashboard work - per-component operational status (database, podman, supervisor heartbeat) for the Dashboard's status tiles. Unlike /healthz this always returns 200 and requires authentication but no specific permission - any authenticated principal may see it. */
+        get: operations["getSystemStatus"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Off-plan web UI Configuration page - the DATABASE_URL/PODMAN_SOCKET currently persisted in the config file both cmd/api and cmd/supervisor load at startup (internal/appconfig). The database URL's password is masked. */
+        get: operations["getConfig"];
+        /** @description Persists new DATABASE_URL/PODMAN_SOCKET values to the config file. Neither cmd/api nor cmd/supervisor hot-reloads it - the caller must restart both processes for the change to take effect. Resubmitting the masked password unchanged preserves the real stored password rather than overwriting it with the literal placeholder. */
+        put: operations["putConfig"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/login": {
         parameters: {
             query?: never;
@@ -776,6 +811,24 @@ export interface components {
              */
             since: string;
         };
+        /** @description Off-plan web UI dashboard work - one component's operational status. */
+        ComponentStatus: {
+            /** @enum {string} */
+            status: "up" | "down";
+            /** @description Present on "down" - e.g. an error message or "heartbeat stale". */
+            detail?: string;
+        };
+        /** @description Off-plan web UI dashboard work - per-component status for the Dashboard's status tiles. */
+        SystemStatus: {
+            database: components["schemas"]["ComponentStatus"];
+            podman: components["schemas"]["ComponentStatus"];
+            supervisor: components["schemas"]["ComponentStatus"];
+        };
+        /** @description Off-plan web UI Configuration page - DATABASE_URL/PODMAN_SOCKET as persisted in the config file internal/appconfig loads. databaseUrl's password is masked ("***") on GET; PUT preserves the real password if the mask is resubmitted unchanged. */
+        Config: {
+            databaseUrl: string;
+            podmanSocket: string;
+        };
         /** @description One captured line of output. Sequence numbers are per run and dense from 1, covering both streams - they record the order output arrived, which is not always the order the script printed it, since stdout and stderr are buffered independently inside the container. */
         RunLogLine: {
             seq: number;
@@ -1130,6 +1183,124 @@ export interface operations {
             };
             /** @description Missing, malformed, unknown, expired or revoked token */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    getSystemStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Per-component operational status */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SystemStatus"];
+                };
+            };
+            /** @description Missing, malformed, unknown, expired or revoked token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    getConfig: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current configuration, password masked */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Config"];
+                };
+            };
+            /** @description Missing, malformed, unknown, expired or revoked token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Missing config:read */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    putConfig: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["Config"];
+            };
+        };
+        responses: {
+            /** @description Config file written; restart api and supervisor to apply */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Config"];
+                };
+            };
+            /** @description Missing, malformed, unknown, expired or revoked token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Missing config:write */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description databaseUrl or podmanSocket failed shape validation */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

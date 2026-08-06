@@ -57,7 +57,7 @@ export default function UserDetail() {
     setRevoking(true)
     try {
       await revokeUser(user.id)
-      navigate('/users')
+      navigate('/settings/users')
     } catch (err) {
       setRevokeError(err instanceof APIError ? err.message : 'Failed revoking user')
       setRevoking(false)
