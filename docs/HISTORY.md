@@ -1985,3 +1985,100 @@ Notes to future me:
   - `ui-test-runtime` (id 5) is intentionally left in the dev DB with
     `imagePruned: true` - that's the runtime equivalent of the leftover
     `webui-716` test principal from 7.6, not something to "fix" later.
+
+## 2026-08-06 (later)
+Worked on: Phase 7 task 7.8 - the form builder, closing Phase 7. Scoped up
+front (with the operator) to: `form:` as layout metadata only over the
+existing `params:` contract (no new param types, no conditional visibility),
+a read endpoint so an existing manifest can be edited (not just written
+blind), no PowerShell-AST suggestion feature this session (decision #28
+stays a future task), and YAML editing + a rendered preview rather than
+drag-and-drop, per this task's own long-standing note.
+Completed:
+  - `internal/manifest`: `form:` was decoded as a raw `yaml.Node` purely so
+    it could be rejected with a "not honoured until Phase 7" error since task
+    3's original writing of the format. It's now real: `FormSection`/
+    `FormField` (title/help per section, an ordered list of fields, each
+    either a bare param name or `{name, label, help}` for an override).
+    `validateForm` checks only internal consistency - every reference
+    resolves to a real param, no param placed twice, no empty section, no
+    empty `sections:` - and deliberately allows `form:` to be partial: a
+    param it doesn't mention still exists and a renderer is expected to show
+    it anyway. Never a second source of what a param *is* - `ResolveParams`
+    doesn't know this type exists. Un-deferred the one remaining entry in
+    `validate()`'s "specified but unimplemented" loop, which is now empty
+    (nothing left pending in the format). Fixed ARCHITECTURE.md's manifest
+    example alongside this, since it was still showing `runtime`/`params` as
+    "rejected until the phase that honours it" despite both having shipped
+    earlier (4.6, 6.1) - stale in the same way §4.2 was, per CLAUDE.md's own
+    warning about doc rot.
+  - `GET /api/v1/repos/{id}/files/{path...}` (new): `createRepoFile` was
+    write-only, so there was no way to fetch a manifest's current content
+    before editing it. Reads at the repository's current HEAD via
+    `gitrepo.Repo.ReadFile`, which already existed for the supervisor's own
+    narrow read (nothing new needed in `internal/gitrepo`). Registered as a
+    Go 1.22 `{path...}` wildcard - the first one in this codebase - since a
+    manifest path contains slashes and OpenAPI has no native equivalent
+    (documented as a plain `string` path param with a note explaining the
+    Go-mux mismatch). New `internal/api/repos_test.go`, following
+    `internal/jobsync`'s own real-Postgres fixture pattern (skips itself
+    without `DATABASE_URL`, tears down the repo row and disk directory per
+    test): 200 with correct content, 404 for a missing file, 404 for no
+    commits yet, 400 for a path escaping the repository root.
+  - Web: `web/src/api/repos.ts` (list/get repos, get/create file, mirroring
+    `jobs.ts`/`runtimes.ts`'s existing shape), `js-yaml` added as a genuine
+    runtime dependency (not dev - the preview pane needs it at browser
+    runtime), `ParamField` (`web/src/paramField.tsx`) extracted from
+    `JobDetail`'s inline per-type rendering so the trigger form and the new
+    preview pane can never quietly drift apart, and `ManifestEditor`
+    (`web/src/pages/ManifestEditor.tsx`, routed at `/jobs/new` and
+    `/jobs/:id/edit`) - a plain `<textarea>` YAML editor (no CodeMirror/
+    Monaco; this codebase has zero runtime UI dependencies beyond React/
+    Router today, and syntax highlighting didn't earn that cost for this
+    task) with a live preview pane, re-parsed every keystroke by
+    `web/src/manifestPreview.ts` and rendered through the same `ParamField`.
+    Create mode assumes the single seeded local repo (`listRepos`, erroring
+    clearly if that assumption is wrong) rather than building repo-picker UI
+    nothing at homelab scale needs; edit mode resolves a job's existing
+    `repoId`/`manifestPath` (already on the `Job` resource, no API change
+    needed there) and fetches its content via the new read endpoint, with the
+    path locked - moving a manifest's path re-keys the job row entirely
+    (task 3.4's job-identity rule) and is explicitly out of scope here.
+Broken / unresolved: nothing outstanding. Phase 7 (7.1-7.8) is complete.
+Next action: no phase is currently open - see PLAN.md's "Current position"
+for the deferred-work menu (OIDC, RBAC, external repo sync/webhooks, or
+7.8's own deferred follow-ups: the PowerShell-AST suggestion feature from
+decision #28, and a drag-and-drop visual builder on top of this session's
+YAML+preview foundation).
+Notes to future me:
+  - Found and fixed a real, unrelated bug while exit-checking with a freshly
+    minted bearer token: `GetPrincipalByTokenHash` has carried its own sqlc
+    row type (`GetPrincipalByTokenHashRow`, not `store.Principal`) since the
+    7.1-7.5 regen, and `RequireAuth`'s bearer-token branch was storing that
+    row directly into the request context. `principalFromContext`'s type
+    assertion failed silently, turning every bearer-token request - the CLI
+    included - into a 500 ("no principal in request context") instead of
+    succeeding or 401ing. This is the *exact* bug 7.6 already found and fixed
+    on the session-cookie path (`GetPrincipalBySessionTokenHash`) - the
+    bearer-token branch just never got the same fix. Converted the row to
+    `store.Principal` explicitly, matching the cookie path's existing code.
+    Lesson repeated a third time now (Phase 6's `secret_params_json`, 7.6's
+    session cookie, this): a query joining or shaping columns differently
+    gets its own Go type from sqlc even when the column *set* looks
+    identical to an existing one - `go build`/`go vet` never catch this,
+    only an actual call through the affected path does.
+  - No browser was available in this session to click through the React UI.
+    Verification instead issued the exact HTTP requests the new pages make
+    (`POST`/`GET /api/v1/repos/16/files...`, both create and edit shapes, a
+    deliberately-invalid `form:` reference to confirm the server still
+    rejects what the lenient client-side preview parser would let through)
+    against the real stack, over both bearer-token and session-cookie auth
+    since the SPA only ever uses the cookie path, and confirmed the rebuilt
+    embedded production bundle serves the two new routes. Say so plainly
+    rather than implying a rendered-and-clicked verification happened - the
+    next session should still do that pass in an actual browser before
+    treating 7.8 as fully proven, not just server-verified.
+  - The `library` repo (id 16) now carries a real `exit-check-greet` job
+    left in a valid state, the same as earlier smoke-test jobs already
+    there. The two principals minted for this exit check were deleted
+    afterward (neither had triggered a run, unlike `webui-716`).

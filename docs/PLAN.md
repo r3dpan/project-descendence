@@ -5,7 +5,7 @@
 - HISTORY.md (the *what* you did, *what* broke, *what* you
    were about to do next)
 
-**Last updated:** 2026-08-05
+**Last updated:** 2026-08-06
 
 ---
 
@@ -42,17 +42,22 @@ Update the marker on each task as it moves:
 
 > **Update this block every session.**
 
-- **Phase:** 7 — **in progress**. 7.1–7.7 done and verified live: read-only
-  web UI (local-account cookie login, embedded same-origin SPA, run
-  list/detail, live logs via native `EventSource`), triggering runs (a jobs
-  list and a per-job form generated from its param contract), and job/runtime
-  management (enable/disable a job; a runtimes list with a create-runtime
-  form and a detail view with a Rebuild button that polls build status).
-  Only 7.8 (the form builder) remains - see Phase 7's own task list for what
-  shipped and how.
-- **Next action:** Phase 7.8, its own session per PLAN.md's original note:
-  ship YAML editing with a rendered preview before drag-and-drop. Nothing
-  else is outstanding in Phase 7.
+- **Phase:** 7 — **complete** (7.1–7.8, exit checks passed). Read-only web UI
+  (local-account cookie login, embedded same-origin SPA, run list/detail,
+  live logs via native `EventSource`), triggering runs (a jobs list and a
+  per-job form generated from its param contract), job/runtime management
+  (enable/disable a job; a runtimes list with a create-runtime form and a
+  detail view with a Rebuild button that polls build status), and the form
+  builder (a YAML manifest editor with a live rendered preview, backed by a
+  real `form:` layout-metadata key in `internal/manifest` and a new
+  `GET /api/v1/repos/{id}/files/{path...}` read endpoint). Drag-and-drop
+  stays explicitly deferred, per 7.8's own task note.
+- **Next action:** no phase is currently open. Pick the next item from
+  ARCHITECTURE.md §7's deferred list (OIDC/Authentik, full RBAC, external git
+  repo sync + webhooks, or 7.8's own deferred follow-ups: a PowerShell-AST
+  "guess the fields" suggestion feature per decision #28, and a drag-and-drop
+  visual builder) and scope it properly on arrival, the same way Phase 7
+  itself was.
 - **Blocked on:** nothing.
 - **Notes carried from 7.6/7.7:** the dev Postgres instance has a
   `kind='user'` principal named `webui-716` that cannot be cleaned up like
@@ -65,6 +70,13 @@ Update the marker on each task as it moves:
   verification) also still exists with `imagePruned: true` - by design
   (runtimes rows survive a prune the same way `runs.logs_pruned_at` does,
   decision in ARCHITECTURE.md §5), not leftover mess.
+- **Notes carried from 7.8:** the `library` repo (id 16) now permanently
+  carries an `exit-check-greet` job from this session's live verification,
+  the same way earlier sessions left `greet-params-smoketest` and similar -
+  harmless, real params/form: exercised end to end, left in a valid
+  (non-erroring) state. The two principals minted for this session's exit
+  check (`exit-check-7-8`, `exit-check-web-716`) were deleted afterward, since
+  neither owned any run history the way `webui-716` does.
 - **Phase 6 summary** (complete, 6.1–6.7, exit check passed): Jobs take typed, validated parameters end to end. The manifest's
   `params:` block (name/type/required/default/secret) is real
   (`internal/manifest`, `internal/manifest/params.go`); submitted values are
@@ -576,8 +588,32 @@ covers 7.1–7.5 (a read-only vertical slice); 7.6–7.8 are a later session.
       `request()` was fixed alongside this: it assumed every 2xx response
       decodes as JSON, which broke on `buildRuntime`'s empty-body 202 - now
       reads the body as text first and only parses non-empty ones.
-- [ ] **7.8** Form builder — the largest single piece. Consider shipping YAML editing
-      with a rendered preview before building drag-and-drop.
+- [x] **7.8** Form builder. Shipped as YAML editing with a rendered preview,
+      per this task's own note - drag-and-drop stays deferred. Two things had
+      to exist first: `internal/manifest`'s `form:` key, decoded as a raw
+      `yaml.Node` purely to be rejected since Phase 3, now real layout
+      metadata (`FormSection`/`FormField`: title/help/ordered fields with
+      optional label/help overrides) over the existing `params:` contract -
+      presentational only, never a second source of what a param is; and a
+      read path for a manifest's current content (`GET
+      /api/v1/repos/{id}/files/{path...}`), since `createRepoFile` was
+      write-only and editing an existing job needs its YAML first. Web UI:
+      `web/src/pages/ManifestEditor.tsx` (`/jobs/new`, `/jobs/:id/edit`) is a
+      YAML `<textarea>` (plain, no CodeMirror/Monaco - this codebase's
+      minimal-dependency footprint outweighs syntax highlighting here) with a
+      live preview pane, re-parsed every keystroke via a new `js-yaml`
+      dependency (the one new runtime dependency this task needed - hand-writing
+      a YAML parser is out of scope even for decision #15's ethos). The preview
+      renders through `ParamField` (`web/src/paramField.tsx`), extracted from
+      `JobDetail`'s inline per-type rendering so the preview and the real
+      trigger form can never drift apart. Client-side parsing
+      (`web/src/manifestPreview.ts`) is deliberately lenient - unlike the
+      server's `Parse`/`validate`, an unresolvable reference is skipped, not
+      an error, since this is a live view of a document expected to be
+      mid-edit; the server (via `createRepoFile`'s auto-sync) stays sole
+      authority over what actually commits. Create mode assumes the single
+      seeded local repo rather than adding repo-picker UI nothing at homelab
+      scale needs. This closes Phase 7.
 
 **7.1–7.5 exit check**: verified against the real stack (Postgres, Podman, a live
 supervisor). `cmd/seed -kind user` minted a local account; logging in via `curl`
@@ -630,3 +666,34 @@ succeeded once the build was terminal, matching the one-build-slot-per-runtime
 rule (task 4.5) and confirming the row survives a prune with `imagePruned`
 alone flipping. The embedded production build serves `/runtimes` and
 `/runtimes/5` with `200`.
+
+**7.8 exit check**: verified against the real stack by issuing the exact
+requests the new UI code makes, against the repository's one real local
+repo (`library`, id 16). `POST /api/v1/repos/16/files` with a manifest
+declaring `params:` (`who`/`shout`) and a matching `form:` block (the shape
+`ManifestEditor` submits) returned `201` with `sync.added` naming the new
+job; `GET /api/v1/repos/16/files/{path}` (URL-encoded, matching
+`getRepoFile`) read the same content back at the new commit. Editing it -
+changing `who`'s default and resubmitting to the same path - came back in
+`sync.updated`, not `added`. A manifest with `form:` referencing a
+nonexistent param was rejected in `sync.errors` with a message naming the
+bad reference, proving the server stays authoritative over what actually
+commits even though the client-side preview parser is lenient by design.
+Repeated over both bearer-token and session-cookie auth (a fresh `cmd/seed
+-kind user` account, logged in via `curl`), since the SPA only ever uses the
+cookie path. The embedded production build (rebuilt after `npm run build`)
+serves `/jobs/new` and `/jobs/:id/edit` as SPA routes. No browser was
+available in this session to drive the React UI interactively - verification
+covers the exact HTTP calls the new pages make and confirms the built
+JS/CSS bundle serves correctly, not a rendered/clicked-through UI.
+
+One real bug caught in this verification, not just a plan: `GetPrincipalByTokenHash`
+had the same distinct-row-type problem `GetPrincipalBySessionTokenHash` hit
+during 7.6 (same lesson, same fix, different query) - sqlc's regen during
+7.1-7.5 gave it its own row type instead of `store.Principal`, so every
+bearer-token request (the CLI included) had been 500ing with "no principal in
+request context" instead of succeeding or 401ing, since `RequireAuth`'s
+bearer-token branch stored that row directly into the context.
+`principalFromContext`'s type assertion failed silently. Caught immediately by
+calling `/api/v1/whoami` with a freshly minted token. Fixed the same way as
+7.6's cookie-path bug: convert the row to `store.Principal` explicitly.
