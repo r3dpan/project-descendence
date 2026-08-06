@@ -3,8 +3,11 @@ import { NavLink, useNavigate } from 'react-router-dom'
 import { useAuth } from './auth'
 
 export default function Layout({ children }: { children: ReactNode }) {
-  const { logout } = useAuth()
+  const { principal, logout } = useAuth()
   const navigate = useNavigate()
+  // Hidden rather than shown-and-403'd on click, matching the CLI TUI's
+  // menu-gating (task 8.9) - users:read is what governs the server side too.
+  const canSeeUsers = principal?.permissions.includes('users:read') ?? false
 
   async function handleLogout() {
     await logout()
@@ -28,7 +31,20 @@ export default function Layout({ children }: { children: ReactNode }) {
         <NavLink to="/runtimes" style={linkStyle}>
           Runtimes
         </NavLink>
-        <button type="button" onClick={handleLogout} style={{ marginLeft: 'auto' }}>
+        {canSeeUsers && (
+          <>
+            <NavLink to="/users" style={linkStyle}>
+              Users
+            </NavLink>
+            <NavLink to="/tokens" style={linkStyle}>
+              Tokens
+            </NavLink>
+          </>
+        )}
+        <NavLink to="/settings" style={({ isActive }) => ({ ...linkStyle({ isActive }), marginLeft: 'auto' })}>
+          Settings
+        </NavLink>
+        <button type="button" onClick={handleLogout} style={{ marginLeft: '1rem' }}>
           Sign out
         </button>
       </nav>

@@ -10,6 +10,10 @@ import JobDetail from './pages/JobDetail'
 import ManifestEditor from './pages/ManifestEditor'
 import RuntimeList from './pages/RuntimeList'
 import RuntimeDetail from './pages/RuntimeDetail'
+import UserList from './pages/UserList'
+import UserDetail from './pages/UserDetail'
+import TokenList from './pages/TokenList'
+import Settings from './pages/Settings'
 
 function Protected({ children }: { children: ReactNode }) {
   const { principal } = useAuth()
@@ -89,6 +93,38 @@ export default function App() {
             element={
               <Protected>
                 <RuntimeDetail />
+              </Protected>
+            }
+          />
+          <Route
+            path="/users"
+            element={
+              <Protected>
+                <UserList />
+              </Protected>
+            }
+          />
+          <Route
+            path="/users/:id"
+            element={
+              <Protected>
+                <UserDetail />
+              </Protected>
+            }
+          />
+          <Route
+            path="/tokens"
+            element={
+              <Protected>
+                <TokenList />
+              </Protected>
+            }
+          />
+          <Route
+            path="/settings"
+            element={
+              <Protected>
+                <Settings />
               </Protected>
             }
           />
