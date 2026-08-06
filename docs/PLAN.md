@@ -42,23 +42,28 @@ Update the marker on each task as it moves:
 
 > **Update this block every session.**
 
-- **Phase:** 9 — **code complete, not yet live-verified** (9.1–9.13 all
-  landed: migration, sqlc, `internal/oidc`, login/callback handlers,
-  bootstrap-admin, password surface removed, `/about` split, client/CLI/
-  `cmd/seed` trimmed, web UI, tests, docs). OIDC browser authentication
-  replaces Phase 7's local password login outright (decision #29
-  superseded by #34) - no group claim read, roles stay local. See this
-  section's "Exit check" note above for what's left: a real Authentik
-  OAuth2 provider/application didn't exist yet at the start of this
-  session, so the actual browser round-trip is still pending, planned as a
-  guided interactive session (the operator drives the browser, walked
-  through step by step).
-- **Next action:** create the Authentik OAuth2 provider + application to
-  get real `OIDC_ISSUER_URL`/`OIDC_CLIENT_ID`/`OIDC_CLIENT_SECRET`, then run
-  Phase 9's exit check for real against a fresh DB. After that: Phase 8's
-  own carried-over item is still outstanding - promote the exit check's
-  curl-based permission assertions (viewer 403s, operator's read/write
-  split) into real `internal/api/*_test.go` cases.
+- **Phase:** 9 — **complete, exit check passed live** (9.1–9.13 all landed
+  and verified against a real Authentik instance: migration, sqlc,
+  `internal/oidc`, login/callback handlers, bootstrap-admin, password
+  surface removed, `/about` split, client/CLI/`cmd/seed` trimmed, web UI,
+  tests, docs — plus one live-found bug fixed in the same session, see
+  below). OIDC browser authentication replaces Phase 7's local password
+  login outright (decision #29 superseded by #34) - no group claim read,
+  roles stay local.
+- **Next action:** no phase is currently open. Phase 8's own carried-over
+  item is still outstanding - promote the exit check's curl-based
+  permission assertions (viewer 403s, operator's read/write split) into
+  real `internal/api/*_test.go` cases. Otherwise, pick from ARCHITECTURE.md
+  §7's deferred list (per-schedule service tokens, a web setup wizard for
+  first-run OIDC config, external git repo sync + webhooks, or 7.8's own
+  deferred follow-ups).
+- **Live-found and fixed this session:** sign-out only cleared this app's
+  own session cookie, leaving Authentik's SSO session alive - the next
+  "sign in" click silently re-authenticated with no prompt. Fixed via
+  RP-Initiated Logout (migration `00014_session_id_token.sql` stores the
+  ID token at login purely to hand back as `id_token_hint` at logout). See
+  Phase 9's "Exit check" note above and HISTORY.md for the full story,
+  including two Authentik-specific configuration gotchas hit along the way.
 - **Off-plan work since Phase 8:** the web SPA (`web/src/`) was migrated from
   raw unstyled HTML to Mantine v9 (`@mantine/core`/`hooks`/`notifications`/
   `form`) - an `AppShell` sidebar layout, a shared `statusColor` Badge helper,
@@ -917,12 +922,46 @@ work. Wrong `OIDC_ISSUER_URL` → non-zero exit, not a half-started server.
 the session cookie is host-scoped, and mixing it with `localhost` breaks login
 silently.
 
-**→ Code complete, 9.1–9.13 all landed** (migration applied against the real dev
-DB, `go build`/`go vet`/full `go test ./...` clean, `internal/api/oidc_test.go`
-covers state mismatch/nonce mismatch/revoked-refused/JIT-roleless/bootstrap-admin
-against a fake in-process IdP, `npm run build` clean). **Not yet live-verified**
-against a real Authentik instance — no OAuth2 provider/application existed in
-Authentik at the start of this session. Next action for this exit check: create
-the Authentik OAuth2 provider + application (getting real `OIDC_ISSUER_URL`/
-`OIDC_CLIENT_ID`/`OIDC_CLIENT_SECRET`), then walk the exit check's steps above for
-real. See HISTORY.md for what's landed so far.
+**→ Passed, live, against a real Authentik instance.** A real browser login
+(headless Chromium, driven end to end since the operator's Authentik password
+was shared for this purpose) with `preferred_username` matching
+`OIDC_BOOTSTRAP_USERNAME` landed a principal with `admin` on `/`. A second
+account JIT-provisioned roleless and hit the roleless screen, not 403s; an
+admin (bearer-token, per decision #30's role-patch path) assigned it `viewer`;
+the browser session then read `GET /api/v1/jobs` `200` and got `403` on `POST
+/api/v1/repos`. Revoking it and re-attempting login returned `403` from the
+callback with no session cookie set and no resurrected/duplicate principal row.
+`descendence runs list` (bearer token) kept working through a real Authentik
+outage (confirmed both by code inspection - zero references to `internal/oidc`
+anywhere in `cmd/cli`/`cmd/seed`/`internal/client` - and live, after recovering
+from an unrelated mishap, see below). A deliberately wrong `OIDC_ISSUER_URL`
+made `cmd/api` exit non-zero via `log.Fatal`, never serving a request. `GET
+/about` returns JSON, `GET /` returns the SPA.
+
+One real bug found live, not just verified: sign-out only cleared this app's
+own session cookie, leaving Authentik's SSO session alive, so the next "sign
+in" click silently re-authenticated with no prompt at all. Fixed the same
+session - see HISTORY.md and the "Fix logout" commit.
+
+Two Authentik-specific gotchas, not code defects, worth keeping for the next
+person setting this up:
+1. Disabling every OAuth2 grant type except "password" on the provider (done
+   mid-session while poking at something unrelated) makes even a *minimal,
+   correctly-formed* `GET /authorize?response_type=code&...` fail with a
+   generic `invalid_request: The request is otherwise malformed` - no
+   redirect_uri/client_id-specific error, so it reads exactly like a
+   misconfigured redirect URI. Recreating the provider from scratch (rather
+   than continuing to debug the existing one) was faster than finding this.
+2. RP-Initiated Logout's `post_logout_redirect_uri` is validated against the
+   *same* Redirect URIs/Origins list as the OAuth2 flow's `redirect_uri` (at
+   least on this Authentik version) - a second strict entry for the app root
+   (`http://127.0.0.1:8080/`) was needed alongside the callback path. Newer
+   Authentik versions may expose a dedicated logout-URI field instead; either
+   works.
+
+Also worth a note for future-me: `podman stop`-ing Authentik's containers
+directly (rather than through its systemd Quadlet units,
+`authentik-pod.service` et al.) tore the pod down instead of pausing it -
+recovered cleanly via `systemctl --user start authentik-pod.service`, no data
+lost, but a reminder that this instance is Quadlet-managed like the project's
+own Postgres and should always be stopped/started that way.

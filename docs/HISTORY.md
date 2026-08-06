@@ -2714,3 +2714,132 @@ Notes to future me:
     `cmd/api` cannot start at all with the IdP down, by design (a server
     accepting traffic against a login path that can never work is worse
     than refusing to start). Only `cmd/seed`'s token path is unaffected.
+
+## 2026-08-06 (Phase 9 — OIDC, live verification against real Authentik)
+Worked on: the guided interactive session flagged as "next action" at the end
+of the previous entry - walking the operator through creating a real
+Authentik OAuth2 provider/application, then live-verifying Phase 9's exit
+check end to end. Turned into more debugging than expected; documenting all
+of it since it cost real time and none of it was a code defect in the
+Phase 9 work itself.
+
+Completed:
+  - Operator created the Authentik OAuth2 provider (`descendence`) +
+    application, redirect URI `http://127.0.0.1:8080/api/v1/auth/callback`,
+    a signing key selected. `.env` filled in with the real
+    `OIDC_ISSUER_URL`/`OIDC_CLIENT_ID`/`OIDC_CLIENT_SECRET`.
+    `OIDC_BOOTSTRAP_USERNAME=descendence` per the operator's earlier answer.
+  - Real browser login verified with a headless Chromium (`playwright`,
+    `npm install playwright --no-save` + `npx playwright install chromium`,
+    same disposable-install pattern prior sessions used) driven by the
+    operator's own test IdP credentials (a disposable Authentik account,
+    `claude-devtest`, created and password shared specifically for this) -
+    login → Authentik's real identification+password flow → redirected back
+    → session cookie set → landed on `/`.
+  - JIT provisioning confirmed live: `claude-devtest` got a roleless
+    principal on first login and hit the new `RolelessScreen` exactly as
+    designed ("No role assigned yet... Signed in as claude-devtest...").
+    A second login after the provider was recreated (see bug below) hit the
+    real `principals.name` collision-retry path live for the first time -
+    `claude-devtest-c000ce1e`, the deterministic-suffix fallback firing for
+    real, not just in `oidc_test.go`'s fake-IdP tests.
+  - RBAC round-tripped live: an admin bearer token (minted via `cmd/seed`
+    for this purpose) `PATCH`ed the JIT principal to `viewer`; the same
+    browser session then got `200` from `GET /api/v1/jobs` and `403` from
+    `POST /api/v1/repos` (tested via `fetch()` in the browser's own page
+    context, so it exercised the real session cookie, not a bearer token
+    standing in for it). `DELETE /api/v1/users/{id}` revoked it; a repeat
+    login attempt got `403` from the callback with no session cookie set
+    and the DB confirming no resurrected or duplicate row.
+  - `cmd/seed`/CLI-bearer-token independence from the IdP confirmed two
+    ways: structurally (`grep -rl internal/oidc cmd/cli cmd/seed
+    internal/client` - zero matches) and live (`descendence runs list`
+    against the real API while Authentik was down, mid-session, from the
+    incident below).
+  - Wrong `OIDC_ISSUER_URL` confirmed fatal: `cmd/api` exits non-zero via
+    `log.Fatal` before binding a port, never serving a half-started server.
+  - **A real bug, not just a gap**: sign-out only cleared this app's own
+    session cookie. Authentik's own SSO session stayed alive, so the very
+    next "sign in" click silently re-authenticated with zero prompt - the
+    operator caught this immediately and correctly diagnosed it as
+    "logout doesn't revoke the session upstream." Fixed via RP-Initiated
+    Logout: `LogoutHandler` became a `GET` navigation target (same reasoning
+    as login/callback - an XHR can't follow a redirect to a third-party
+    origin) that redirects through the IdP's `end_session_endpoint` with
+    `post_logout_redirect_uri`. A second round of live testing then found
+    that alone still left Authentik showing its own "are you sure" landing
+    page instead of ending things directly - RP-Initiated Logout needs
+    `id_token_hint` to identify which session to end without asking, so
+    migration `00014_session_id_token.sql` added `sessions.id_token`,
+    populated at login purely to hand back at logout
+    (`DeleteSessionByTokenHash` changed from `:exec` to `:one RETURNING
+    id_token` so the read and the delete are the same query).
+  - Web UI updated to match: `Layout.tsx`'s "Sign out" is now a plain
+    navigation link (`component="a" href="/api/v1/auth/logout"`), not a
+    `fetch`+`useAuth().logout()` call - `auth.tsx`'s `AuthState` lost its
+    `logout` method entirely, matching how `login` was never a method to
+    begin with (task 9.11).
+  - **Scope decision, asked and answered**: after the id_token_hint fix,
+    Authentik still only ends *this app's* session, not the user's entire
+    Authentik account session (by design - RP-Initiated Logout is scoped
+    per-application; the account-wide SSO session persists until the user
+    explicitly clicks Authentik's own "Log out of authentik" or it expires
+    on its own). Asked the operator whether Descendence's logout should
+    force a full account-wide Authentik logout instead. Answer: no, current
+    (spec-correct, app-scoped) behavior is what's wanted.
+Broken / unresolved: nothing left broken. Two operational incidents during
+this session, both self-inflicted, both recovered cleanly:
+  1. Disabled every OAuth2 grant type except "password" on the provider
+     while poking at something unrelated, which made even a minimal
+     correctly-formed `GET /authorize?response_type=code&...` fail with a
+     generic `invalid_request: The request is otherwise malformed` - no
+     redirect_uri- or client-specific error at all, so from the outside it
+     looked identical to a broken redirect URI. Cost a long diagnostic
+     detour (raw `curl` straight to Authentik's own `/authorize`, bypassing
+     `cmd/api` entirely, confirmed the rejection happened purely inside
+     Authentik before the code ever generated a response - ruling out the
+     Phase 9 code as the cause) before the operator remembered the grant-type
+     change. Recreating the provider from scratch was faster than continuing
+     to debug the corrupted one.
+  2. `podman stop authentik-server authentik-worker` was run directly against
+     what turned out to be systemd Quadlet-managed containers
+     (`authentik-pod.service` et al., the same pattern this project's own
+     Postgres uses - CLAUDE.md's Local gotchas already warns about exactly
+     this class of mistake, just for a different container). This tore the
+     pod down instead of pausing it. Recovered with `systemctl --user start
+     authentik-pod.service` - no data lost (the data/template/cert volume
+     services stayed `active exited` throughout, untouched), but the
+     "IdP down" exit-check step that started this was redone via structural
+     code inspection instead of repeating the outage.
+Next action: none specific - Phase 9 is closed, exit check passed live. The
+carried-over item from Phase 8 (promote the exit check's curl-based
+permission assertions into real `internal/api/*_test.go` cases) is still the
+most-flagged piece of debt in this codebase and worth doing before the next
+phase, but nothing about this session makes it more urgent than it already
+was.
+Notes to future me:
+  - **`post_logout_redirect_uri` is validated against the same Redirect
+    URIs/Origins list as the OAuth2 `redirect_uri`** on this Authentik
+    version (2026.5.6) - there was no separate "post-logout URI" field found
+    in the provider's edit screen despite looking for one. A second strict
+    entry for the app root (`http://127.0.0.1:8080/`) alongside the
+    existing callback path was what made Authentik actually honor the
+    redirect instead of just showing its landing page forever. If a newer
+    Authentik version does expose a dedicated field, either approach works;
+    this codebase's `internal/oidc`/`session.go` code doesn't care which.
+  - The three test/verification principals from this session
+    (`claude-devtest`, `claude-devtest-c000ce1e`, and the temporary
+    `exit-check-admin` bootstrap token used to drive the RBAC checks) were
+    all revoked before ending the session. Two real operator accounts were
+    left alone deliberately: `akadmin` (Authentik's original superuser,
+    still roleless in this app - the operator consolidated to logging in as
+    `descendence` instead, so `akadmin` is likely dead weight now but wasn't
+    mine to revoke) and `descendence` itself (role `admin`, correctly
+    bootstrap-provisioned, this is the operator's real account going
+    forward).
+  - `web/dist/index.html` got reverted to its checked-in placeholder at the
+    end of this session (and once earlier, mid-session, after it had been
+    accidentally committed as real build output in this same Phase 9's
+    first commit) - the fifth and sixth times this exact gotcha has now
+    been hit across this project's history. Worth a pre-commit hook or
+    Makefile target if it keeps recurring, which it keeps doing.
