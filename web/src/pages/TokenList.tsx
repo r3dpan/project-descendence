@@ -12,6 +12,7 @@ import {
   Group,
   LoadingOverlay,
   Modal,
+  Paper,
   Select,
   Stack,
   Table,
@@ -138,27 +139,29 @@ export default function TokenList() {
           <Title order={3} mt="xl" mb="md">
             New token
           </Title>
-          <form onSubmit={handleCreate}>
-            <Stack maw={400}>
-              <TextInput label="Name" id="token-name" value={name} onChange={(e) => setName(e.target.value)} required />
-              <Select
-                label="Role"
-                id="token-role"
-                value={role}
-                onChange={(v) => setRole(v ?? '')}
-                data={roles.map((r) => r.name)}
-                allowDeselect={false}
-              />
-              {createError && (
-                <Alert color="red" role="alert">
-                  {createError}
-                </Alert>
-              )}
-              <Button type="submit" loading={creating}>
-                {creating ? 'Creating…' : 'Create token'}
-              </Button>
-            </Stack>
-          </form>
+          <Paper withBorder p="md" maw={400}>
+            <form onSubmit={handleCreate}>
+              <Stack>
+                <TextInput label="Name" id="token-name" value={name} onChange={(e) => setName(e.target.value)} required />
+                <Select
+                  label="Role"
+                  id="token-role"
+                  value={role}
+                  onChange={(v) => setRole(v ?? '')}
+                  data={roles.map((r) => r.name)}
+                  allowDeselect={false}
+                />
+                {createError && (
+                  <Alert color="red" role="alert">
+                    {createError}
+                  </Alert>
+                )}
+                <Button type="submit" loading={creating}>
+                  {creating ? 'Creating…' : 'Create token'}
+                </Button>
+              </Stack>
+            </form>
+          </Paper>
 
           <Modal opened={generatedToken !== null} onClose={() => setGeneratedToken(null)} title="Token created" centered>
             <Text size="sm" c="dimmed" mb="sm">

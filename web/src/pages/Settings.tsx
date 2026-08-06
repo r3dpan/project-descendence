@@ -2,7 +2,7 @@ import { useState, type FormEvent } from 'react'
 import { useAuth } from '../auth'
 import { changeOwnPassword } from '../api/users'
 import { APIError } from '../api/client'
-import { Alert, Button, PasswordInput, Stack, Text, Title } from '@mantine/core'
+import { Alert, Button, Paper, PasswordInput, Stack, Text, Title } from '@mantine/core'
 import { notifications } from '@mantine/notifications'
 
 // Self-service password change - the one page every authenticated user can
@@ -51,42 +51,44 @@ export default function Settings() {
       {isTokenPrincipal ? (
         <Text>Token principals have no password to change.</Text>
       ) : (
-        <form onSubmit={handleSubmit}>
-          <Stack maw={320}>
-            <PasswordInput
-              label="Current password"
-              id="current-password"
-              value={currentPassword}
-              onChange={(e) => setCurrentPassword(e.target.value)}
-              autoComplete="current-password"
-              required
-            />
-            <PasswordInput
-              label="New password"
-              id="new-password"
-              value={newPassword}
-              onChange={(e) => setNewPassword(e.target.value)}
-              autoComplete="new-password"
-              required
-            />
-            <PasswordInput
-              label="Confirm new password"
-              id="confirm-password"
-              value={confirmPassword}
-              onChange={(e) => setConfirmPassword(e.target.value)}
-              autoComplete="new-password"
-              required
-            />
-            {error && (
-              <Alert color="red" role="alert">
-                {error}
-              </Alert>
-            )}
-            <Button type="submit" loading={submitting}>
-              {submitting ? 'Saving…' : 'Change password'}
-            </Button>
-          </Stack>
-        </form>
+        <Paper withBorder p="md" maw={320}>
+          <form onSubmit={handleSubmit}>
+            <Stack>
+              <PasswordInput
+                label="Current password"
+                id="current-password"
+                value={currentPassword}
+                onChange={(e) => setCurrentPassword(e.target.value)}
+                autoComplete="current-password"
+                required
+              />
+              <PasswordInput
+                label="New password"
+                id="new-password"
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                autoComplete="new-password"
+                required
+              />
+              <PasswordInput
+                label="Confirm new password"
+                id="confirm-password"
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                autoComplete="new-password"
+                required
+              />
+              {error && (
+                <Alert color="red" role="alert">
+                  {error}
+                </Alert>
+              )}
+              <Button type="submit" loading={submitting}>
+                {submitting ? 'Saving…' : 'Change password'}
+              </Button>
+            </Stack>
+          </form>
+        </Paper>
       )}
     </>
   )

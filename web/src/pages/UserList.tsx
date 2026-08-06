@@ -13,6 +13,7 @@ import {
   Group,
   LoadingOverlay,
   Modal,
+  Paper,
   Select,
   Stack,
   Table,
@@ -110,27 +111,29 @@ export default function UserList() {
           <Title order={3} mt="xl" mb="md">
             New user
           </Title>
-          <form onSubmit={handleCreate}>
-            <Stack maw={400}>
-              <TextInput label="Name" id="user-name" value={name} onChange={(e) => setName(e.target.value)} required />
-              <Select
-                label="Role"
-                id="user-role"
-                value={role}
-                onChange={(v) => setRole(v ?? '')}
-                data={roles.map((r) => r.name)}
-                allowDeselect={false}
-              />
-              {createError && (
-                <Alert color="red" role="alert">
-                  {createError}
-                </Alert>
-              )}
-              <Button type="submit" loading={creating}>
-                {creating ? 'Creating…' : 'Create user'}
-              </Button>
-            </Stack>
-          </form>
+          <Paper withBorder p="md" maw={400}>
+            <form onSubmit={handleCreate}>
+              <Stack>
+                <TextInput label="Name" id="user-name" value={name} onChange={(e) => setName(e.target.value)} required />
+                <Select
+                  label="Role"
+                  id="user-role"
+                  value={role}
+                  onChange={(v) => setRole(v ?? '')}
+                  data={roles.map((r) => r.name)}
+                  allowDeselect={false}
+                />
+                {createError && (
+                  <Alert color="red" role="alert">
+                    {createError}
+                  </Alert>
+                )}
+                <Button type="submit" loading={creating}>
+                  {creating ? 'Creating…' : 'Create user'}
+                </Button>
+              </Stack>
+            </form>
+          </Paper>
 
           <Modal opened={generatedPassword !== null} onClose={() => setGeneratedPassword(null)} title="User created" centered>
             <Text size="sm" c="dimmed" mb="sm">

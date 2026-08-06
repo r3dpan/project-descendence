@@ -6,6 +6,7 @@ import {
   Button,
   Code,
   LoadingOverlay,
+  Paper,
   Select,
   Stack,
   Table,
@@ -122,50 +123,52 @@ export default function RuntimeList() {
       <Title order={3} mt="xl" mb="md">
         New runtime
       </Title>
-      <form onSubmit={handleCreate}>
-        <Stack maw={480}>
-          <TextInput label="Name" id="rt-name" value={name} onChange={(e) => setName(e.target.value)} required />
-          <Select
-            label="Language"
-            id="rt-lang"
-            value={lang}
-            onChange={(v) => setLang((v as typeof lang) ?? 'python')}
-            data={['python', 'powershell', 'node']}
-            allowDeselect={false}
-          />
-          <TextInput
-            label="Base image"
-            description="Optional - defaults to a curated image"
-            id="rt-base"
-            value={baseImage}
-            onChange={(e) => setBaseImage(e.target.value)}
-          />
-          <TextInput
-            label="System packages"
-            description="Comma-separated, optional"
-            id="rt-sys"
-            value={sysPackages}
-            onChange={(e) => setSysPackages(e.target.value)}
-          />
-          <Textarea
-            label="Language manifest"
-            description="Optional - requirements.txt / PSResourceGet file / package.json, verbatim"
-            id="rt-manifest"
-            value={langManifest}
-            onChange={(e) => setLangManifest(e.target.value)}
-            rows={4}
-            styles={{ input: { fontFamily: 'var(--mantine-font-family-monospace)' } }}
-          />
-          {createError && (
-            <Alert color="red" role="alert">
-              {createError}
-            </Alert>
-          )}
-          <Button type="submit" loading={creating}>
-            {creating ? 'Creating…' : 'Create runtime'}
-          </Button>
-        </Stack>
-      </form>
+      <Paper withBorder p="md" maw={480}>
+        <form onSubmit={handleCreate}>
+          <Stack>
+            <TextInput label="Name" id="rt-name" value={name} onChange={(e) => setName(e.target.value)} required />
+            <Select
+              label="Language"
+              id="rt-lang"
+              value={lang}
+              onChange={(v) => setLang((v as typeof lang) ?? 'python')}
+              data={['python', 'powershell', 'node']}
+              allowDeselect={false}
+            />
+            <TextInput
+              label="Base image"
+              description="Optional - defaults to a curated image"
+              id="rt-base"
+              value={baseImage}
+              onChange={(e) => setBaseImage(e.target.value)}
+            />
+            <TextInput
+              label="System packages"
+              description="Comma-separated, optional"
+              id="rt-sys"
+              value={sysPackages}
+              onChange={(e) => setSysPackages(e.target.value)}
+            />
+            <Textarea
+              label="Language manifest"
+              description="Optional - requirements.txt / PSResourceGet file / package.json, verbatim"
+              id="rt-manifest"
+              value={langManifest}
+              onChange={(e) => setLangManifest(e.target.value)}
+              rows={4}
+              styles={{ input: { fontFamily: 'var(--mantine-font-family-monospace)' } }}
+            />
+            {createError && (
+              <Alert color="red" role="alert">
+                {createError}
+              </Alert>
+            )}
+            <Button type="submit" loading={creating}>
+              {creating ? 'Creating…' : 'Create runtime'}
+            </Button>
+          </Stack>
+        </form>
+      </Paper>
     </>
   )
 }
