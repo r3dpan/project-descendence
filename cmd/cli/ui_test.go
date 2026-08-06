@@ -26,7 +26,7 @@ func msgOf(cmd tea.Cmd) tea.Msg {
 }
 
 func testMenu() menuScreen {
-	return newMenuScreen(context.Background(), client.New("http://127.0.0.1:0", "t"), config{})
+	return newMenuScreen(context.Background(), client.New("http://127.0.0.1:0", "t"), config{}, "admin")
 }
 
 func TestMenuNavigation(t *testing.T) {
@@ -75,7 +75,7 @@ func TestMenuEscPops(t *testing.T) {
 }
 
 func testRootModel() uiModel {
-	return newUIModel(context.Background(), client.New("http://127.0.0.1:0", "t"), config{})
+	return newUIModel(context.Background(), client.New("http://127.0.0.1:0", "t"), config{}, "admin")
 }
 
 func TestRootPushAndPop(t *testing.T) {

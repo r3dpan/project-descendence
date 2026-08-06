@@ -78,9 +78,9 @@ type uiModel struct {
 	err    error
 }
 
-func newUIModel(ctx context.Context, c *client.Client, cfg config) uiModel {
+func newUIModel(ctx context.Context, c *client.Client, cfg config, role string) uiModel {
 	m := uiModel{ctx: ctx, client: c, cfg: cfg, width: defaultWidth, height: 24}
-	m.stack = []uiScreen{newMenuScreen(m.ctx, m.client, m.cfg)}
+	m.stack = []uiScreen{newMenuScreen(m.ctx, m.client, m.cfg, role)}
 	return m
 }
 
@@ -200,13 +200,22 @@ func (m uiModel) renderHeader() string {
 
 // --- Entry point ---
 
-// runUI opens the interactive application.
+// runUI opens the interactive application. It resolves the caller's role
+// synchronously first (task 8.9) so the root menu can decide whether to
+// show "Users" before it ever renders - a role lookup that fails (token
+// revoked mid-session, network hiccup) just means the entry stays hidden,
+// the same fail-closed posture RequirePermission takes server-side.
 func runUI(ctx context.Context, c *client.Client, cfg config) int {
+	role := ""
+	if principal, err := c.WhoAmI(ctx); err == nil {
+		role = principal.Role
+	}
+
 	// The alt screen is what makes this an application rather than command
 	// output: it gets its own buffer and restores the terminal on exit,
 	// leaving the user's scrollback exactly as they left it.
 	model, err := tea.NewProgram(
-		newUIModel(ctx, c, cfg),
+		newUIModel(ctx, c, cfg, role),
 		tea.WithAltScreen(),
 		tea.WithContext(ctx),
 	).Run()

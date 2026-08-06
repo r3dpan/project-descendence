@@ -29,48 +29,70 @@ type menuScreen struct {
 	cursor  int
 }
 
-func newMenuScreen(ctx context.Context, c *client.Client, cfg config) menuScreen {
-	return menuScreen{
-		ctx:    ctx,
-		client: c,
-		cfg:    cfg,
-		entries: []menuEntry{
-			{
-				label: "Runs",
-				hint:  "browse, open, follow and cancel",
-				open: func(m menuScreen) tea.Cmd {
-					return pushScreen(newRunsScreen(m.ctx, m.client))
-				},
-			},
-			{
-				label: "New run",
-				hint:  "start a container from an image and argv",
-				open: func(m menuScreen) tea.Cmd {
-					return pushScreen(newFormScreen(m.ctx, m.client))
-				},
-			},
-			{
-				label: "Logs by run id",
-				hint:  "follow a run you already know the id of",
-				open: func(m menuScreen) tea.Cmd {
-					return pushScreen(newRunPickerScreen(m.ctx, m.client))
-				},
-			},
-			{
-				label: "Identity",
-				hint:  "which principal this token resolves to",
-				open: func(m menuScreen) tea.Cmd {
-					return pushScreen(newWhoAmIScreen(m.ctx, m.client))
-				},
-			},
-			{
-				label: "Configuration",
-				hint:  "where the URL and token are being read from",
-				open: func(m menuScreen) tea.Cmd {
-					return pushScreen(newConfigScreen(m.cfg))
-				},
+// newMenuScreen builds the root menu. role is the calling principal's
+// resolved role (from a synchronous WhoAmI call in runUI, task 8.9) - the
+// "Users" entry only appears for role == "admin", hidden rather than shown
+// and then 403ing on selection: the TUI is a navigable app, and a dead-end
+// action reads worse here than an absent one. Flag commands (`descendence
+// user ...`) always exist regardless, since the server's 403 is the answer
+// automation actually wants, not a client-side guess.
+func newMenuScreen(ctx context.Context, c *client.Client, cfg config, role string) menuScreen {
+	entries := []menuEntry{
+		{
+			label: "Runs",
+			hint:  "browse, open, follow and cancel",
+			open: func(m menuScreen) tea.Cmd {
+				return pushScreen(newRunsScreen(m.ctx, m.client))
 			},
 		},
+		{
+			label: "New run",
+			hint:  "start a container from an image and argv",
+			open: func(m menuScreen) tea.Cmd {
+				return pushScreen(newFormScreen(m.ctx, m.client))
+			},
+		},
+		{
+			label: "Logs by run id",
+			hint:  "follow a run you already know the id of",
+			open: func(m menuScreen) tea.Cmd {
+				return pushScreen(newRunPickerScreen(m.ctx, m.client))
+			},
+		},
+	}
+
+	if role == "admin" {
+		entries = append(entries, menuEntry{
+			label: "Users",
+			hint:  "who has access (create/revoke: descendence user ...)",
+			open: func(m menuScreen) tea.Cmd {
+				return pushScreen(newUsersScreen(m.ctx, m.client))
+			},
+		})
+	}
+
+	entries = append(entries,
+		menuEntry{
+			label: "Identity",
+			hint:  "which principal this token resolves to",
+			open: func(m menuScreen) tea.Cmd {
+				return pushScreen(newWhoAmIScreen(m.ctx, m.client))
+			},
+		},
+		menuEntry{
+			label: "Configuration",
+			hint:  "where the URL and token are being read from",
+			open: func(m menuScreen) tea.Cmd {
+				return pushScreen(newConfigScreen(m.cfg))
+			},
+		},
+	)
+
+	return menuScreen{
+		ctx:     ctx,
+		client:  c,
+		cfg:     cfg,
+		entries: entries,
 	}
 }
 
