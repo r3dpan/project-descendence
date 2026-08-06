@@ -55,7 +55,7 @@ func newSystemStatusFixture(t *testing.T) (*APIServer, *store.Queries, context.C
 	// calls s.podman.Info, so a nil *podman.Client would panic. These tests
 	// only assert on database/supervisor status - podman is expected "down".
 	podmanClient := podman.NewClient(filepath.Join(t.TempDir(), "no-such.sock"))
-	server := NewAPIServer("test", "test", "test", queries, podmanClient, t.TempDir(), nil, nil, "")
+	server := NewAPIServer("test", "test", "test", queries, podmanClient, t.TempDir(), nil, nil, "", nil, "")
 	return server, queries, ctx
 }
 

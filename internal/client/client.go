@@ -199,17 +199,18 @@ func decodeAPIError(resp *http.Response) error {
 	return apiErr
 }
 
-// ServerInfo is the GET / response.
+// ServerInfo is the GET /about response. Moved off "/" in Phase 9 (task 9.9)
+// once "/" became the SPA's own root instead of JSON server info.
 type ServerInfo struct {
 	ProductName  string `json:"productName"`
 	ProductBuild string `json:"productBuild"`
 	APIVersion   string `json:"apiVersion"`
 }
 
-// Info calls GET /. Unauthenticated.
+// Info calls GET /about. Unauthenticated.
 func (c *Client) Info(ctx context.Context) (ServerInfo, error) {
 	var info ServerInfo
-	err := c.do(ctx, http.MethodGet, "/", requestOptions{}, &info)
+	err := c.do(ctx, http.MethodGet, "/about", requestOptions{}, &info)
 	return info, err
 }
 

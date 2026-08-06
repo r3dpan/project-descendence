@@ -1,8 +1,9 @@
 import type { ReactNode } from 'react'
-import { BrowserRouter, Navigate, Route, Routes, useLocation, useParams } from 'react-router-dom'
+import { BrowserRouter, Navigate, Route, Routes, useParams } from 'react-router-dom'
 import { AuthProvider, useAuth } from './auth'
 import Layout from './Layout'
 import Login from './pages/Login'
+import RolelessScreen from './pages/RolelessScreen'
 import Dashboard from './pages/Dashboard'
 import RunList from './pages/RunList'
 import RunDetail from './pages/RunDetail'
@@ -14,13 +15,24 @@ import RuntimeDetail from './pages/RuntimeDetail'
 import UserDetail from './pages/UserDetail'
 import Settings from './pages/Settings'
 
+// A JIT-provisioned OIDC principal (task 9.6) has no role - and therefore no
+// permissions at all - until an admin assigns one via UserDetail's role
+// reassignment. Every authenticated route passes through here, so this is
+// the one place task 9.11 renders an explanatory screen instead of letting
+// that principal wander into a wall of 403s across Dashboard/Runs/Jobs/etc.
 function Protected({ children }: { children: ReactNode }) {
   const { principal } = useAuth()
-  const location = useLocation()
 
   if (principal === undefined) return <p>Loading…</p>
   if (principal === null) {
-    return <Navigate to="/login" replace state={{ from: location.pathname }} />
+    return <Navigate to="/login" replace />
+  }
+  if (principal.permissions.length === 0) {
+    return (
+      <Layout>
+        <RolelessScreen />
+      </Layout>
+    )
   }
   return <Layout>{children}</Layout>
 }

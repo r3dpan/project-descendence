@@ -12,7 +12,6 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"golang.org/x/crypto/bcrypt"
 
 	"github.com/r3dpan/project-descendence/internal/store"
 )
@@ -26,9 +25,11 @@ import (
 // with the same -name fails on the second insert, same as it always has for
 // "bootstrap".
 //
-// -kind=user (task 7.3) mints a browser-login principal instead: password
-// generated the same way the token is (crypto/rand, printed once), hashed
-// with bcrypt before it ever reaches Postgres.
+// Phase 9: -kind=user is gone. Browser login is OIDC-only now
+// (OIDC_BOOTSTRAP_USERNAME mints the first admin on their first real IdP
+// login - task 9.7), so there is nothing left for cmd/seed to seed on that
+// path; this tool's token path is the sole recovery route left if the IdP is
+// down (ARCHITECTURE.md §4.10).
 //
 // Phase 8: cmd/seed remains the chicken-and-egg breaker for RBAC - creating
 // a principal via the API requires the users:write permission, which the
@@ -38,12 +39,7 @@ import (
 func main() {
 	name := flag.String("name", "bootstrap", "principal name (must be unique)")
 	role := flag.String("role", "admin", "role name: admin, operator or viewer")
-	kind := flag.String("kind", "token", "principal kind: token or user")
 	flag.Parse()
-
-	if *kind != "token" && *kind != "user" {
-		log.Fatalf("-kind must be \"token\" or \"user\", got %q", *kind)
-	}
 
 	databaseURL := os.Getenv("DATABASE_URL")
 	if databaseURL == "" {
@@ -59,11 +55,6 @@ func main() {
 	defer pool.Close()
 
 	queries := store.New(pool)
-
-	if *kind == "user" {
-		seedUser(ctx, queries, *name, *role)
-		return
-	}
 
 	token, err := generateToken()
 	if err != nil {
@@ -85,33 +76,7 @@ func main() {
 	fmt.Printf("Token (shown once - store it now):\n\n  %s\n\n", token)
 }
 
-func seedUser(ctx context.Context, queries *store.Queries, name, role string) {
-	password, err := generatePassword()
-	if err != nil {
-		log.Fatalf("Failed generating password: %v", err)
-	}
-
-	passwordHash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
-	if err != nil {
-		log.Fatalf("Failed hashing password: %v", err)
-	}
-
-	principal, err := queries.CreateUserPrincipal(ctx, store.CreateUserPrincipalParams{
-		Name:         name,
-		PasswordHash: passwordHash,
-	})
-	if err != nil {
-		log.Fatalf("Failed creating principal %q: %v", name, err)
-	}
-	assignRole(ctx, queries, principal.ID, role)
-
-	fmt.Printf("Principal #%d %q created (role: %s).\n", principal.ID, principal.Name, role)
-	fmt.Printf("Password (shown once - store it now):\n\n  %s\n\n", password)
-}
-
-// assignRole is the direct-DB-write half of cmd/seed's role assignment,
-// shared by the token and user paths - both need the identical "look up the
-// role by name, upsert principal_roles" sequence.
+// assignRole is the direct-DB-write half of cmd/seed's role assignment.
 func assignRole(ctx context.Context, queries *store.Queries, principalID int64, roleName string) {
 	roleRow, err := queries.GetRoleByName(ctx, roleName)
 	if err != nil {
@@ -132,16 +97,4 @@ func generateToken() (string, error) {
 		return "", err
 	}
 	return "sra_live_" + hex.EncodeToString(buf), nil
-}
-
-// 24 hex chars, deliberately short of bcrypt's 72-byte input limit (unlike
-// generateToken's sra_live_-prefixed 73 bytes, which exceeds it) - this is
-// typed into a login form, not pasted as a bearer token, so it stays short
-// enough to read out.
-func generatePassword() (string, error) {
-	buf := make([]byte, 12)
-	if _, err := rand.Read(buf); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(buf), nil
 }

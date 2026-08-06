@@ -3,13 +3,17 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"sort"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/r3dpan/project-descendence/internal/gitrepo"
 	"github.com/r3dpan/project-descendence/internal/logstream"
+	oidcpkg "github.com/r3dpan/project-descendence/internal/oidc"
 	"github.com/r3dpan/project-descendence/internal/podman"
 	"github.com/r3dpan/project-descendence/internal/store"
 )
@@ -43,10 +47,19 @@ type APIServer struct {
 	// PODMAN_SOCKET. A PUT here only takes effect on the next restart of
 	// both processes - see api/openapi.yaml's /api/v1/config description.
 	appconfigPath string
+
+	// oidc is built once at startup (task 9.4) from discovery against the
+	// configured issuer; nil only in tests that don't exercise the auth
+	// endpoints. LoginHandler/CallbackHandler use it; nothing else does.
+	oidc *oidcpkg.Config
+	// oidcBootstrapUsername is OIDC_BOOTSTRAP_USERNAME (task 9.7) - a JIT
+	// principal whose preferred_username matches this gets admin, at
+	// creation time only. Empty disables bootstrap entirely.
+	oidcBootstrapUsername string
 }
 
 // --- API server constructor ---
-func NewAPIServer(productName string, productBuild string, apiVersion string, queries *store.Queries, podmanClient *podman.Client, logDir string, logEvents *logstream.Broker, repos *gitrepo.Store, appconfigPath string) *APIServer {
+func NewAPIServer(productName string, productBuild string, apiVersion string, queries *store.Queries, podmanClient *podman.Client, logDir string, logEvents *logstream.Broker, repos *gitrepo.Store, appconfigPath string, oidc *oidcpkg.Config, oidcBootstrapUsername string) *APIServer {
 	return &APIServer{
 		productName:  productName,
 		productBuild: productBuild,
@@ -60,6 +73,9 @@ func NewAPIServer(productName string, productBuild string, apiVersion string, qu
 		repos:     repos,
 
 		appconfigPath: appconfigPath,
+
+		oidc:                  oidc,
+		oidcBootstrapUsername: oidcBootstrapUsername,
 	}
 }
 
@@ -184,11 +200,17 @@ type whoamiResponse struct {
 }
 
 // toWhoamiResponse assembles the identity response shared by WhoAmIHandler
-// and LoginHandler - both need "who is this, and what can they do" in the
+// and CallbackHandler - both need "who is this, and what can they do" in the
 // same shape.
 func (s *APIServer) toWhoamiResponse(ctx context.Context, principal store.Principal, perms permissionSet) (whoamiResponse, error) {
+	// A JIT-provisioned OIDC principal (task 9.6) has no row in
+	// principal_roles until an admin assigns one - GetPrincipalRoleName's
+	// :one query then reports pgx.ErrNoRows, which is an expected steady
+	// state here, not a failure: Role comes back "", Permissions empty, and
+	// it is task 9.11's web UI that turns that into the explanatory
+	// roleless screen rather than a wall of 403s.
 	role, err := s.queries.GetPrincipalRoleName(ctx, principal.ID)
-	if err != nil {
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return whoamiResponse{}, err
 	}
 

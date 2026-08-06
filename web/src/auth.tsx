@@ -1,11 +1,10 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
 import { APIError } from './api/client'
-import { login as apiLogin, logout as apiLogout, whoami, type Principal } from './api/auth'
+import { logout as apiLogout, whoami, type Principal } from './api/auth'
 
 interface AuthState {
   // undefined: still checking; null: checked, not logged in.
   principal: Principal | null | undefined
-  login: (username: string, password: string) => Promise<void>
   logout: () => Promise<void>
 }
 
@@ -26,17 +25,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       })
   }, [])
 
-  async function login(username: string, password: string) {
-    const p = await apiLogin(username, password)
-    setPrincipal(p)
-  }
-
   async function logout() {
     await apiLogout()
     setPrincipal(null)
   }
 
-  return <AuthContext.Provider value={{ principal, login, logout }}>{children}</AuthContext.Provider>
+  return <AuthContext.Provider value={{ principal, logout }}>{children}</AuthContext.Provider>
 }
 
 export function useAuth(): AuthState {

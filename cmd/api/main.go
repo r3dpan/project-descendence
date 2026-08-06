@@ -13,6 +13,7 @@ import (
 	"github.com/r3dpan/project-descendence/internal/appconfig"
 	"github.com/r3dpan/project-descendence/internal/gitrepo"
 	"github.com/r3dpan/project-descendence/internal/logstream"
+	"github.com/r3dpan/project-descendence/internal/oidc"
 	"github.com/r3dpan/project-descendence/internal/podman"
 	"github.com/r3dpan/project-descendence/internal/store"
 	webdist "github.com/r3dpan/project-descendence/web"
@@ -116,6 +117,37 @@ func main() {
 	}
 	repoStore := gitrepo.NewStore(repoDir)
 
+	// OIDC (Phase 9, task 9.4): discovery happens once, here, at startup -
+	// never per-request. Discovery failure is fatal rather than degraded: a
+	// server that started anyway would accept traffic against a login path
+	// that can never work, which is worse than refusing to start.
+	oidcIssuerURL := os.Getenv("OIDC_ISSUER_URL")
+	if oidcIssuerURL == "" {
+		log.Fatal("OIDC_ISSUER_URL is not set")
+	}
+	oidcClientID := os.Getenv("OIDC_CLIENT_ID")
+	if oidcClientID == "" {
+		log.Fatal("OIDC_CLIENT_ID is not set")
+	}
+	oidcRedirectURL := os.Getenv("OIDC_REDIRECT_URL")
+	if oidcRedirectURL == "" {
+		oidcRedirectURL = "http://127.0.0.1:8080/api/v1/auth/callback"
+	}
+	oidcConfig, err := oidc.New(context.Background(), oidc.Options{
+		IssuerURL:    oidcIssuerURL,
+		ClientID:     oidcClientID,
+		ClientSecret: os.Getenv("OIDC_CLIENT_SECRET"),
+		RedirectURL:  oidcRedirectURL,
+		Scopes:       oidc.ParseScopes(os.Getenv("OIDC_SCOPES")),
+	})
+	if err != nil {
+		log.Fatalf("OIDC setup failed: %v", err)
+	}
+	// OIDC_BOOTSTRAP_USERNAME may be empty - bootstrap then simply never
+	// fires, and cmd/seed's token path is the only way to mint the first
+	// admin (task 9.10).
+	oidcBootstrapUsername := os.Getenv("OIDC_BOOTSTRAP_USERNAME")
+
 	// One Postgres listener for the whole process, fanning run events out to
 	// however many clients are streaming (task 2.3). Its context is cancelled
 	// on shutdown so the connection is not left behind.
@@ -130,18 +162,19 @@ func main() {
 	descendenceMux := http.NewServeMux()
 
 	// Create new API server
-	descendenceAPI := api.NewAPIServer(productName, productBuild, apiVersion, queries, podmanClient, logDir, logEvents, repoStore, configPath)
+	descendenceAPI := api.NewAPIServer(productName, productBuild, apiVersion, queries, podmanClient, logDir, logEvents, repoStore, configPath, oidcConfig, oidcBootstrapUsername)
 
 	// Create api handlers
 	// Rule: the most specific pattern always wins
 	// A path pattern ending with '/' matches all paths beginning with that string. {$} anchors end of path.
-	descendenceMux.HandleFunc("GET /{$}", descendenceAPI.RootHandler)
+	descendenceMux.HandleFunc("GET /about", descendenceAPI.RootHandler)
 	descendenceMux.HandleFunc("GET /healthz", descendenceAPI.HealthHandler)
 	descendenceMux.HandleFunc("GET /api/v1/whoami", descendenceAPI.RequireAuth(descendenceAPI.WhoAmIHandler))
 	descendenceMux.HandleFunc("GET /api/v1/system/status", descendenceAPI.RequireAuth(descendenceAPI.SystemStatusHandler))
 	descendenceMux.HandleFunc("GET /api/v1/config", descendenceAPI.RequireAuth(descendenceAPI.RequirePermission("config:read", descendenceAPI.GetConfigHandler)))
 	descendenceMux.HandleFunc("PUT /api/v1/config", descendenceAPI.RequireAuth(descendenceAPI.RequirePermission("config:write", descendenceAPI.PutConfigHandler)))
-	descendenceMux.HandleFunc("POST /api/v1/auth/login", descendenceAPI.LoginHandler)
+	descendenceMux.HandleFunc("GET /api/v1/auth/login", descendenceAPI.LoginHandler)
+	descendenceMux.HandleFunc("GET /api/v1/auth/callback", descendenceAPI.CallbackHandler)
 	descendenceMux.HandleFunc("POST /api/v1/auth/logout", descendenceAPI.LogoutHandler)
 	descendenceMux.HandleFunc("POST /api/v1/runs", descendenceAPI.RequireAuth(descendenceAPI.RequirePermission("runs:trigger", descendenceAPI.CreateRunHandler)))
 	descendenceMux.HandleFunc("GET /api/v1/runs/{id}", descendenceAPI.RequireAuth(descendenceAPI.RequirePermission("runs:read", descendenceAPI.GetRunHandler)))
@@ -177,11 +210,12 @@ func main() {
 	descendenceMux.HandleFunc("POST /api/v1/schedules/{id}/trigger", descendenceAPI.RequireAuth(descendenceAPI.RequirePermission("schedules:trigger", descendenceAPI.TriggerScheduleHandler)))
 
 	// Users and tokens (Phase 8) - both principals rows, admin-only
-	// (users:read/users:write) except self password-change, which is gated
-	// by "acting on self" inline rather than a permission key (decision #5).
-	descendenceMux.HandleFunc("PATCH /api/v1/users/me/password", descendenceAPI.RequireAuth(descendenceAPI.ChangeOwnPasswordHandler))
+	// (users:read/users:write). Phase 9 drops POST /users (an admin-created
+	// principal has no oidc_subject and could never log in) and the
+	// self password-change endpoint (there is no local password); role patch
+	// and revoke stay - role patch is also how a JIT-provisioned, roleless
+	// OIDC principal (task 9.6) gets its first role.
 	descendenceMux.HandleFunc("GET /api/v1/users", descendenceAPI.RequireAuth(descendenceAPI.RequirePermission("users:read", descendenceAPI.ListUsersHandler)))
-	descendenceMux.HandleFunc("POST /api/v1/users", descendenceAPI.RequireAuth(descendenceAPI.RequirePermission("users:write", descendenceAPI.CreateUserHandler)))
 	descendenceMux.HandleFunc("GET /api/v1/users/{id}", descendenceAPI.RequireAuth(descendenceAPI.RequirePermission("users:read", descendenceAPI.GetUserHandler)))
 	descendenceMux.HandleFunc("PATCH /api/v1/users/{id}", descendenceAPI.RequireAuth(descendenceAPI.RequirePermission("users:write", descendenceAPI.PatchUserHandler)))
 	descendenceMux.HandleFunc("DELETE /api/v1/users/{id}", descendenceAPI.RequireAuth(descendenceAPI.RequirePermission("users:write", descendenceAPI.RevokeUserHandler)))
@@ -200,12 +234,14 @@ func main() {
 	descendenceMux.HandleFunc("POST /api/v1/runtimes/{id}/build", descendenceAPI.RequireAuth(descendenceAPI.RequirePermission("runtimes:write", descendenceAPI.BuildRuntimeHandler)))
 	descendenceMux.HandleFunc("POST /api/v1/runtimes/prune", descendenceAPI.RequireAuth(descendenceAPI.RequirePermission("runtimes:write", descendenceAPI.PruneRuntimesHandler)))
 
-	// Web UI (Phase 7, task 7.4). Registered last but wins for nothing "GET
-	// /{$}" or /api/v1/*, /healthz already claim - Go 1.22's mux always
-	// picks the most specific matching pattern regardless of registration
-	// order, so the root route above keeps returning JSON server info for
-	// machine clients and this catch-all only ever serves the SPA's own
-	// client-side routes (e.g. /login, /runs/42).
+	// Web UI (Phase 7, task 7.4; root moved to the SPA in Phase 9, task
+	// 9.9). Registered last but wins for nothing /api/v1/*, /healthz or
+	// /about already claim - Go 1.22's mux always picks the most specific
+	// matching pattern regardless of registration order, so this catch-all
+	// serves "/" itself now (there is no more exact "GET /{$}" route to
+	// out-rank it) along with the SPA's client-side routes (e.g. /login,
+	// /runs/42). Machine clients that want JSON server info now use
+	// GET /about instead of "/".
 	distFS, err := fs.Sub(webdist.Dist, "dist")
 	if err != nil {
 		log.Fatalf("Failed opening embedded web/dist: %v", err)

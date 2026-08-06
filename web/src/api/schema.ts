@@ -4,13 +4,17 @@
  */
 
 export interface paths {
-    "/": {
+    "/about": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
+        /**
+         * @description Machine-readable server info. Moved off "/" in Phase 9 (task 9.9)
+         *     once "/" became the SPA's own root instead of JSON.
+         */
         get: operations["getAPIServerInfo"];
         put?: never;
         post?: never;
@@ -94,10 +98,27 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /** @description Starts the OIDC authorization code flow with PKCE (task 9.5, supersedes decision #29's local-password login). A browser navigation target, not a JSON endpoint - the SPA links here rather than fetching it, since an XHR cannot follow the redirect to the IdP. Sets short-lived state/nonce/PKCE-verifier cookies, then 302s to the IdP's authorization endpoint. */
+        get: operations["login"];
         put?: never;
-        /** @description Local-account login for the browser SPA (task 7.3, ahead of OIDC - ARCHITECTURE.md §4.10). On success sets an HttpOnly/Secure/ SameSite=Lax session cookie; the response body carries no token. */
-        post: operations["login"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/callback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description OIDC redirect target (task 9.6). Verifies state, exchanges the authorization code with PKCE, verifies the ID token and its nonce, then resolves (iss, sub) to a principal: mints a session for a known, non-revoked subject; refuses a revoked one outright, never resurrecting it; JIT-provisions an unknown one with no role assigned. On success sets the same HttpOnly/Secure/SameSite=Lax session cookie login always has and redirects to "/". */
+        get: operations["authCallback"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -525,29 +546,11 @@ export interface paths {
         /** @description Admin-only (users:read). Unpaginated - a homelab has a handful of users, not thousands (Phase 8, task 8.2). */
         get: operations["listUsers"];
         put?: never;
-        /** @description Admin-only (users:write). */
-        post: operations["createUser"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/users/me/password": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
         post?: never;
         delete?: never;
         options?: never;
         head?: never;
-        /** @description Self-service only - gated by "acting on self", not a permission key (ARCHITECTURE.md §6 decision #30's carve-out). Any authenticated user principal may call this on itself. */
-        patch: operations["changeOwnPassword"];
+        patch?: never;
         trace?: never;
     };
     "/api/v1/users/{id}": {
@@ -683,28 +686,13 @@ export interface components {
             /** Format: date-time */
             revokedAt?: string;
         };
-        UserCreate: {
-            name: string;
-            /** @description Generated server-side and returned once if omitted. */
-            password?: string;
-            /** @enum {string} */
-            role: "admin" | "operator" | "viewer";
-        };
-        UserCreateResponse: components["schemas"]["User"] & {
-            /** @description Shown exactly once - not retrievable again after this response. */
-            password: string;
-        };
-        /** @description Role reassignment only - name/password change elsewhere. */
+        /** @description Role reassignment only. There is no create-user schema anymore (Phase 9, task 9.8): a user principal is created by its first OIDC login (JIT-provisioned with no role), and this is how an admin assigns its first role. */
         UserPatch: {
             /** @enum {string} */
             role?: "admin" | "operator" | "viewer";
         };
         UserList: {
             items: components["schemas"]["User"][];
-        };
-        SelfPasswordChange: {
-            currentPassword: string;
-            newPassword: string;
         };
         Token: {
             id: number;
@@ -732,10 +720,6 @@ export interface components {
         };
         TokenList: {
             items: components["schemas"]["Token"][];
-        };
-        LoginRequest: {
-            username: string;
-            password: string;
         };
         /** @description RFC 9457 problem details */
         Problem: {
@@ -1317,23 +1301,42 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["LoginRequest"];
-            };
-        };
+        requestBody?: never;
         responses: {
-            /** @description Authenticated; session cookie set */
-            200: {
+            /** @description Redirect to the identity provider's authorization endpoint */
+            302: {
                 headers: {
+                    Location?: string;
                     "Set-Cookie"?: string;
                     [name: string]: unknown;
                 };
-                content: {
-                    "application/json": components["schemas"]["Principal"];
-                };
+                content?: never;
             };
-            /** @description Missing username or password */
+        };
+    };
+    authCallback: {
+        parameters: {
+            query: {
+                state: string;
+                code?: string;
+                error?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Authenticated; session cookie set; redirects to "/" */
+            302: {
+                headers: {
+                    "Set-Cookie"?: string;
+                    Location?: string;
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing/expired login attempt, or the IdP reported an error */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -1342,8 +1345,17 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description Invalid username or password */
+            /** @description State/nonce mismatch, or ID token/code exchange failed */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The resolved subject is revoked and is never resurrected */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -2721,116 +2733,6 @@ export interface operations {
                 };
             };
             /** @description Principal is missing the users:read permission */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["Problem"];
-                };
-            };
-        };
-    };
-    createUser: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["UserCreate"];
-            };
-        };
-        responses: {
-            /** @description The created user, with its one-time plaintext password */
-            201: {
-                headers: {
-                    Location?: string;
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["UserCreateResponse"];
-                };
-            };
-            /** @description Missing name, or unknown role */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["Problem"];
-                };
-            };
-            /** @description Missing, malformed, unknown, expired or revoked token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["Problem"];
-                };
-            };
-            /** @description Principal is missing the users:write permission */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["Problem"];
-                };
-            };
-            /** @description Name already in use */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["Problem"];
-                };
-            };
-        };
-    };
-    changeOwnPassword: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["SelfPasswordChange"];
-            };
-        };
-        responses: {
-            /** @description Password changed */
-            204: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Missing newPassword */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["Problem"];
-                };
-            };
-            /** @description Missing/invalid credential, or currentPassword did not match */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["Problem"];
-                };
-            };
-            /** @description Caller is not a user-kind principal */
             403: {
                 headers: {
                     [name: string]: unknown;

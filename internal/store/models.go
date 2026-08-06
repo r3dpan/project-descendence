@@ -43,16 +43,17 @@ type Permission struct {
 }
 
 type Principal struct {
-	ID           int64              `json:"id"`
-	Kind         string             `json:"kind"`
-	Name         string             `json:"name"`
-	TokenHash    []byte             `json:"token_hash"`
-	TokenHint    pgtype.Text        `json:"token_hint"`
-	CreatedAt    pgtype.Timestamptz `json:"created_at"`
-	ExpiresAt    pgtype.Timestamptz `json:"expires_at"`
-	RevokedAt    pgtype.Timestamptz `json:"revoked_at"`
-	PasswordHash []byte             `json:"password_hash"`
-	LastLoginAt  pgtype.Timestamptz `json:"last_login_at"`
+	ID          int64              `json:"id"`
+	Kind        string             `json:"kind"`
+	Name        string             `json:"name"`
+	TokenHash   []byte             `json:"token_hash"`
+	TokenHint   pgtype.Text        `json:"token_hint"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	ExpiresAt   pgtype.Timestamptz `json:"expires_at"`
+	RevokedAt   pgtype.Timestamptz `json:"revoked_at"`
+	LastLoginAt pgtype.Timestamptz `json:"last_login_at"`
+	OidcIssuer  pgtype.Text        `json:"oidc_issuer"`
+	OidcSubject pgtype.Text        `json:"oidc_subject"`
 }
 
 type PrincipalRole struct {

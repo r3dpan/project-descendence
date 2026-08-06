@@ -1,8 +1,6 @@
 package api
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,7 +8,6 @@ import (
 	"strconv"
 
 	"github.com/jackc/pgx/v5"
-	"golang.org/x/crypto/bcrypt"
 
 	"github.com/r3dpan/project-descendence/internal/store"
 )
@@ -25,35 +22,16 @@ type userResponse struct {
 	RevokedAt *string `json:"revokedAt,omitempty"`
 }
 
-// userCreateResponse carries the generated plaintext password exactly once
-// - the same "shown once, never retrievable again" contract cmd/seed
-// already established at the CLI, now available from the API too.
-type userCreateResponse struct {
-	userResponse
-	Password string `json:"password"`
-}
-
-type userCreateRequest struct {
-	Name     string  `json:"name"`
-	Password *string `json:"password"`
-	Role     string  `json:"role"`
-}
-
-// userPatchRequest is role reassignment only - name/password changes go
-// through dedicated endpoints (self password-change), matching
-// PatchJobHandler's narrow-field precedent: PATCH touches exactly what it
-// documents.
+// userPatchRequest is role reassignment only - there is no name/password
+// field to touch anymore (Phase 9: identity and its name come from the IdP,
+// there is no local password), matching PatchJobHandler's narrow-field
+// precedent: PATCH touches exactly what it documents.
 type userPatchRequest struct {
 	Role *string `json:"role"`
 }
 
 type userListResponse struct {
 	Items []userResponse `json:"items"`
-}
-
-type selfPasswordChangeRequest struct {
-	CurrentPassword string `json:"currentPassword"`
-	NewPassword     string `json:"newPassword"`
 }
 
 func toUserResponse(row store.ListPrincipalsByKindWithRoleRow) userResponse {
@@ -110,74 +88,11 @@ func (s *APIServer) GetUserHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toUserResponseFromGet(row))
 }
 
-// CreateUserHandler mints a new kind='user' principal (task 8.2). If
-// password is omitted, one is generated the same way cmd/seed's does -
-// printed/returned once, never retrievable again.
-func (s *APIServer) CreateUserHandler(w http.ResponseWriter, r *http.Request) {
-	var req userCreateRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeProblem(w, http.StatusBadRequest, "malformed JSON body")
-		return
-	}
-	if req.Name == "" {
-		writeProblem(w, http.StatusBadRequest, "name is required")
-		return
-	}
-	role, err := s.queries.GetRoleByName(r.Context(), req.Role)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			writeProblem(w, http.StatusBadRequest, fmt.Sprintf("unknown role %q", req.Role))
-			return
-		}
-		writeProblem(w, http.StatusInternalServerError, "failed looking up role")
-		return
-	}
-
-	password := req.Password
-	if password == nil {
-		generated, err := generatePassword()
-		if err != nil {
-			writeProblem(w, http.StatusInternalServerError, "failed generating password")
-			return
-		}
-		password = &generated
-	}
-	passwordHash, err := bcrypt.GenerateFromPassword([]byte(*password), bcrypt.DefaultCost)
-	if err != nil {
-		writeProblem(w, http.StatusInternalServerError, "failed hashing password")
-		return
-	}
-
-	principal, err := s.queries.CreateUserPrincipal(r.Context(), store.CreateUserPrincipalParams{
-		Name:         req.Name,
-		PasswordHash: passwordHash,
-	})
-	if err != nil {
-		writeProblem(w, http.StatusConflict, fmt.Sprintf("failed creating user %q (name may already be in use)", req.Name))
-		return
-	}
-	if err := s.queries.SetPrincipalRole(r.Context(), store.SetPrincipalRoleParams{
-		PrincipalID: principal.ID,
-		RoleID:      role.ID,
-	}); err != nil {
-		writeProblem(w, http.StatusInternalServerError, "failed assigning role")
-		return
-	}
-
-	resp := userCreateResponse{
-		userResponse: userResponse{
-			ID:        principal.ID,
-			Name:      principal.Name,
-			Role:      role.Name,
-			CreatedAt: principal.CreatedAt.Time.Format("2006-01-02T15:04:05Z07:00"),
-		},
-		Password: *password,
-	}
-	w.Header().Set("Location", fmt.Sprintf("/api/v1/users/%d", principal.ID))
-	writeJSON(w, http.StatusCreated, resp)
-}
-
-// PatchUserHandler reassigns a user's role (task 8.2).
+// PatchUserHandler reassigns a user's role (task 8.2) - this is also how an
+// admin turns a JIT-provisioned, roleless OIDC principal (task 9.6) into one
+// that can actually do anything; there is no create-user endpoint anymore
+// (task 9.8) since an admin-created principal would have no oidc_subject and
+// could never complete a login.
 func (s *APIServer) PatchUserHandler(w http.ResponseWriter, r *http.Request) {
 	row, ok := s.lookupUser(w, r)
 	if !ok {
@@ -237,51 +152,6 @@ func (s *APIServer) RevokeUserHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// ChangeOwnPasswordHandler is the one mutating users endpoint gated by "is
-// this the authenticated principal acting on itself" rather than a
-// permission key (decision #5's self-service carve-out) - there is no
-// users:write-self permission, and no other path exists to change a
-// principal's password without users:write on someone else's account.
-func (s *APIServer) ChangeOwnPasswordHandler(w http.ResponseWriter, r *http.Request) {
-	principal, ok := principalFromContext(r.Context())
-	if !ok {
-		writeProblem(w, http.StatusInternalServerError, "no principal in request context")
-		return
-	}
-	if principal.Kind != "user" {
-		writeProblem(w, http.StatusForbidden, "only user principals have a password")
-		return
-	}
-
-	var req selfPasswordChangeRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeProblem(w, http.StatusBadRequest, "malformed JSON body")
-		return
-	}
-	if req.NewPassword == "" {
-		writeProblem(w, http.StatusBadRequest, "newPassword is required")
-		return
-	}
-	if err := bcrypt.CompareHashAndPassword(principal.PasswordHash, []byte(req.CurrentPassword)); err != nil {
-		writeProblem(w, http.StatusUnauthorized, "current password is incorrect")
-		return
-	}
-
-	newHash, err := bcrypt.GenerateFromPassword([]byte(req.NewPassword), bcrypt.DefaultCost)
-	if err != nil {
-		writeProblem(w, http.StatusInternalServerError, "failed hashing password")
-		return
-	}
-	if _, err := s.queries.UpdatePrincipalPasswordHash(r.Context(), store.UpdatePrincipalPasswordHashParams{
-		ID:           principal.ID,
-		PasswordHash: newHash,
-	}); err != nil {
-		writeProblem(w, http.StatusInternalServerError, "failed updating password")
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
 // lookupUser resolves the {id} path value to a kind='user' principal,
 // answering 404 itself when it cannot - the same pattern lookupJob uses.
 func (s *APIServer) lookupUser(w http.ResponseWriter, r *http.Request) (store.GetPrincipalByIDWithRoleRow, bool) {
@@ -300,15 +170,4 @@ func (s *APIServer) lookupUser(w http.ResponseWriter, r *http.Request) (store.Ge
 		return store.GetPrincipalByIDWithRoleRow{}, false
 	}
 	return row, true
-}
-
-// generatePassword mirrors cmd/seed's generatePassword: 24 hex chars,
-// deliberately short of bcrypt's 72-byte input limit, typed into a login
-// form rather than pasted as a bearer token.
-func generatePassword() (string, error) {
-	buf := make([]byte, 12)
-	if _, err := rand.Read(buf); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(buf), nil
 }

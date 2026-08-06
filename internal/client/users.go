@@ -19,27 +19,13 @@ type UserList struct {
 	Items []User `json:"items"`
 }
 
-type CreateUserParams struct {
-	Name     string  `json:"name"`
-	Password *string `json:"password,omitempty"`
-	Role     string  `json:"role"`
-}
-
-// CreateUserResult carries the generated plaintext password exactly once -
-// not retrievable again after this response.
-type CreateUserResult struct {
-	User
-	Password string `json:"password"`
-}
-
 // UpdateUserParams is role reassignment only, matching UserPatch's shape.
+// This is also how a JIT-provisioned, roleless OIDC principal (task 9.6)
+// gets its first role - there is no create-user endpoint anymore (task 9.8):
+// an admin-created principal would have no oidc_subject and could never log
+// in.
 type UpdateUserParams struct {
 	Role *string `json:"role,omitempty"`
-}
-
-type ChangeOwnPasswordParams struct {
-	CurrentPassword string `json:"currentPassword"`
-	NewPassword     string `json:"newPassword"`
 }
 
 func (c *Client) ListUsers(ctx context.Context) (UserList, error) {
@@ -54,12 +40,6 @@ func (c *Client) GetUser(ctx context.Context, id int64) (User, error) {
 	return user, err
 }
 
-func (c *Client) CreateUser(ctx context.Context, params CreateUserParams) (CreateUserResult, error) {
-	var result CreateUserResult
-	err := c.do(ctx, http.MethodPost, "/api/v1/users", requestOptions{body: params}, &result)
-	return result, err
-}
-
 func (c *Client) UpdateUser(ctx context.Context, id int64, params UpdateUserParams) (User, error) {
 	var user User
 	err := c.do(ctx, http.MethodPatch, fmt.Sprintf("/api/v1/users/%d", id), requestOptions{body: params}, &user)
@@ -70,10 +50,4 @@ func (c *Client) UpdateUser(ctx context.Context, id int64, params UpdateUserPara
 // the server's DELETE semantics (runs.principal_id is ON DELETE RESTRICT).
 func (c *Client) RevokeUser(ctx context.Context, id int64) error {
 	return c.do(ctx, http.MethodDelete, fmt.Sprintf("/api/v1/users/%d", id), requestOptions{}, nil)
-}
-
-// ChangeOwnPassword changes the calling principal's own password -
-// self-service, no other principal's password is reachable this way.
-func (c *Client) ChangeOwnPassword(ctx context.Context, params ChangeOwnPasswordParams) error {
-	return c.do(ctx, http.MethodPatch, "/api/v1/users/me/password", requestOptions{body: params}, nil)
 }

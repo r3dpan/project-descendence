@@ -80,7 +80,7 @@ func newRepoFixture(t *testing.T) (*repoFixture, context.Context) {
 		_, _ = pool.Exec(cleanupCtx, "DELETE FROM repos WHERE id = $1", repo.ID)
 	})
 
-	server := NewAPIServer("test", "test", "test", queries, nil, t.TempDir(), nil, repoStore, "")
+	server := NewAPIServer("test", "test", "test", queries, nil, t.TempDir(), nil, repoStore, "", nil, "")
 
 	return &repoFixture{server: server, repo: repo, git: gitRepo}, ctx
 }

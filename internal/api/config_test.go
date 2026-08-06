@@ -20,7 +20,7 @@ func newConfigFixture(t *testing.T) *APIServer {
 	}); err != nil {
 		t.Fatalf("seeding config file: %v", err)
 	}
-	return NewAPIServer("test", "test", "test", nil, nil, "", nil, nil, path)
+	return NewAPIServer("test", "test", "test", nil, nil, "", nil, nil, path, nil, "")
 }
 
 func putConfig(t *testing.T, server *APIServer, body configResponse) (int, configResponse) {

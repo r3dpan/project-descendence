@@ -7,9 +7,12 @@ servers:
 - url: http://127.0.0.1:8080
   description: Local development server for testing
 paths:
-  /:
+  /about:
     get:
       operationId: getAPIServerInfo
+      description: |
+        Machine-readable server info. Moved off "/" in Phase 9 (task 9.9)
+        once "/" became the SPA's own root instead of JSON.
       responses:
         "200":
           description: Returns general information about the api server
@@ -157,37 +160,74 @@ paths:
               schema:
                 $ref: "#/components/schemas/Problem"
   /api/v1/auth/login:
-    post:
+    get:
       operationId: login
       description: >-
-        Local-account login for the browser SPA (task 7.3, ahead of OIDC -
-        ARCHITECTURE.md §4.10). On success sets an HttpOnly/Secure/
-        SameSite=Lax session cookie; the response body carries no token.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/LoginRequest"
+        Starts the OIDC authorization code flow with PKCE (task 9.5,
+        supersedes decision #29's local-password login). A browser
+        navigation target, not a JSON endpoint - the SPA links here rather
+        than fetching it, since an XHR cannot follow the redirect to the
+        IdP. Sets short-lived state/nonce/PKCE-verifier cookies, then 302s
+        to the IdP's authorization endpoint.
       responses:
-        "200":
-          description: Authenticated; session cookie set
+        "302":
+          description: Redirect to the identity provider's authorization endpoint
+          headers:
+            Location:
+              schema:
+                type: string
+            Set-Cookie:
+              schema:
+                type: string
+  /api/v1/auth/callback:
+    get:
+      operationId: authCallback
+      description: >-
+        OIDC redirect target (task 9.6). Verifies state, exchanges the
+        authorization code with PKCE, verifies the ID token and its nonce,
+        then resolves (iss, sub) to a principal: mints a session for a
+        known, non-revoked subject; refuses a revoked one outright, never
+        resurrecting it; JIT-provisions an unknown one with no role
+        assigned. On success sets the same HttpOnly/Secure/SameSite=Lax
+        session cookie login always has and redirects to "/".
+      parameters:
+        - name: state
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: code
+          in: query
+          schema:
+            type: string
+        - name: error
+          in: query
+          schema:
+            type: string
+      responses:
+        "302":
+          description: Authenticated; session cookie set; redirects to "/"
           headers:
             Set-Cookie:
               schema:
                 type: string
-          content:
-            application/json:
+            Location:
               schema:
-                $ref: "#/components/schemas/Principal"
+                type: string
         "400":
-          description: Missing username or password
+          description: Missing/expired login attempt, or the IdP reported an error
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/Problem"
         "401":
-          description: Invalid username or password
+          description: State/nonce mismatch, or ID token/code exchange failed
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "403":
+          description: The resolved subject is revoked and is never resurrected
           content:
             application/problem+json:
               schema:
@@ -1517,90 +1557,6 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/Problem"
-    post:
-      operationId: createUser
-      description: Admin-only (users:write).
-      security:
-        - bearerAuth: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/UserCreate"
-      responses:
-        "201":
-          description: The created user, with its one-time plaintext password
-          headers:
-            Location:
-              schema:
-                type: string
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/UserCreateResponse"
-        "400":
-          description: Missing name, or unknown role
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/Problem"
-        "401":
-          description: Missing, malformed, unknown, expired or revoked token
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/Problem"
-        "403":
-          description: Principal is missing the users:write permission
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/Problem"
-        "409":
-          description: Name already in use
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/Problem"
-  /api/v1/users/me/password:
-    patch:
-      operationId: changeOwnPassword
-      description: >-
-        Self-service only - gated by "acting on self", not a permission key
-        (ARCHITECTURE.md §6 decision #30's carve-out). Any authenticated
-        user principal may call this on itself.
-      security:
-        - bearerAuth: []
-        - sessionAuth: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/SelfPasswordChange"
-      responses:
-        "204":
-          description: Password changed
-        "400":
-          description: Missing newPassword
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/Problem"
-        "401":
-          description: >-
-            Missing/invalid credential, or currentPassword did not match
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/Problem"
-        "403":
-          description: Caller is not a user-kind principal
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/Problem"
   /api/v1/users/{id}:
     get:
       operationId: getUser
@@ -2048,35 +2004,13 @@ components:
         - name
         - role
         - createdAt
-    UserCreate:
-      type: object
-      properties:
-        name:
-          type: string
-        password:
-          type: string
-          description: Generated server-side and returned once if omitted.
-        role:
-          type: string
-          enum: [admin, operator, viewer]
-      required:
-        - name
-        - role
-    UserCreateResponse:
-      allOf:
-        - $ref: "#/components/schemas/User"
-        - type: object
-          properties:
-            password:
-              type: string
-              description: >-
-                Shown exactly once - not retrievable again after this
-                response.
-          required:
-            - password
     UserPatch:
       type: object
-      description: Role reassignment only - name/password change elsewhere.
+      description: >-
+        Role reassignment only. There is no create-user schema anymore
+        (Phase 9, task 9.8): a user principal is created by its first OIDC
+        login (JIT-provisioned with no role), and this is how an admin
+        assigns its first role.
       properties:
         role:
           type: string
@@ -2090,16 +2024,6 @@ components:
             $ref: "#/components/schemas/User"
       required:
         - items
-    SelfPasswordChange:
-      type: object
-      properties:
-        currentPassword:
-          type: string
-        newPassword:
-          type: string
-      required:
-        - currentPassword
-        - newPassword
     Token:
       type: object
       properties:
@@ -2162,16 +2086,6 @@ components:
             $ref: "#/components/schemas/Token"
       required:
         - items
-    LoginRequest:
-      type: object
-      properties:
-        username:
-          type: string
-        password:
-          type: string
-      required:
-        - username
-        - password
     Problem:
       type: object
       description: RFC 9457 problem details

@@ -14,7 +14,7 @@ import (
 const createTokenPrincipal = `-- name: CreateTokenPrincipal :one
 INSERT INTO principals (kind, name, token_hash, token_hint, expires_at)
 VALUES ('token', $1, $2, $3, $4)
-RETURNING id, kind, name, token_hash, token_hint, password_hash, created_at, expires_at, revoked_at, last_login_at
+RETURNING id, kind, name, token_hash, token_hint, oidc_issuer, oidc_subject, created_at, expires_at, revoked_at, last_login_at
 `
 
 type CreateTokenPrincipalParams struct {
@@ -25,16 +25,17 @@ type CreateTokenPrincipalParams struct {
 }
 
 type CreateTokenPrincipalRow struct {
-	ID           int64              `json:"id"`
-	Kind         string             `json:"kind"`
-	Name         string             `json:"name"`
-	TokenHash    []byte             `json:"token_hash"`
-	TokenHint    pgtype.Text        `json:"token_hint"`
-	PasswordHash []byte             `json:"password_hash"`
-	CreatedAt    pgtype.Timestamptz `json:"created_at"`
-	ExpiresAt    pgtype.Timestamptz `json:"expires_at"`
-	RevokedAt    pgtype.Timestamptz `json:"revoked_at"`
-	LastLoginAt  pgtype.Timestamptz `json:"last_login_at"`
+	ID          int64              `json:"id"`
+	Kind        string             `json:"kind"`
+	Name        string             `json:"name"`
+	TokenHash   []byte             `json:"token_hash"`
+	TokenHint   pgtype.Text        `json:"token_hint"`
+	OidcIssuer  pgtype.Text        `json:"oidc_issuer"`
+	OidcSubject pgtype.Text        `json:"oidc_subject"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	ExpiresAt   pgtype.Timestamptz `json:"expires_at"`
+	RevokedAt   pgtype.Timestamptz `json:"revoked_at"`
+	LastLoginAt pgtype.Timestamptz `json:"last_login_at"`
 }
 
 func (q *Queries) CreateTokenPrincipal(ctx context.Context, arg CreateTokenPrincipalParams) (CreateTokenPrincipalRow, error) {
@@ -51,7 +52,8 @@ func (q *Queries) CreateTokenPrincipal(ctx context.Context, arg CreateTokenPrinc
 		&i.Name,
 		&i.TokenHash,
 		&i.TokenHint,
-		&i.PasswordHash,
+		&i.OidcIssuer,
+		&i.OidcSubject,
 		&i.CreatedAt,
 		&i.ExpiresAt,
 		&i.RevokedAt,
@@ -60,40 +62,47 @@ func (q *Queries) CreateTokenPrincipal(ctx context.Context, arg CreateTokenPrinc
 	return i, err
 }
 
-const createUserPrincipal = `-- name: CreateUserPrincipal :one
-INSERT INTO principals (kind, name, password_hash)
-VALUES ('user', $1, $2)
-RETURNING id, kind, name, token_hash, token_hint, password_hash, created_at, expires_at, revoked_at, last_login_at
+const createUserPrincipalOIDC = `-- name: CreateUserPrincipalOIDC :one
+INSERT INTO principals (kind, name, oidc_issuer, oidc_subject)
+VALUES ('user', $1, $2, $3)
+RETURNING id, kind, name, token_hash, token_hint, oidc_issuer, oidc_subject, created_at, expires_at, revoked_at, last_login_at
 `
 
-type CreateUserPrincipalParams struct {
-	Name         string `json:"name"`
-	PasswordHash []byte `json:"password_hash"`
+type CreateUserPrincipalOIDCParams struct {
+	Name        string      `json:"name"`
+	OidcIssuer  pgtype.Text `json:"oidc_issuer"`
+	OidcSubject pgtype.Text `json:"oidc_subject"`
 }
 
-type CreateUserPrincipalRow struct {
-	ID           int64              `json:"id"`
-	Kind         string             `json:"kind"`
-	Name         string             `json:"name"`
-	TokenHash    []byte             `json:"token_hash"`
-	TokenHint    pgtype.Text        `json:"token_hint"`
-	PasswordHash []byte             `json:"password_hash"`
-	CreatedAt    pgtype.Timestamptz `json:"created_at"`
-	ExpiresAt    pgtype.Timestamptz `json:"expires_at"`
-	RevokedAt    pgtype.Timestamptz `json:"revoked_at"`
-	LastLoginAt  pgtype.Timestamptz `json:"last_login_at"`
+type CreateUserPrincipalOIDCRow struct {
+	ID          int64              `json:"id"`
+	Kind        string             `json:"kind"`
+	Name        string             `json:"name"`
+	TokenHash   []byte             `json:"token_hash"`
+	TokenHint   pgtype.Text        `json:"token_hint"`
+	OidcIssuer  pgtype.Text        `json:"oidc_issuer"`
+	OidcSubject pgtype.Text        `json:"oidc_subject"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	ExpiresAt   pgtype.Timestamptz `json:"expires_at"`
+	RevokedAt   pgtype.Timestamptz `json:"revoked_at"`
+	LastLoginAt pgtype.Timestamptz `json:"last_login_at"`
 }
 
-func (q *Queries) CreateUserPrincipal(ctx context.Context, arg CreateUserPrincipalParams) (CreateUserPrincipalRow, error) {
-	row := q.db.QueryRow(ctx, createUserPrincipal, arg.Name, arg.PasswordHash)
-	var i CreateUserPrincipalRow
+// JIT provisioning (task 9.6): a first-time subject gets a row with no role
+// assigned yet - RequirePermission then denies everything until an admin
+// calls SetPrincipalRole, which is the "roleless principal" state task 9.11's
+// web UI has to render an explanatory screen for instead of a wall of 403s.
+func (q *Queries) CreateUserPrincipalOIDC(ctx context.Context, arg CreateUserPrincipalOIDCParams) (CreateUserPrincipalOIDCRow, error) {
+	row := q.db.QueryRow(ctx, createUserPrincipalOIDC, arg.Name, arg.OidcIssuer, arg.OidcSubject)
+	var i CreateUserPrincipalOIDCRow
 	err := row.Scan(
 		&i.ID,
 		&i.Kind,
 		&i.Name,
 		&i.TokenHash,
 		&i.TokenHint,
-		&i.PasswordHash,
+		&i.OidcIssuer,
+		&i.OidcSubject,
 		&i.CreatedAt,
 		&i.ExpiresAt,
 		&i.RevokedAt,
@@ -103,7 +112,7 @@ func (q *Queries) CreateUserPrincipal(ctx context.Context, arg CreateUserPrincip
 }
 
 const getPrincipalByID = `-- name: GetPrincipalByID :one
-SELECT id, kind, name, token_hash, token_hint, password_hash, created_at, expires_at, revoked_at, last_login_at
+SELECT id, kind, name, token_hash, token_hint, oidc_issuer, oidc_subject, created_at, expires_at, revoked_at, last_login_at
 FROM principals
 WHERE id = $1
   AND revoked_at IS NULL
@@ -111,16 +120,17 @@ WHERE id = $1
 `
 
 type GetPrincipalByIDRow struct {
-	ID           int64              `json:"id"`
-	Kind         string             `json:"kind"`
-	Name         string             `json:"name"`
-	TokenHash    []byte             `json:"token_hash"`
-	TokenHint    pgtype.Text        `json:"token_hint"`
-	PasswordHash []byte             `json:"password_hash"`
-	CreatedAt    pgtype.Timestamptz `json:"created_at"`
-	ExpiresAt    pgtype.Timestamptz `json:"expires_at"`
-	RevokedAt    pgtype.Timestamptz `json:"revoked_at"`
-	LastLoginAt  pgtype.Timestamptz `json:"last_login_at"`
+	ID          int64              `json:"id"`
+	Kind        string             `json:"kind"`
+	Name        string             `json:"name"`
+	TokenHash   []byte             `json:"token_hash"`
+	TokenHint   pgtype.Text        `json:"token_hint"`
+	OidcIssuer  pgtype.Text        `json:"oidc_issuer"`
+	OidcSubject pgtype.Text        `json:"oidc_subject"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	ExpiresAt   pgtype.Timestamptz `json:"expires_at"`
+	RevokedAt   pgtype.Timestamptz `json:"revoked_at"`
+	LastLoginAt pgtype.Timestamptz `json:"last_login_at"`
 }
 
 func (q *Queries) GetPrincipalByID(ctx context.Context, id int64) (GetPrincipalByIDRow, error) {
@@ -132,7 +142,8 @@ func (q *Queries) GetPrincipalByID(ctx context.Context, id int64) (GetPrincipalB
 		&i.Name,
 		&i.TokenHash,
 		&i.TokenHint,
-		&i.PasswordHash,
+		&i.OidcIssuer,
+		&i.OidcSubject,
 		&i.CreatedAt,
 		&i.ExpiresAt,
 		&i.RevokedAt,
@@ -142,7 +153,7 @@ func (q *Queries) GetPrincipalByID(ctx context.Context, id int64) (GetPrincipalB
 }
 
 const getPrincipalByTokenHash = `-- name: GetPrincipalByTokenHash :one
-SELECT id, kind, name, token_hash, token_hint, password_hash, created_at, expires_at, revoked_at, last_login_at
+SELECT id, kind, name, token_hash, token_hint, oidc_issuer, oidc_subject, created_at, expires_at, revoked_at, last_login_at
 FROM principals
 WHERE token_hash = $1
   AND kind = 'token'
@@ -151,16 +162,17 @@ WHERE token_hash = $1
 `
 
 type GetPrincipalByTokenHashRow struct {
-	ID           int64              `json:"id"`
-	Kind         string             `json:"kind"`
-	Name         string             `json:"name"`
-	TokenHash    []byte             `json:"token_hash"`
-	TokenHint    pgtype.Text        `json:"token_hint"`
-	PasswordHash []byte             `json:"password_hash"`
-	CreatedAt    pgtype.Timestamptz `json:"created_at"`
-	ExpiresAt    pgtype.Timestamptz `json:"expires_at"`
-	RevokedAt    pgtype.Timestamptz `json:"revoked_at"`
-	LastLoginAt  pgtype.Timestamptz `json:"last_login_at"`
+	ID          int64              `json:"id"`
+	Kind        string             `json:"kind"`
+	Name        string             `json:"name"`
+	TokenHash   []byte             `json:"token_hash"`
+	TokenHint   pgtype.Text        `json:"token_hint"`
+	OidcIssuer  pgtype.Text        `json:"oidc_issuer"`
+	OidcSubject pgtype.Text        `json:"oidc_subject"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	ExpiresAt   pgtype.Timestamptz `json:"expires_at"`
+	RevokedAt   pgtype.Timestamptz `json:"revoked_at"`
+	LastLoginAt pgtype.Timestamptz `json:"last_login_at"`
 }
 
 func (q *Queries) GetPrincipalByTokenHash(ctx context.Context, tokenHash []byte) (GetPrincipalByTokenHashRow, error) {
@@ -172,7 +184,8 @@ func (q *Queries) GetPrincipalByTokenHash(ctx context.Context, tokenHash []byte)
 		&i.Name,
 		&i.TokenHash,
 		&i.TokenHint,
-		&i.PasswordHash,
+		&i.OidcIssuer,
+		&i.OidcSubject,
 		&i.CreatedAt,
 		&i.ExpiresAt,
 		&i.RevokedAt,
@@ -181,42 +194,48 @@ func (q *Queries) GetPrincipalByTokenHash(ctx context.Context, tokenHash []byte)
 	return i, err
 }
 
-const getUserPrincipalByName = `-- name: GetUserPrincipalByName :one
-SELECT id, kind, name, token_hash, token_hint, password_hash, created_at, expires_at, revoked_at, last_login_at
+const getUserPrincipalByOIDCSubject = `-- name: GetUserPrincipalByOIDCSubject :one
+SELECT id, kind, name, token_hash, token_hint, oidc_issuer, oidc_subject, created_at, expires_at, revoked_at, last_login_at
 FROM principals
-WHERE name = $1
+WHERE oidc_issuer = $1
+  AND oidc_subject = $2
   AND kind = 'user'
-  AND revoked_at IS NULL
-  AND (expires_at IS NULL OR expires_at > now())
 `
 
-type GetUserPrincipalByNameRow struct {
-	ID           int64              `json:"id"`
-	Kind         string             `json:"kind"`
-	Name         string             `json:"name"`
-	TokenHash    []byte             `json:"token_hash"`
-	TokenHint    pgtype.Text        `json:"token_hint"`
-	PasswordHash []byte             `json:"password_hash"`
-	CreatedAt    pgtype.Timestamptz `json:"created_at"`
-	ExpiresAt    pgtype.Timestamptz `json:"expires_at"`
-	RevokedAt    pgtype.Timestamptz `json:"revoked_at"`
-	LastLoginAt  pgtype.Timestamptz `json:"last_login_at"`
+type GetUserPrincipalByOIDCSubjectParams struct {
+	OidcIssuer  pgtype.Text `json:"oidc_issuer"`
+	OidcSubject pgtype.Text `json:"oidc_subject"`
 }
 
-// Returns last_login_at as it stood *before* this call - LoginHandler reads
-// it here, then overwrites it via TouchPrincipalLastLogin, so the value
-// returned to the client is genuinely "when you logged in last time", not
-// "now".
-func (q *Queries) GetUserPrincipalByName(ctx context.Context, name string) (GetUserPrincipalByNameRow, error) {
-	row := q.db.QueryRow(ctx, getUserPrincipalByName, name)
-	var i GetUserPrincipalByNameRow
+type GetUserPrincipalByOIDCSubjectRow struct {
+	ID          int64              `json:"id"`
+	Kind        string             `json:"kind"`
+	Name        string             `json:"name"`
+	TokenHash   []byte             `json:"token_hash"`
+	TokenHint   pgtype.Text        `json:"token_hint"`
+	OidcIssuer  pgtype.Text        `json:"oidc_issuer"`
+	OidcSubject pgtype.Text        `json:"oidc_subject"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	ExpiresAt   pgtype.Timestamptz `json:"expires_at"`
+	RevokedAt   pgtype.Timestamptz `json:"revoked_at"`
+	LastLoginAt pgtype.Timestamptz `json:"last_login_at"`
+}
+
+// Task 9.6's callback lookup. Deliberately does not filter revoked_at -
+// unlike every other lookup here, the callback needs to tell "unknown
+// subject" (JIT-provision) apart from "known but revoked" (refuse, never
+// resurrect) rather than have both collapse into "not found".
+func (q *Queries) GetUserPrincipalByOIDCSubject(ctx context.Context, arg GetUserPrincipalByOIDCSubjectParams) (GetUserPrincipalByOIDCSubjectRow, error) {
+	row := q.db.QueryRow(ctx, getUserPrincipalByOIDCSubject, arg.OidcIssuer, arg.OidcSubject)
+	var i GetUserPrincipalByOIDCSubjectRow
 	err := row.Scan(
 		&i.ID,
 		&i.Kind,
 		&i.Name,
 		&i.TokenHash,
 		&i.TokenHint,
-		&i.PasswordHash,
+		&i.OidcIssuer,
+		&i.OidcSubject,
 		&i.CreatedAt,
 		&i.ExpiresAt,
 		&i.RevokedAt,
@@ -226,23 +245,24 @@ func (q *Queries) GetUserPrincipalByName(ctx context.Context, name string) (GetU
 }
 
 const listPrincipalsByKind = `-- name: ListPrincipalsByKind :many
-SELECT id, kind, name, token_hash, token_hint, password_hash, created_at, expires_at, revoked_at, last_login_at
+SELECT id, kind, name, token_hash, token_hint, oidc_issuer, oidc_subject, created_at, expires_at, revoked_at, last_login_at
 FROM principals
 WHERE kind = $1
 ORDER BY name
 `
 
 type ListPrincipalsByKindRow struct {
-	ID           int64              `json:"id"`
-	Kind         string             `json:"kind"`
-	Name         string             `json:"name"`
-	TokenHash    []byte             `json:"token_hash"`
-	TokenHint    pgtype.Text        `json:"token_hint"`
-	PasswordHash []byte             `json:"password_hash"`
-	CreatedAt    pgtype.Timestamptz `json:"created_at"`
-	ExpiresAt    pgtype.Timestamptz `json:"expires_at"`
-	RevokedAt    pgtype.Timestamptz `json:"revoked_at"`
-	LastLoginAt  pgtype.Timestamptz `json:"last_login_at"`
+	ID          int64              `json:"id"`
+	Kind        string             `json:"kind"`
+	Name        string             `json:"name"`
+	TokenHash   []byte             `json:"token_hash"`
+	TokenHint   pgtype.Text        `json:"token_hint"`
+	OidcIssuer  pgtype.Text        `json:"oidc_issuer"`
+	OidcSubject pgtype.Text        `json:"oidc_subject"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	ExpiresAt   pgtype.Timestamptz `json:"expires_at"`
+	RevokedAt   pgtype.Timestamptz `json:"revoked_at"`
+	LastLoginAt pgtype.Timestamptz `json:"last_login_at"`
 }
 
 // Task 8.2/8.3: the users/tokens list endpoints. Unpaginated - a homelab has
@@ -263,7 +283,8 @@ func (q *Queries) ListPrincipalsByKind(ctx context.Context, kind string) ([]List
 			&i.Name,
 			&i.TokenHash,
 			&i.TokenHint,
-			&i.PasswordHash,
+			&i.OidcIssuer,
+			&i.OidcSubject,
 			&i.CreatedAt,
 			&i.ExpiresAt,
 			&i.RevokedAt,
@@ -309,25 +330,6 @@ WHERE id = $1
 // this way rather than combined into one.
 func (q *Queries) TouchPrincipalLastLogin(ctx context.Context, id int64) (int64, error) {
 	result, err := q.db.Exec(ctx, touchPrincipalLastLogin, id)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
-const updatePrincipalPasswordHash = `-- name: UpdatePrincipalPasswordHash :execrows
-UPDATE principals
-SET password_hash = $2
-WHERE id = $1
-`
-
-type UpdatePrincipalPasswordHashParams struct {
-	ID           int64  `json:"id"`
-	PasswordHash []byte `json:"password_hash"`
-}
-
-func (q *Queries) UpdatePrincipalPasswordHash(ctx context.Context, arg UpdatePrincipalPasswordHashParams) (int64, error) {
-	result, err := q.db.Exec(ctx, updatePrincipalPasswordHash, arg.ID, arg.PasswordHash)
 	if err != nil {
 		return 0, err
 	}

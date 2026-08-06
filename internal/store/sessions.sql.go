@@ -47,7 +47,7 @@ func (q *Queries) DeleteSessionByTokenHash(ctx context.Context, tokenHash []byte
 }
 
 const getPrincipalBySessionTokenHash = `-- name: GetPrincipalBySessionTokenHash :one
-SELECT p.id, p.kind, p.name, p.token_hash, p.token_hint, p.password_hash, p.created_at, p.expires_at, p.revoked_at, p.last_login_at
+SELECT p.id, p.kind, p.name, p.token_hash, p.token_hint, p.oidc_issuer, p.oidc_subject, p.created_at, p.expires_at, p.revoked_at, p.last_login_at
 FROM sessions s
 JOIN principals p ON p.id = s.principal_id
 WHERE s.token_hash = $1
@@ -56,16 +56,17 @@ WHERE s.token_hash = $1
 `
 
 type GetPrincipalBySessionTokenHashRow struct {
-	ID           int64              `json:"id"`
-	Kind         string             `json:"kind"`
-	Name         string             `json:"name"`
-	TokenHash    []byte             `json:"token_hash"`
-	TokenHint    pgtype.Text        `json:"token_hint"`
-	PasswordHash []byte             `json:"password_hash"`
-	CreatedAt    pgtype.Timestamptz `json:"created_at"`
-	ExpiresAt    pgtype.Timestamptz `json:"expires_at"`
-	RevokedAt    pgtype.Timestamptz `json:"revoked_at"`
-	LastLoginAt  pgtype.Timestamptz `json:"last_login_at"`
+	ID          int64              `json:"id"`
+	Kind        string             `json:"kind"`
+	Name        string             `json:"name"`
+	TokenHash   []byte             `json:"token_hash"`
+	TokenHint   pgtype.Text        `json:"token_hint"`
+	OidcIssuer  pgtype.Text        `json:"oidc_issuer"`
+	OidcSubject pgtype.Text        `json:"oidc_subject"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	ExpiresAt   pgtype.Timestamptz `json:"expires_at"`
+	RevokedAt   pgtype.Timestamptz `json:"revoked_at"`
+	LastLoginAt pgtype.Timestamptz `json:"last_login_at"`
 }
 
 func (q *Queries) GetPrincipalBySessionTokenHash(ctx context.Context, tokenHash []byte) (GetPrincipalBySessionTokenHashRow, error) {
@@ -77,7 +78,8 @@ func (q *Queries) GetPrincipalBySessionTokenHash(ctx context.Context, tokenHash 
 		&i.Name,
 		&i.TokenHash,
 		&i.TokenHint,
-		&i.PasswordHash,
+		&i.OidcIssuer,
+		&i.OidcSubject,
 		&i.CreatedAt,
 		&i.ExpiresAt,
 		&i.RevokedAt,

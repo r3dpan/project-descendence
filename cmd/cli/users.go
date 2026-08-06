@@ -8,8 +8,6 @@ import (
 	"strconv"
 	"text/tabwriter"
 
-	"github.com/charmbracelet/x/term"
-
 	"github.com/r3dpan/project-descendence/internal/client"
 )
 
@@ -18,22 +16,18 @@ const usersUsage = `Usage: descendence user <subcommand> [flags]
 Subcommands:
   list                    List users
   get <id>                Show one user
-  create -name <name>     Create a user (admin only)
   set-role <id> -role <r> Reassign a user's role (admin only)
   revoke <id>             Revoke a user's access (admin only)
-  passwd                  Change your own password
-
-Flags for create:
-  -name <name>            Required.
-  -role <role>            admin | operator | viewer (required)
-  -password <password>    Optional - generated and shown once if omitted
 
 Flags for set-role:
   -role <role>            admin | operator | viewer (required)
 
-User management (create/set-role/revoke) is admin-only (users:write) -
-everyone else sees a 403 from the server. "passwd" is self-service and
-works for any authenticated user.
+User management (set-role/revoke) is admin-only (users:write) - everyone
+else sees a 403 from the server. There is no "create" subcommand (Phase 9):
+browser login is OIDC-only, and a user principal is created by its first
+IdP login (JIT-provisioned with no role) rather than by an admin - set-role
+is how that first role gets assigned. There is no "passwd" subcommand
+either - there is no local password to change.
 `
 
 func cmdUser(ctx context.Context, c *client.Client, args []string) int {
@@ -47,14 +41,10 @@ func cmdUser(ctx context.Context, c *client.Client, args []string) int {
 		return cmdUserList(ctx, c, args[1:])
 	case "get":
 		return cmdUserGet(ctx, c, args[1:])
-	case "create":
-		return cmdUserCreate(ctx, c, args[1:])
 	case "set-role":
 		return cmdUserSetRole(ctx, c, args[1:])
 	case "revoke":
 		return cmdUserRevoke(ctx, c, args[1:])
-	case "passwd":
-		return cmdUserPasswd(ctx, c, args[1:])
 	case "help", "-h", "--help":
 		fmt.Print(usersUsage)
 		return 0
@@ -121,37 +111,6 @@ func cmdUserGet(ctx context.Context, c *client.Client, args []string) int {
 	return 0
 }
 
-func cmdUserCreate(ctx context.Context, c *client.Client, args []string) int {
-	fs := flag.NewFlagSet("user create", flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
-	fs.Usage = func() { fmt.Fprint(os.Stderr, usersUsage) }
-	name := fs.String("name", "", "user name (required)")
-	role := fs.String("role", "", "admin | operator | viewer (required)")
-	password := fs.String("password", "", "optional - generated and shown once if omitted")
-	if err := fs.Parse(args); err != nil {
-		return 2
-	}
-	if *name == "" || *role == "" {
-		printError(fmt.Errorf("-name and -role are required"))
-		return 2
-	}
-
-	params := client.CreateUserParams{Name: *name, Role: *role}
-	if *password != "" {
-		params.Password = password
-	}
-
-	result, err := c.CreateUser(ctx, params)
-	if err != nil {
-		printError(err)
-		return 1
-	}
-
-	fmt.Print(renderUserSummary(result.User))
-	fmt.Printf("\n%s\n\n  %s\n\n", styleBold.Render("Password (shown once - store it now):"), result.Password)
-	return 0
-}
-
 func cmdUserSetRole(ctx context.Context, c *client.Client, args []string) int {
 	fs := flag.NewFlagSet("user set-role", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
@@ -200,50 +159,6 @@ func cmdUserRevoke(ctx context.Context, c *client.Client, args []string) int {
 	}
 	fmt.Fprintln(os.Stderr, styleHint.Render(fmt.Sprintf("Revoked user %d", id)))
 	return 0
-}
-
-// cmdUserPasswd prompts for the current and new password interactively -
-// no -current/-new flags, so a password never lands in shell history.
-func cmdUserPasswd(ctx context.Context, c *client.Client, args []string) int {
-	if len(args) != 0 {
-		fmt.Fprint(os.Stderr, usersUsage)
-		return 2
-	}
-	if !isTTY(os.Stdin) {
-		printError(fmt.Errorf("passwd needs an interactive terminal"))
-		return 2
-	}
-
-	current, err := readPassword("Current password: ")
-	if err != nil {
-		printError(err)
-		return 1
-	}
-	newPassword, err := readPassword("New password: ")
-	if err != nil {
-		printError(err)
-		return 1
-	}
-
-	if err := c.ChangeOwnPassword(ctx, client.ChangeOwnPasswordParams{
-		CurrentPassword: current,
-		NewPassword:     newPassword,
-	}); err != nil {
-		printError(err)
-		return 1
-	}
-	fmt.Fprintln(os.Stderr, styleHint.Render("Password changed."))
-	return 0
-}
-
-func readPassword(prompt string) (string, error) {
-	fmt.Fprint(os.Stderr, prompt)
-	buf, err := term.ReadPassword(os.Stdin.Fd())
-	fmt.Fprintln(os.Stderr)
-	if err != nil {
-		return "", fmt.Errorf("reading password: %w", err)
-	}
-	return string(buf), nil
 }
 
 // renderUserSummary shows one user, in the same shape as
