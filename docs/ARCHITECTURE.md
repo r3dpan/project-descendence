@@ -405,7 +405,7 @@ Two credential types, resolved by one middleware (`RequireAuth`,
 | Browsers | Server-set session cookie, from a local-account password login (task 7.3) | `HttpOnly`, `Secure`, `SameSite=Lax`; only a hash in `sessions.token_hash` |
 
 Built as password auth ahead of OIDC, per this section's original note that a local
-account is fine first (§7 still defers OIDC/Authentik and full RBAC). A
+account is fine first (§7 still defers OIDC/Authentik). A
 `kind='user'` principal carries a bcrypt `password_hash` (migration
 `00008_web_auth.sql`) — a symmetric CHECK to `token_hash`'s: a `user` row must
 have one, a `token` row must not. `POST /api/v1/auth/login` checks it and mints a
@@ -420,7 +420,44 @@ issued changes.
 **Never store JWTs (or this session token) in `localStorage`.** Any XSS becomes
 total account compromise and they can't be revoked.
 
-Scopes from day one, even before full RBAC: `read` / `run` / `admin`.
+**Authorization (Phase 8): real roles and permissions, not the earlier flat
+`scopes` array.** Every principal — token or user — has exactly one role
+(`principal_roles`, `principal_id` UNIQUE), chosen from three fixed built-ins
+seeded by migration `00009_rbac.sql`:
+
+| Role | Can do |
+|---|---|
+| `viewer` | Read everything (`jobs:read`, `runs:read`, `schedules:read`, `runtimes:read`, `repos:read`, `users:read`) |
+| `operator` | Everything `viewer` can, plus `runs:trigger`, `runs:cancel`, `schedules:trigger` — run and watch, cannot create/edit jobs, schedules, runtimes, repos, or manage users |
+| `admin` | Every permission, including `users:read`/`users:write` |
+
+Fourteen `resource:verb` permission keys total (`jobs:{read,write}`,
+`runs:{read,trigger,cancel}`, `schedules:{read,write,trigger}`,
+`runtimes:{read,write}`, `repos:{read,write}`, `users:{read,write}`) — one
+`:read`/`:write` split per resource, not finer, matching what handlers
+already branch on. `RequireAuth` resolves a principal's effective permission
+set in the same request as the principal itself (`GetPrincipalPermissions`,
+one indexed join), and `RequirePermission("<key>", handler)` composes after
+it in the route table (`cmd/api/main.go`) — authorization stays out of
+handler bodies entirely, the same way `RequireAuth` itself already is.
+Self password-change (`PATCH /api/v1/users/me/password`) is the one
+exception: gated by "acting on self", not a permission key, since it isn't
+something a role should be able to grant onto *other* principals.
+
+Users and tokens are both manageable through the API/CLI/web UI now
+(`GET/POST /api/v1/users`, `/api/v1/tokens`, read-only `/api/v1/roles`;
+`descendence user|token|role ...`; the web UI's Users/Tokens/Settings
+pages) — closing the gap where `cmd/seed` was the *only* way to create a
+principal. `cmd/seed` still is the bootstrap escape hatch for the very
+first admin (`-role`, default `"admin"`): creating a user via the API
+requires `users:write`, which nothing has yet on a fresh database, so
+`cmd/seed` assigns a role by a direct DB write, bypassing `RequirePermission`
+by construction. Removing a principal's access is always a soft-revoke
+(`revoked_at`, already the filter every principal-lookup query applies) —
+never a hard delete, since `runs.principal_id` is `ON DELETE RESTRICT` and a
+principal with run history can't be deleted anyway; soft-revoke makes the
+no-history case behave the same as the has-history case instead of one
+silently succeeding and the other 500ing on a constraint violation.
 
 ### 4.11 Web UI (Phase 7, in progress)
 
@@ -471,11 +508,25 @@ are built; this sketch of them is illustrative, not authoritative — the migrat
 `audit` is still a sketch, not yet built.
 
 ```
-principals    id, kind(user|token), name, token_hash, password_hash, scopes[],
-              created_at
+principals    id, kind(user|token), name, token_hash, password_hash,
+              created_at, expires_at, revoked_at
               -- a token principal carries token_hash; a user principal
               -- (task 7.3) carries password_hash instead - symmetric CHECKs
               -- tie each column to its kind, mirroring one another.
+              -- scopes[] (Phase 0-7) was dropped by migration 00009_rbac.sql
+              -- in favour of principal_roles below.
+roles         id, name(admin|operator|viewer), description, created_at
+              -- Phase 8. Three fixed built-ins, seeded by migration; never
+              -- admin-editable (ARCHITECTURE.md §6 decision #30).
+permissions   id, key(e.g. "jobs:write"), description
+              -- Phase 8. Fourteen resource:verb keys, seeded by migration.
+role_permissions   role_id, permission_id
+              -- Phase 8. Which permissions a role grants.
+principal_roles    principal_id(UNIQUE), role_id
+              -- Phase 8. Exactly one role per principal - the UNIQUE, not
+              -- just the composite PK, is what enforces that. role_id is
+              -- ON DELETE RESTRICT: the three built-ins are never deleted
+              -- by application code.
 sessions      id, principal_id, token_hash, created_at, expires_at
               -- browser sessions (task 7.3). Hash-only storage, same
               -- reasoning as principals.token_hash. Logout deletes the row
@@ -567,6 +618,7 @@ Recording *why*, because in three months the reasoning will be gone.
 | 27 | **Scheduling (Phase 5) uses generated systemd (user) `.timer`/`.service` units, not an in-process cron loop, and the supervisor — not the api process — owns rendering and reloading them.** `robfig/cron/v3` is added as a dependency for cron validation and display purposes only, never for firing | Postgres (`schedules`) stays authoritative either way; systemd units are a regenerable render target, the same relationship `internal/runtimebuild` already has between a `runtimes` row and a Containerfile — decision #23's "regenerable projection" pattern, applied a third time. Firing survives a supervisor crash or restart for free, since systemd is host-level and outlives the Go process — closing Phase 5's exit check ("across a supervisor restart") more directly than an in-process timer ever could, and `Persistent=true` gives missed-window catch-up (task 5.4) as a systemd primitive instead of app code (semantics: fires **once** to catch up, never once per missed window). `TimeZone=` on the generated timer gives timezone/DST handling (task 5.5) to systemd's own well-tested calendar evaluator rather than reimplementing it. The supervisor, not the api process, owns the unit files because the api process's only host side effects until now were Postgres writes, git repo writes and log reads — adding `systemctl --user` there would have been a new trust boundary; the supervisor already is "the only component that touches Podman" (§4.2), and its existing advisory lock (one supervisor process, guaranteed) is exactly the guarantee needed for "exactly one process touches `~/.config/systemd/user/`" too, with no new locking primitive. This makes schedule CRUD a plain Postgres write from the api's point of view, same shape as jobs/runtimes CRUD, with the supervisor's schedule-sync loop (task 5.3) picking up the change asynchronously on its next poll tick — a real, if small, propagation-delay trade-off, accepted at homelab scale. `cron_expr` → systemd `OnCalendar=` translation (`internal/scheduling.CronToOnCalendar`) is deliberately scoped to a conservative subset (single value, `*`, simple `*/N` steps, comma-lists) and rejects anything else (ranges, combined dom+dow) by name, matching this codebase's "unknown key is an error, not silently wrong" posture (`internal/manifest.Parse`) rather than risk a subtly wrong translation that fires at the wrong time silently — exactly the failure shape decisions #20/#21/#26 all found the hard way. Overlap policy (task 5.6, per-schedule `skip`/`queue`/`concurrent`) is enforced in the trigger endpoint, not the unit; **`queue` and `concurrent` are behaviorally identical today** because the supervisor's run-claim loop already executes runs strictly one at a time (the Phase 1/3 concurrency limitation flagged in PLAN.md) — worth stating plainly rather than implying "concurrent" does something it can't yet | Real run concurrency arrives (at which point `queue` and `concurrent` need to actually diverge), or the propagation delay between a schedule CRUD write and the supervisor regenerating its unit proves too slow in practice |
 | 28 | **PowerShell AST introspection (task 6.7) is usable for a future best-effort form-builder suggestion, never as a source of truth.** `[System.Management.Automation.Language.Parser]::ParseFile` cleanly extracts a `param()` block's names, static types and `[ValidateSet(...)]` values | Prototyped live against `mcr.microsoft.com/powershell:7.4-debian-12` (no bare `pwsh` in this dev environment, matching decision #25's reasoning for why that image exists at all) with a five-parameter sample script and a deliberately-broken one. Two real gotchas, not hypothetical ones: (1) a `[Parameter(...)]` attribute's `Mandatory` named argument is an *expression AST*, not a value — checking only whether the argument is *present* silently treats `Mandatory = $false` as mandatory, caught only by testing a script that actually sets it false; correct detection means reading `NamedArgumentAst.ExpressionOmitted` (the bare `-Mandatory` shorthand) or comparing `Argument.Extent.Text` against `'$true'`. (2) `DefaultValue` is the default's raw *source text*, not a value — turning `"default-tag"` into this platform's manifest default string is fine, but a script with `$Tag = (Get-Date)` or any non-literal expression has no default this system could produce without executing script code, which introspection must never do (ARCHITECTURE.md's whole "best-effort, never a runtime dependency" framing exists for exactly this). Type mapping onto the platform's four-value contract (§4.7) is lossy in both directions: `SwitchParameter` behaves as `$false` by default but carries no `DefaultValue` node to read that from, and anything outside string/numeric/bool/switch (arrays, hashtables, custom types) has no destination in the contract and must be skipped, not guessed at. On the robustness side: a script with no `param()` block parses cleanly to an empty result, and a syntactically broken one fails fast with `ParseFile`'s own error list and a non-zero exit — neither hangs nor crashes the process, so a caller can treat "introspection didn't work for this script" as an ordinary, non-fatal outcome rather than something requiring special handling | Phase 7's form builder actually gets built and wants a "guess the fields for me" affordance — implement then, reusing this prototype's mandatory/default-extraction fixes, and keep it advisory: the manifest's own `params:` contract (task 6.1) stays authoritative, and a suggestion this produces is something an author reviews and commits, never something the platform trusts unread |
 | 29 | **Phase 7's browser auth is a local username+password principal against a new `sessions` table, not OIDC** | ARCHITECTURE.md §4.10 always allowed "a login form against a local account is fine first," and §7 keeps deferring OIDC/Authentik past this phase regardless of which comes first - so building password auth now does not foreclose OIDC later, it just means `RequireAuth`'s cookie path and the `sessions` table already exist for OIDC to plug into rather than being built alongside it. `password_hash` on `principals` mirrors `token_hash`'s pattern exactly (symmetric kind-tied CHECKs, hash-only storage), so a `user` principal and a `token` principal stay visibly the same *kind* of thing rather than diverging in shape. Migration 00001's original comment ("kind='user' rows are placeholders for OIDC-backed browser sessions") is superseded by this, not merely stale - fixed in the same change (`00008_web_auth.sql`) per CLAUDE.md's doc rule | OIDC/Authentik integration (§7) actually gets scheduled, at which point it targets the same `sessions` table and `RequireAuth` cookie path already built here - only how the cookie gets issued changes, not how it is checked |
+| 30 | **RBAC (Phase 8) is real `roles`/`permissions`/`role_permissions`/`principal_roles` tables, not just enforcing the existing `scopes` array — but fixed built-in roles (`admin`/`operator`/`viewer`), not an admin-editable custom-role builder, exactly one role per principal, and global (not per-resource-instance) permissions** | `scopes text[]` existed from Phase 0 but was checked in exactly one handler (`TriggerScheduleHandler`'s `principalHasScope`) — everywhere else was "any authenticated principal = full access," which stopped being defensible once user/token *management* also needed building (admin-only mutation needs something real to gate on). A custom-role builder was rejected because at single-operator homelab scale nobody is composing bespoke permission sets — three roles cover every real distinction this deployment has ("can read", "can also run things", "can also manage access") — and it would need a role-editor UI/CLI/API surface with no one asking for it. One role per principal (enforced by `principal_roles.principal_id` being `UNIQUE`, not just the composite PK) for the same reason: multi-role assignment is a lightweight reintroduction of the custom-permission-set idea just rejected. Per-resource-instance scoping (e.g. "can only manage job 12") was rejected as a materially bigger data model and enforcement surface for a distinction nothing here needs. `RequirePermission` composes after `RequireAuth` in the route table rather than inline checks (`principalHasScope`'s pattern) so authorization never touches a handler body — inline checks don't scale past the one call site they started at. Existing `scopes` data was backfilled onto the nearest-equivalent role (`admin` in scopes → `admin`; `run` → `operator`; else → `viewer`) in the same migration that drops the column — a clean cutover, not a compatibility shim, since this is a single-operator deployment with no fleet of principals to migrate gradually. `cmd/seed` remains the bootstrap escape hatch (`-role`, replacing `-scopes`): the very first admin can't be created through an API that requires `users:write` to create anyone | A second installation profile genuinely needs custom permission sets or multi-role assignment — at homelab scale this has not come up and is not expected to |
 
 ---
 
@@ -578,7 +630,6 @@ Not forgotten — sequenced. See PLAN.md for when.
   job/runtime management (7.6–7.7) still deferred
 - Form builder (7.8)
 - OIDC / Authentik integration
-- Full RBAC
 - External git repo sync + webhooks
 - Custom Containerfile upload
 - Swagger UI

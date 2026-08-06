@@ -42,34 +42,39 @@ Update the marker on each task as it moves:
 
 > **Update this block every session.**
 
-- **Phase:** 7 — **complete** (7.1–7.8, exit checks passed). Read-only web UI
-  (local-account cookie login, embedded same-origin SPA, run list/detail,
-  live logs via native `EventSource`), triggering runs (a jobs list and a
-  per-job form generated from its param contract), job/runtime management
-  (enable/disable a job; a runtimes list with a create-runtime form and a
-  detail view with a Rebuild button that polls build status), and the form
-  builder (a YAML manifest editor with a live rendered preview, backed by a
-  real `form:` layout-metadata key in `internal/manifest` and a new
-  `GET /api/v1/repos/{id}/files/{path...}` read endpoint). Drag-and-drop
-  stays explicitly deferred, per 7.8's own task note.
+- **Phase:** 8 — **complete** (8.1–8.11, exit check passed). Real RBAC
+  (`roles`/`permissions`/`role_permissions`/`principal_roles`, three fixed
+  built-in roles, `RequirePermission` middleware enforced on every existing
+  route) plus full user/token management across the API, the Go client, the
+  CLI (flags + TUI) and the web UI - closing the gap where `cmd/seed` was
+  the only way to create a principal at all.
 - **Next action:** no phase is currently open. Pick the next item from
-  ARCHITECTURE.md §7's deferred list (OIDC/Authentik, full RBAC, external git
-  repo sync + webhooks, or 7.8's own deferred follow-ups: a PowerShell-AST
-  "guess the fields" suggestion feature per decision #28, and a drag-and-drop
-  visual builder) and scope it properly on arrival, the same way Phase 7
-  itself was.
+  ARCHITECTURE.md §7's deferred list (OIDC/Authentik, external git repo sync
+  + webhooks, or 7.8's own deferred follow-ups: a PowerShell-AST "guess the
+  fields" suggestion feature per decision #28, and a drag-and-drop visual
+  builder) and scope it properly on arrival, the same way Phases 7 and 8
+  were. Also worth doing before Phase 8 grows further: promote the exit
+  check's curl-based permission assertions (viewer 403s, operator's
+  read/write split) into real `internal/api/*_test.go` cases - none were
+  added this phase, only live-verified.
 - **Blocked on:** nothing.
-- **Notes carried from 7.6/7.7:** the dev Postgres instance has a
-  `kind='user'` principal named `webui-716` that cannot be cleaned up like
-  the session's other seeded test principals were - it owns runs 245/246
-  (`runs.principal_id` is `ON DELETE RESTRICT`, unlike `job_id`'s `SET
-  NULL`), so deleting it would mean deleting run history rather than a
-  no-op. Harmless to leave; a real RBAC/user-management pass (§7, still
-  deferred) is the actual fix, not a one-off DELETE. Separately, a
+- **Notes carried from 7.6/7.7 - resolved this phase:** the dev Postgres
+  instance's `kind='user'` principal `webui-716` (owns runs 245/246,
+  `runs.principal_id` is `ON DELETE RESTRICT`) was flagged as needing "a real
+  RBAC/user-management pass" to be handled properly rather than left as a
+  permanent oddity. That pass has now landed: `webui-716` was backfilled to
+  the `operator` role by migration `00009_rbac.sql` and, like every
+  principal, is now revocable via `DELETE /api/v1/users/{id}` (soft-revoke)
+  whenever its access should actually end - no longer a one-off DB
+  situation, an ordinary case the new tooling handles. Separately, the
   `ui-test-runtime` runtime row (created and pruned during 7.7's live
-  verification) also still exists with `imagePruned: true` - by design
-  (runtimes rows survive a prune the same way `runs.logs_pruned_at` does,
-  decision in ARCHITECTURE.md §5), not leftover mess.
+  verification) still exists with `imagePruned: true` - by design (runtimes
+  rows survive a prune the same way `runs.logs_pruned_at` does, decision in
+  ARCHITECTURE.md §5), not leftover mess.
+- **Notes carried from Phase 8:** every principal minted during this
+  session's live verification (8.1-8.11, names prefixed `rbac-verify-`,
+  `cli-test-`, `webui-verify-`, `exit-check-8-`) was deleted afterward - none
+  of them ever triggered a run, so none hit the `webui-716` situation above.
 - **Notes carried from 7.8:** the `library` repo (id 16) now permanently
   carries an `exit-check-greet` job from this session's live verification,
   the same way earlier sessions left `greet-params-smoketest` and similar -
@@ -697,3 +702,102 @@ bearer-token branch stored that row directly into the context.
 `principalFromContext`'s type assertion failed silently. Caught immediately by
 calling `/api/v1/whoami` with a freshly minted token. Fixed the same way as
 7.6's cookie-path bug: convert the row to `store.Principal` explicitly.
+
+---
+
+## Phase 8 — RBAC and user/token management
+
+Scoped on arrival per ARCHITECTURE.md §6 decision #30: real `roles`/`permissions`
+tables (not just enforcing the existing `scopes` array), fixed built-in roles
+(`admin`/`operator`/`viewer`, not an admin-editable builder), exactly one role per
+principal, global (not per-resource-instance) permissions. User and token
+management span the API, the Go client, the CLI (flags + TUI) and the web UI.
+
+- [x] **8.1** Schema + permission plumbing. Migration `00009_rbac.sql`:
+      `roles`/`permissions`/`role_permissions`/`principal_roles`, fourteen
+      seeded `resource:verb` permission keys, three seeded roles, and a
+      backfill of every existing principal's `scopes` onto the nearest
+      equivalent role before dropping the column (`admin` in scopes →
+      `admin`; `run` → `operator`; else → `viewer` - a clean cutover, not a
+      staged migration, since this is a single-operator deployment).
+      `GetPrincipalPermissions` (one indexed join) resolved once per request
+      by `RequireAuth` alongside the principal; new `RequirePermission(key,
+      handler)` middleware composes after it in the route table.
+      `TriggerScheduleHandler`'s inline `principalHasScope` check - the only
+      authorization check anywhere in the codebase before this phase - was
+      replaced by the same middleware. `cmd/seed` gained `-role` (replacing
+      `-scopes`), remaining the bootstrap escape hatch: the very first admin
+      can't be created through an API that requires `users:write` to create
+      anyone. Also fixed the duplicated sqlc-row-to-`store.Principal`
+      conversion in `auth.go` (the bug 7.1-7.5 and 7.6 each hit once,
+      independently) into one shared `assemblePrincipal` helper.
+- [x] **8.2** Users API. `GET/POST /api/v1/users`, `GET/PATCH/DELETE
+      /api/v1/users/{id}`, `PATCH /api/v1/users/me/password`. Admin-only
+      (`users:read`/`users:write`) except self password-change, gated by
+      "acting on self" inline rather than a permission key. `DELETE` is a
+      soft-revoke (`revoked_at`), never a hard delete - `runs.principal_id`
+      is `ON DELETE RESTRICT`. Password generated server-side and returned
+      once when omitted on create.
+- [x] **8.3** Tokens API. `GET/POST /api/v1/tokens`, `GET/DELETE
+      /api/v1/tokens/{id}` - the API-driven equivalent of `cmd/seed -kind
+      token`, closing the gap that tool minting was the only way to create
+      one. Same admin-only/soft-revoke shape as users.
+- [x] **8.4** Roles read API. `GET /api/v1/roles`, `GET /api/v1/roles/{name}`
+      - list-only, no create/edit/delete (decision #30). `whoami`'s response
+      extended with the resolved role name and permission list.
+- [x] **8.5** OpenAPI spec + client codegen. New paths/schemas for
+      users/tokens/roles; `Principal`'s flat `scopes` enum replaced by
+      `role`/`permissions`. Opportunistically documented `sessionAuth` as an
+      OpenAPI security scheme - `RequireAuth` has always accepted a session
+      cookie alongside a bearer token, but the spec only ever declared
+      `bearerAuth`. Regenerated `web/src/api/schema.ts`.
+- [x] **8.6** Retrofit every existing jobs/runs/schedules/repos/runtimes
+      route with the matching `RequirePermission(...)` call - previously any
+      authenticated principal had full access to all of them. Route-table-only
+      change (`cmd/api/main.go`); no handler body touched.
+- [x] **8.7** Go API client. `internal/client/{users,tokens,roles}.go`,
+      hand-written to mirror the new OpenAPI schemas (decision #15).
+- [x] **8.8** CLI flag commands. `descendence user
+      {list,get,create,set-role,revoke,passwd}`, `descendence token
+      {list,get,create,revoke}`, `descendence role {list,get}`. `user passwd`
+      prompts interactively via `charmbracelet/x/term`'s `ReadPassword` (no
+      `-current`/`-new` flags, so a password never lands in shell history)
+      and refuses to run off a non-TTY.
+- [x] **8.9** CLI TUI. A "Users" menu entry, gated on the caller's resolved
+      role from a synchronous `WhoAmI` call in `runUI` before the model is
+      built - hidden rather than shown-and-403'd on selection, since the TUI
+      is navigable and a dead-end action reads worse than an absent one. The
+      screen itself is a read-only browse table; create/set-role/revoke stay
+      flag-command-only.
+- [x] **8.10** Web UI. `UserList`/`UserDetail` (admin-only create form and
+      role reassignment, generated password shown once), `TokenList`
+      (admin-only create form, plaintext token shown once, per-row revoke),
+      `Settings` (self password-change - the one page every authenticated
+      user can reach, not gated on `users:write`). `Layout.tsx`'s
+      Users/Tokens nav links gated on `principal.permissions.includes
+      ('users:read')`, matching the TUI's hide-don't-403 posture; pages
+      further gate create/reassign/revoke controls on `users:write` since a
+      viewer has `users:read` (can browse) but not `users:write`.
+- [x] **8.11** Docs and exit check (this entry).
+
+**Exit check**: verified against the real stack with fresh admin/operator/viewer
+tokens. Viewer: `GET /jobs` 200, `POST /schedules/{id}/trigger` 403, `PATCH
+/jobs/{id}` 403, `POST /runtimes` 403, `POST /repos` 403, `POST /users` 403.
+Operator: `POST /schedules/{id}/trigger` 404 (permission granted, schedule
+doesn't exist - not 403), `POST /users` 403, `POST /runtimes` 403. Admin: `GET
+/jobs`/`/users`/`/tokens`/`/roles` all 200. Every layer was also exercised
+individually during 8.1-8.10: migration backfill left no roleless principal;
+create/list/patch-role/revoke round-tripped for both users and tokens through
+the API, the CLI, and (via cookie-authenticated curl standing in for a browser,
+since no browser is available in this environment) the exact calls the web
+pages make; a revoked principal's next auth attempt 401s while its run history
+stays queryable; self password-change worked end to end including a
+subsequent login with the new password.
+
+No new automated Go tests were added for the permission-denied paths (viewer
+403s, operator's read/write split) - covered by the exit check's live
+verification instead, matching how `TriggerScheduleHandler`'s original scope
+check was verified in earlier phases. A follow-up worth doing before this
+grows further: promote the exit-check's curl sequence into
+`internal/api/*_test.go` cases so a regression doesn't require another manual
+pass.
