@@ -121,36 +121,36 @@ func main() {
 	descendenceMux.HandleFunc("GET /api/v1/whoami", descendenceAPI.RequireAuth(descendenceAPI.WhoAmIHandler))
 	descendenceMux.HandleFunc("POST /api/v1/auth/login", descendenceAPI.LoginHandler)
 	descendenceMux.HandleFunc("POST /api/v1/auth/logout", descendenceAPI.LogoutHandler)
-	descendenceMux.HandleFunc("POST /api/v1/runs", descendenceAPI.RequireAuth(descendenceAPI.CreateRunHandler))
-	descendenceMux.HandleFunc("GET /api/v1/runs/{id}", descendenceAPI.RequireAuth(descendenceAPI.GetRunHandler))
-	descendenceMux.HandleFunc("GET /api/v1/runs", descendenceAPI.RequireAuth(descendenceAPI.ListRunsHandler))
-	descendenceMux.HandleFunc("GET /api/v1/runs/{id}/logs", descendenceAPI.RequireAuth(descendenceAPI.GetRunLogsHandler))
-	descendenceMux.HandleFunc("POST /api/v1/runs/{id}/cancel", descendenceAPI.RequireAuth(descendenceAPI.CancelRunHandler))
+	descendenceMux.HandleFunc("POST /api/v1/runs", descendenceAPI.RequireAuth(descendenceAPI.RequirePermission("runs:trigger", descendenceAPI.CreateRunHandler)))
+	descendenceMux.HandleFunc("GET /api/v1/runs/{id}", descendenceAPI.RequireAuth(descendenceAPI.RequirePermission("runs:read", descendenceAPI.GetRunHandler)))
+	descendenceMux.HandleFunc("GET /api/v1/runs", descendenceAPI.RequireAuth(descendenceAPI.RequirePermission("runs:read", descendenceAPI.ListRunsHandler)))
+	descendenceMux.HandleFunc("GET /api/v1/runs/{id}/logs", descendenceAPI.RequireAuth(descendenceAPI.RequirePermission("runs:read", descendenceAPI.GetRunLogsHandler)))
+	descendenceMux.HandleFunc("POST /api/v1/runs/{id}/cancel", descendenceAPI.RequireAuth(descendenceAPI.RequirePermission("runs:cancel", descendenceAPI.CancelRunHandler)))
 
 	// Repositories and jobs (Phase 3). Note what is absent: nothing creates,
 	// edits or deletes a job. A job is defined by its manifest in git, so the
 	// write path for one is POST .../files (task 3.7) followed by a sync -
 	// PATCH exists only for `enabled`, the single field git does not own.
-	descendenceMux.HandleFunc("POST /api/v1/repos", descendenceAPI.RequireAuth(descendenceAPI.CreateRepoHandler))
-	descendenceMux.HandleFunc("GET /api/v1/repos", descendenceAPI.RequireAuth(descendenceAPI.ListReposHandler))
-	descendenceMux.HandleFunc("GET /api/v1/repos/{id}", descendenceAPI.RequireAuth(descendenceAPI.GetRepoHandler))
-	descendenceMux.HandleFunc("POST /api/v1/repos/{id}/sync", descendenceAPI.RequireAuth(descendenceAPI.SyncRepoHandler))
-	descendenceMux.HandleFunc("POST /api/v1/repos/{id}/files", descendenceAPI.RequireAuth(descendenceAPI.CreateRepoFileHandler))
-	descendenceMux.HandleFunc("GET /api/v1/repos/{id}/files/{path...}", descendenceAPI.RequireAuth(descendenceAPI.GetRepoFileHandler))
-	descendenceMux.HandleFunc("GET /api/v1/jobs", descendenceAPI.RequireAuth(descendenceAPI.ListJobsHandler))
-	descendenceMux.HandleFunc("GET /api/v1/jobs/{id}", descendenceAPI.RequireAuth(descendenceAPI.GetJobHandler))
-	descendenceMux.HandleFunc("PATCH /api/v1/jobs/{id}", descendenceAPI.RequireAuth(descendenceAPI.PatchJobHandler))
-	descendenceMux.HandleFunc("POST /api/v1/jobs/{id}/runs", descendenceAPI.RequireAuth(descendenceAPI.CreateJobRunHandler))
+	descendenceMux.HandleFunc("POST /api/v1/repos", descendenceAPI.RequireAuth(descendenceAPI.RequirePermission("repos:write", descendenceAPI.CreateRepoHandler)))
+	descendenceMux.HandleFunc("GET /api/v1/repos", descendenceAPI.RequireAuth(descendenceAPI.RequirePermission("repos:read", descendenceAPI.ListReposHandler)))
+	descendenceMux.HandleFunc("GET /api/v1/repos/{id}", descendenceAPI.RequireAuth(descendenceAPI.RequirePermission("repos:read", descendenceAPI.GetRepoHandler)))
+	descendenceMux.HandleFunc("POST /api/v1/repos/{id}/sync", descendenceAPI.RequireAuth(descendenceAPI.RequirePermission("repos:write", descendenceAPI.SyncRepoHandler)))
+	descendenceMux.HandleFunc("POST /api/v1/repos/{id}/files", descendenceAPI.RequireAuth(descendenceAPI.RequirePermission("repos:write", descendenceAPI.CreateRepoFileHandler)))
+	descendenceMux.HandleFunc("GET /api/v1/repos/{id}/files/{path...}", descendenceAPI.RequireAuth(descendenceAPI.RequirePermission("repos:read", descendenceAPI.GetRepoFileHandler)))
+	descendenceMux.HandleFunc("GET /api/v1/jobs", descendenceAPI.RequireAuth(descendenceAPI.RequirePermission("jobs:read", descendenceAPI.ListJobsHandler)))
+	descendenceMux.HandleFunc("GET /api/v1/jobs/{id}", descendenceAPI.RequireAuth(descendenceAPI.RequirePermission("jobs:read", descendenceAPI.GetJobHandler)))
+	descendenceMux.HandleFunc("PATCH /api/v1/jobs/{id}", descendenceAPI.RequireAuth(descendenceAPI.RequirePermission("jobs:write", descendenceAPI.PatchJobHandler)))
+	descendenceMux.HandleFunc("POST /api/v1/jobs/{id}/runs", descendenceAPI.RequireAuth(descendenceAPI.RequirePermission("runs:trigger", descendenceAPI.CreateJobRunHandler)))
 
 	// Schedules (Phase 5, decision #27). CRUD here is a plain Postgres
 	// write - the supervisor's schedule-sync loop picks up the change
 	// asynchronously and renders the generated systemd units. The trigger
 	// endpoint is what a generated unit's ExecStart calls via the CLI.
-	descendenceMux.HandleFunc("POST /api/v1/jobs/{id}/schedules", descendenceAPI.RequireAuth(descendenceAPI.CreateScheduleHandler))
-	descendenceMux.HandleFunc("GET /api/v1/jobs/{id}/schedules", descendenceAPI.RequireAuth(descendenceAPI.ListSchedulesByJobHandler))
-	descendenceMux.HandleFunc("GET /api/v1/schedules/{id}", descendenceAPI.RequireAuth(descendenceAPI.GetScheduleHandler))
-	descendenceMux.HandleFunc("PATCH /api/v1/schedules/{id}", descendenceAPI.RequireAuth(descendenceAPI.PatchScheduleHandler))
-	descendenceMux.HandleFunc("DELETE /api/v1/schedules/{id}", descendenceAPI.RequireAuth(descendenceAPI.DeleteScheduleHandler))
+	descendenceMux.HandleFunc("POST /api/v1/jobs/{id}/schedules", descendenceAPI.RequireAuth(descendenceAPI.RequirePermission("schedules:write", descendenceAPI.CreateScheduleHandler)))
+	descendenceMux.HandleFunc("GET /api/v1/jobs/{id}/schedules", descendenceAPI.RequireAuth(descendenceAPI.RequirePermission("schedules:read", descendenceAPI.ListSchedulesByJobHandler)))
+	descendenceMux.HandleFunc("GET /api/v1/schedules/{id}", descendenceAPI.RequireAuth(descendenceAPI.RequirePermission("schedules:read", descendenceAPI.GetScheduleHandler)))
+	descendenceMux.HandleFunc("PATCH /api/v1/schedules/{id}", descendenceAPI.RequireAuth(descendenceAPI.RequirePermission("schedules:write", descendenceAPI.PatchScheduleHandler)))
+	descendenceMux.HandleFunc("DELETE /api/v1/schedules/{id}", descendenceAPI.RequireAuth(descendenceAPI.RequirePermission("schedules:write", descendenceAPI.DeleteScheduleHandler)))
 	descendenceMux.HandleFunc("POST /api/v1/schedules/{id}/trigger", descendenceAPI.RequireAuth(descendenceAPI.RequirePermission("schedules:trigger", descendenceAPI.TriggerScheduleHandler)))
 
 	// Users and tokens (Phase 8) - both principals rows, admin-only
@@ -171,11 +171,11 @@ func main() {
 	descendenceMux.HandleFunc("GET /api/v1/roles", descendenceAPI.RequireAuth(descendenceAPI.RequirePermission("users:read", descendenceAPI.ListRolesHandler)))
 	descendenceMux.HandleFunc("GET /api/v1/roles/{name}", descendenceAPI.RequireAuth(descendenceAPI.RequirePermission("users:read", descendenceAPI.GetRoleHandler)))
 
-	descendenceMux.HandleFunc("POST /api/v1/runtimes", descendenceAPI.RequireAuth(descendenceAPI.CreateRuntimeHandler))
-	descendenceMux.HandleFunc("GET /api/v1/runtimes", descendenceAPI.RequireAuth(descendenceAPI.ListRuntimesHandler))
-	descendenceMux.HandleFunc("GET /api/v1/runtimes/{id}", descendenceAPI.RequireAuth(descendenceAPI.GetRuntimeHandler))
-	descendenceMux.HandleFunc("POST /api/v1/runtimes/{id}/build", descendenceAPI.RequireAuth(descendenceAPI.BuildRuntimeHandler))
-	descendenceMux.HandleFunc("POST /api/v1/runtimes/prune", descendenceAPI.RequireAuth(descendenceAPI.PruneRuntimesHandler))
+	descendenceMux.HandleFunc("POST /api/v1/runtimes", descendenceAPI.RequireAuth(descendenceAPI.RequirePermission("runtimes:write", descendenceAPI.CreateRuntimeHandler)))
+	descendenceMux.HandleFunc("GET /api/v1/runtimes", descendenceAPI.RequireAuth(descendenceAPI.RequirePermission("runtimes:read", descendenceAPI.ListRuntimesHandler)))
+	descendenceMux.HandleFunc("GET /api/v1/runtimes/{id}", descendenceAPI.RequireAuth(descendenceAPI.RequirePermission("runtimes:read", descendenceAPI.GetRuntimeHandler)))
+	descendenceMux.HandleFunc("POST /api/v1/runtimes/{id}/build", descendenceAPI.RequireAuth(descendenceAPI.RequirePermission("runtimes:write", descendenceAPI.BuildRuntimeHandler)))
+	descendenceMux.HandleFunc("POST /api/v1/runtimes/prune", descendenceAPI.RequireAuth(descendenceAPI.RequirePermission("runtimes:write", descendenceAPI.PruneRuntimesHandler)))
 
 	// Web UI (Phase 7, task 7.4). Registered last but wins for nothing "GET
 	// /{$}" or /api/v1/*, /healthz already claim - Go 1.22's mux always
