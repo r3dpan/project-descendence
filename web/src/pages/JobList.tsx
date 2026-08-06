@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
+import { Alert, Badge, Button, Group, LoadingOverlay, Table, Text, Title } from '@mantine/core'
 import { listJobs, patchJob, type Job } from '../api/jobs'
 import { APIError } from '../api/client'
 
@@ -36,51 +37,62 @@ export default function JobList() {
   }
 
   return (
-    <main>
-      <h1>Jobs</h1>
-      <p>
-        <Link to="/jobs/new">New job</Link>
-      </p>
+    <>
+      <Group justify="space-between" mb="md">
+        <Title order={2}>Jobs</Title>
+        <Button component={Link} to="/jobs/new" size="xs">
+          New job
+        </Button>
+      </Group>
       {error && (
-        <p role="alert" style={{ color: 'crimson' }}>
+        <Alert color="red" role="alert" mb="md">
           {error}
-        </p>
+        </Alert>
       )}
-      <table>
-        <thead>
-          <tr>
-            <th>Name</th>
-            <th>Description</th>
-            <th>Enabled</th>
-            <th>Params</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody>
-          {jobs.map((job) => (
-            <tr key={job.id}>
-              <td>
-                <Link to={`/jobs/${job.id}`}>{job.name}</Link>
-              </td>
-              <td>{job.description ?? ''}</td>
-              <td>{job.enabled ? 'yes' : 'no'}</td>
-              <td>{job.params.length}</td>
-              <td>
-                <button type="button" onClick={() => handleToggle(job)} disabled={togglingId === job.id}>
-                  {job.enabled ? 'Disable' : 'Enable'}
-                </button>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      {loading && <p>Loading…</p>}
-      {!loading && jobs.length === 0 && <p>No jobs yet.</p>}
+      <Table.ScrollContainer minWidth={600} pos="relative">
+        <LoadingOverlay visible={loading && jobs.length === 0} />
+        <Table highlightOnHover>
+          <Table.Thead>
+            <Table.Tr>
+              <Table.Th>Name</Table.Th>
+              <Table.Th>Description</Table.Th>
+              <Table.Th>Enabled</Table.Th>
+              <Table.Th>Params</Table.Th>
+              <Table.Th></Table.Th>
+            </Table.Tr>
+          </Table.Thead>
+          <Table.Tbody>
+            {jobs.map((job) => (
+              <Table.Tr key={job.id}>
+                <Table.Td>
+                  <Link to={`/jobs/${job.id}`}>{job.name}</Link>
+                </Table.Td>
+                <Table.Td>{job.description ?? ''}</Table.Td>
+                <Table.Td>
+                  <Badge color={job.enabled ? 'green' : 'gray'}>{job.enabled ? 'yes' : 'no'}</Badge>
+                </Table.Td>
+                <Table.Td>{job.params.length}</Table.Td>
+                <Table.Td>
+                  <Button
+                    size="xs"
+                    variant="light"
+                    onClick={() => handleToggle(job)}
+                    disabled={togglingId === job.id}
+                  >
+                    {job.enabled ? 'Disable' : 'Enable'}
+                  </Button>
+                </Table.Td>
+              </Table.Tr>
+            ))}
+          </Table.Tbody>
+        </Table>
+      </Table.ScrollContainer>
+      {!loading && jobs.length === 0 && <Text c="dimmed">No jobs yet.</Text>}
       {!loading && nextCursor && (
-        <button type="button" onClick={() => setCursor(nextCursor)}>
+        <Button variant="light" mt="md" onClick={() => setCursor(nextCursor)}>
           Load more
-        </button>
+        </Button>
       )}
-    </main>
+    </>
   )
 }

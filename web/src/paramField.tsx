@@ -1,3 +1,4 @@
+import { Checkbox, NumberInput, PasswordInput, TextInput } from '@mantine/core'
 import type { JobParam } from './api/jobs'
 
 export interface ParamFieldProps {
@@ -17,32 +18,59 @@ export interface ParamFieldProps {
 // must never be free to drift apart from each other.
 export function ParamField({ param, value, onChange, label, help }: ParamFieldProps) {
   const inputId = `param-${param.name}`
+  const isOptional = !(param.required && !param.default)
+  const fieldLabel = `${label || param.name}${isOptional ? '' : ' *'} (${param.type})`
+
+  if (param.type === 'bool') {
+    return (
+      <Checkbox
+        mt="sm"
+        id={inputId}
+        label={fieldLabel}
+        description={help}
+        checked={value === 'true'}
+        onChange={(e) => onChange(e.currentTarget.checked ? 'true' : 'false')}
+      />
+    )
+  }
+
+  if (param.secret || param.type === 'mount') {
+    return (
+      <PasswordInput
+        mt="sm"
+        id={inputId}
+        label={fieldLabel}
+        description={help}
+        value={value}
+        required={!isOptional}
+        onChange={(e) => onChange(e.target.value)}
+      />
+    )
+  }
+
+  if (param.type === 'number') {
+    return (
+      <NumberInput
+        mt="sm"
+        id={inputId}
+        label={fieldLabel}
+        description={help}
+        value={value}
+        required={!isOptional}
+        onChange={(v) => onChange(String(v))}
+      />
+    )
+  }
+
   return (
-    <div style={{ marginTop: '0.5rem' }}>
-      <label htmlFor={inputId}>
-        {label || param.name}
-        {param.required && !param.default ? ' *' : ''} ({param.type})
-      </label>
-      <br />
-      {help && (
-        <small style={{ display: 'block', color: 'gray' }}>{help}</small>
-      )}
-      {param.type === 'bool' ? (
-        <input
-          id={inputId}
-          type="checkbox"
-          checked={value === 'true'}
-          onChange={(e) => onChange(e.target.checked ? 'true' : 'false')}
-        />
-      ) : (
-        <input
-          id={inputId}
-          type={param.secret || param.type === 'mount' ? 'password' : param.type === 'number' ? 'number' : 'text'}
-          value={value}
-          required={param.required && !param.default}
-          onChange={(e) => onChange(e.target.value)}
-        />
-      )}
-    </div>
+    <TextInput
+      mt="sm"
+      id={inputId}
+      label={fieldLabel}
+      description={help}
+      value={value}
+      required={!isOptional}
+      onChange={(e) => onChange(e.target.value)}
+    />
   )
 }

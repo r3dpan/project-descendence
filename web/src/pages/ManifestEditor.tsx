@@ -5,6 +5,7 @@ import { createRepoFile, getRepoFile, listRepos } from '../api/repos'
 import { APIError } from '../api/client'
 import { parseManifestPreview } from '../manifestPreview'
 import { ParamField } from '../paramField'
+import { Alert, Button, Fieldset, Grid, Loader, Text, TextInput, Textarea, Title } from '@mantine/core'
 
 const PLACEHOLDER = `apiVersion: descendence/v1
 name: my-job
@@ -119,75 +120,76 @@ export default function ManifestEditor({ mode }: ManifestEditorProps) {
     }
   }
 
-  if (loading) return <p>Loading…</p>
-  if (loadError) return <p role="alert" style={{ color: 'crimson' }}>{loadError}</p>
+  if (loading) return <Loader />
+  if (loadError) return <Alert color="red" role="alert">{loadError}</Alert>
 
   return (
-    <main>
-      <h1>{mode === 'create' ? 'New job' : 'Edit manifest'}</h1>
+    <>
+      <Title order={2} mb="md">
+        {mode === 'create' ? 'New job' : 'Edit manifest'}
+      </Title>
 
-      <div style={{ display: 'flex', gap: '2rem', alignItems: 'flex-start', flexWrap: 'wrap' }}>
-        <form onSubmit={handleSubmit} style={{ flex: '1 1 400px', minWidth: 320 }}>
-          <div>
-            <label htmlFor="me-path">Manifest path</label>
-            <br />
-            <input
+      <Grid>
+        <Grid.Col span={{ base: 12, md: 6 }}>
+          <form onSubmit={handleSubmit}>
+            <TextInput
+              label="Manifest path"
               id="me-path"
               value={path}
               onChange={(e) => setPath(e.target.value)}
               disabled={pathLocked}
               placeholder="jobs/my-job.job.yaml"
               required
-              style={{ width: '100%', maxWidth: 480 }}
             />
-          </div>
-          <div style={{ marginTop: '0.5rem' }}>
-            <label htmlFor="me-message">Commit message (optional)</label>
-            <br />
-            <input
+            <TextInput
+              mt="sm"
+              label="Commit message"
+              description="Optional"
               id="me-message"
               value={message}
               onChange={(e) => setMessage(e.target.value)}
               placeholder={`Update ${path || '<path>'}`}
-              style={{ width: '100%', maxWidth: 480 }}
             />
-          </div>
-          <div style={{ marginTop: '0.5rem' }}>
-            <label htmlFor="me-content">Manifest YAML</label>
-            <br />
-            <textarea
+            <Textarea
+              mt="sm"
+              label="Manifest YAML"
               id="me-content"
               value={content}
               onChange={(e) => setContent(e.target.value)}
               rows={20}
               spellCheck={false}
-              style={{ width: '100%', maxWidth: 720, fontFamily: 'monospace' }}
+              styles={{ input: { fontFamily: 'var(--mantine-font-family-monospace)' } }}
             />
-          </div>
 
-          {submitError && (
-            <p role="alert" style={{ color: 'crimson' }}>
-              {submitError}
-            </p>
-          )}
+            {submitError && (
+              <Alert color="red" role="alert" mt="md">
+                {submitError}
+              </Alert>
+            )}
 
-          <button type="submit" disabled={submitting} style={{ marginTop: '1rem' }}>
-            {submitting ? 'Committing…' : 'Commit'}
-          </button>
-        </form>
+            <Button type="submit" mt="md" loading={submitting}>
+              {submitting ? 'Committing…' : 'Commit'}
+            </Button>
+          </form>
+        </Grid.Col>
 
-        <section style={{ flex: '1 1 320px', minWidth: 280 }}>
-          <h2>Preview</h2>
+        <Grid.Col span={{ base: 12, md: 6 }}>
+          <Title order={3} mb="sm">
+            Preview
+          </Title>
           {parseError && (
-            <p role="alert" style={{ color: 'crimson' }}>
+            <Alert color="red" role="alert" mb="md">
               {parseError}
-            </p>
+            </Alert>
           )}
-          {preview && preview.params.length === 0 && !parseError && <p>No params declared.</p>}
+          {preview && preview.params.length === 0 && !parseError && <Text c="dimmed">No params declared.</Text>}
           {preview?.sections.map((section, i) => (
-            <fieldset key={i} style={{ marginBottom: '1rem' }}>
-              {section.title && <legend>{section.title}</legend>}
-              {section.help && <p style={{ marginTop: 0, color: 'gray' }}>{section.help}</p>}
+            <Fieldset key={i} legend={section.title || undefined} mb="md">
+              {section.help && (
+                <Text size="sm" c="dimmed" mt={0} mb="xs">
+                  {section.help}
+                </Text>
+              )}
               {section.fields.map((f) => (
                 <ParamField
                   key={f.param.name}
@@ -198,11 +200,10 @@ export default function ManifestEditor({ mode }: ManifestEditorProps) {
                   onChange={(value) => setPreviewValues((prev) => ({ ...prev, [f.param.name]: value }))}
                 />
               ))}
-            </fieldset>
+            </Fieldset>
           ))}
           {preview && preview.unplaced.length > 0 && (
-            <fieldset>
-              {preview.sections.length > 0 && <legend>Other</legend>}
+            <Fieldset legend={preview.sections.length > 0 ? 'Other' : undefined}>
               {preview.unplaced.map((f) => (
                 <ParamField
                   key={f.param.name}
@@ -211,10 +212,10 @@ export default function ManifestEditor({ mode }: ManifestEditorProps) {
                   onChange={(value) => setPreviewValues((prev) => ({ ...prev, [f.param.name]: value }))}
                 />
               ))}
-            </fieldset>
+            </Fieldset>
           )}
-        </section>
-      </div>
-    </main>
+        </Grid.Col>
+      </Grid>
+    </>
   )
 }

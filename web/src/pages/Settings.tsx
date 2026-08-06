@@ -2,6 +2,8 @@ import { useState, type FormEvent } from 'react'
 import { useAuth } from '../auth'
 import { changeOwnPassword } from '../api/users'
 import { APIError } from '../api/client'
+import { Alert, Button, PasswordInput, Stack, Text, Title } from '@mantine/core'
+import { notifications } from '@mantine/notifications'
 
 // Self-service password change - the one page every authenticated user can
 // reach, unlike /users and /tokens which are gated on users:write. Gated by
@@ -13,7 +15,6 @@ export default function Settings() {
   const [newPassword, setNewPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
-  const [success, setSuccess] = useState(false)
   const [submitting, setSubmitting] = useState(false)
 
   const isTokenPrincipal = principal?.kind === 'token'
@@ -21,7 +22,6 @@ export default function Settings() {
   async function handleSubmit(e: FormEvent) {
     e.preventDefault()
     setError(null)
-    setSuccess(false)
     if (newPassword !== confirmPassword) {
       setError('New password and confirmation do not match')
       return
@@ -29,7 +29,7 @@ export default function Settings() {
     setSubmitting(true)
     try {
       await changeOwnPassword(currentPassword, newPassword)
-      setSuccess(true)
+      notifications.show({ color: 'green', message: 'Password changed.' })
       setCurrentPassword('')
       setNewPassword('')
       setConfirmPassword('')
@@ -41,60 +41,53 @@ export default function Settings() {
   }
 
   return (
-    <main>
-      <h1>Settings</h1>
-      <h2>Change password</h2>
+    <>
+      <Title order={2} mb="md">
+        Settings
+      </Title>
+      <Title order={3} mb="md">
+        Change password
+      </Title>
       {isTokenPrincipal ? (
-        <p>Token principals have no password to change.</p>
+        <Text>Token principals have no password to change.</Text>
       ) : (
-        <form onSubmit={handleSubmit} style={{ maxWidth: 320 }}>
-          <div>
-            <label htmlFor="current-password">Current password</label>
-            <br />
-            <input
+        <form onSubmit={handleSubmit}>
+          <Stack maw={320}>
+            <PasswordInput
+              label="Current password"
               id="current-password"
-              type="password"
               value={currentPassword}
               onChange={(e) => setCurrentPassword(e.target.value)}
               autoComplete="current-password"
               required
             />
-          </div>
-          <div style={{ marginTop: '0.5rem' }}>
-            <label htmlFor="new-password">New password</label>
-            <br />
-            <input
+            <PasswordInput
+              label="New password"
               id="new-password"
-              type="password"
               value={newPassword}
               onChange={(e) => setNewPassword(e.target.value)}
               autoComplete="new-password"
               required
             />
-          </div>
-          <div style={{ marginTop: '0.5rem' }}>
-            <label htmlFor="confirm-password">Confirm new password</label>
-            <br />
-            <input
+            <PasswordInput
+              label="Confirm new password"
               id="confirm-password"
-              type="password"
               value={confirmPassword}
               onChange={(e) => setConfirmPassword(e.target.value)}
               autoComplete="new-password"
               required
             />
-          </div>
-          {error && (
-            <p role="alert" style={{ color: 'crimson' }}>
-              {error}
-            </p>
-          )}
-          {success && <p style={{ color: 'seagreen' }}>Password changed.</p>}
-          <button type="submit" disabled={submitting} style={{ marginTop: '1rem' }}>
-            {submitting ? 'Saving…' : 'Change password'}
-          </button>
+            {error && (
+              <Alert color="red" role="alert">
+                {error}
+              </Alert>
+            )}
+            <Button type="submit" loading={submitting}>
+              {submitting ? 'Saving…' : 'Change password'}
+            </Button>
+          </Stack>
         </form>
       )}
-    </main>
+    </>
   )
 }

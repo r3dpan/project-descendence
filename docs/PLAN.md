@@ -57,6 +57,14 @@ Update the marker on each task as it moves:
   check's curl-based permission assertions (viewer 403s, operator's
   read/write split) into real `internal/api/*_test.go` cases - none were
   added this phase, only live-verified.
+- **Off-plan work since Phase 8:** the web SPA (`web/src/`) was migrated from
+  raw unstyled HTML to Mantine v9 (`@mantine/core`/`hooks`/`notifications`/
+  `form`) - an `AppShell` sidebar layout, a shared `statusColor` Badge helper,
+  a one-time-secret reveal `Modal` (token/password creation), and every
+  page's tables/forms converted to Mantine components. Not a numbered PLAN.md
+  phase - purely a visual pass, no API/behavior changes. Browser-verified
+  (see HISTORY.md) with a headless Chromium in this session, in both light
+  and dark color schemes.
 - **Blocked on:** nothing.
 - **Notes carried from 7.6/7.7 - resolved this phase:** the dev Postgres
   instance's `kind='user'` principal `webui-716` (owns runs 245/246,

@@ -2232,3 +2232,94 @@ Notes to future me:
     `rbac-verify-`, `cli-test-`, `webui-verify-`, `exit-check-8-`) was
     deleted afterward via direct SQL, since none of them ever triggered a
     run and so none needed the soft-revoke treatment `webui-716` does.
+
+## 2026-08-06 (Web UI visual pass — Mantine migration)
+Worked on: an off-plan (not a numbered PLAN.md phase) visual overhaul of the
+web SPA, requested after using the Phase 8 UI live and finding it "barebones"
+- centered content, plain `<a>` nav, unstyled tables/forms, no design
+system. Planned with the user up front (Mantine vs Tailwind vs plain CSS;
+full pass across all 12 pages vs shell-only) before writing any code.
+Completed:
+  - Added `@mantine/core`, `@mantine/hooks`, `@mantine/notifications`,
+    `@mantine/form` plus the PostCSS preset Mantine's Vite recipe needs
+    (`web/postcss.config.cjs`, new). `web/src/theme.ts` (new) holds a
+    `createTheme` call (violet primary, matching the old `--accent`);
+    `main.tsx` wraps `<App/>` in `MantineProvider defaultColorScheme="auto"`
+    + `<Notifications/>`. `web/src/index.css` stripped to just `body`
+    margin reset - Mantine's own `styles.css` supplies everything else the
+    old CSS-variable theme was doing by hand.
+  - `Layout.tsx` rewritten around `AppShell` (header + left sidebar
+    `Navbar`) replacing the old inline-styled `<nav>` row. The
+    `principal.permissions.includes('users:read')` gate hiding Users/Tokens
+    is untouched byte-for-byte - only the JSX around it changed, per the
+    hide-don't-403 posture task 8.9/8.10 established.
+  - Every page converted: `Table`/`Table.ScrollContainer` + `LoadingOverlay`
+    for list pages, a shared `statusColor()` helper (new,
+    `web/src/statusColor.ts`) driving `Badge` color consistently across
+    list and detail views for run states and runtime build statuses,
+    `Paper`/`Stack`/`Group` for detail-page key/value layouts, Mantine form
+    inputs (`TextInput`/`PasswordInput`/`NumberInput`/`Checkbox`/`Select`)
+    everywhere a raw `<input>`/`<select>` used to be.
+  - `paramField.tsx`'s `ParamField` - shared by `JobDetail`'s real trigger
+    form and `ManifestEditor`'s preview pane - converted once, both call
+    sites re-verified afterward rather than converted independently, so
+    the two can't drift from each other the way the original component's
+    own doc comment already requires.
+  - One-time secret reveal (new user's generated password, new token's
+    plaintext) moved from an inline `<p style={{background:'#333'}}}>` box
+    to a `Modal` + `CopyButton` + "shown once" warning - the same pattern
+    in `UserList` and `TokenList`, written once and reused rather than
+    invented twice.
+  - `RunDetail`'s live log pane moved to `ScrollArea.Autosize` with
+    `viewportRef` (not a plain `ref`) so the existing
+    `scrollTo`-to-bottom effect keeps working - `ScrollArea` doesn't forward
+    a ref to its scrollable node the way a bare `<pre>` did. The
+    `EventSource` wiring itself was not touched.
+  - `ManifestEditor.tsx` (largest, most dynamic page) done last, after
+    every other page had already proven out the theme/shell/form
+    conventions: `Grid` two-column responsive layout, `Fieldset` per
+    manifest section, separate `Alert`s for the YAML parse error and the
+    commit error (two distinct errors shown in two distinct places before
+    - kept that way, not merged into one toast).
+Verified live: `npm run build` after every page (clean `tsc -b` + `vite
+build` throughout). Browser verification was possible this session -
+headless Chromium via a temporary `playwright` devDependency (removed
+afterward; the browser binary itself stays cached in
+`~/.cache/ms-playwright` outside the repo). openSUSE Tumbleweed needed a
+short zypper-package detour first: Playwright's own `--with-deps` only
+knows Debian/Ubuntu package names, so the operator installed the
+zypper-equivalents (`mozilla-nspr`, `mozilla-nss`, `libatk-1_0-0`,
+`libatk-bridge-2_0-0`, etc. - verified via `zypper what-provides` rather
+than guessed) by hand. Logged in as a seeded admin user, screenshotted
+every page in both light and dark `colorScheme` (Playwright's emulation,
+not a real OS toggle) - sidebar, badges, forms, the token-reveal modal, and
+a run's log pane all read correctly in both themes; no leftover hardcoded
+colors that only looked right in light mode. Console had exactly the two
+expected pre-login 401s (the auth probe before a session cookie exists)
+and nothing else on any page.
+Broken / unresolved: nothing. `npm run lint` (`oxlint`) has one pre-existing
+warning in `auth.tsx` unrelated to this change. A pre-existing high-severity
+`npm audit` finding in `react-router-dom` (CSRF bypass advisory) surfaced
+during `npm install` - not touched, since the fix is a breaking downgrade
+and out of scope for a styling pass; worth a deliberate look in a future
+session.
+Next action: none specific to this work - it was a self-contained visual
+pass. The deferred-work menu in PLAN.md's "Current position" is unchanged.
+Notes to future me:
+  - `web/dist/index.html` is the `go:embed` placeholder tracked in git;
+    every `npm run build` in this session overwrote it with real hashed
+    asset references, and it was reverted with `git checkout --
+    web/dist/index.html` before committing - same gotcha 8.11's entry
+    already flagged, still true.
+  - The admin user seeded for this session's browser verification
+    (`verify-ui`, `cmd/seed -kind user -name verify-ui -role admin`) and the
+    token created while testing `TokenList`'s create flow
+    (`verify-token-ui-test`) were both revoked via `DELETE
+    /api/v1/users/{id}` / `DELETE /api/v1/tokens/{id}` before ending the
+    session, the same soft-revoke cleanup pattern Phase 8's notes used.
+  - `web/package.json`'s `playwright` devDependency was removed again after
+    verification - it was never meant to be a permanent project dependency,
+    just this session's browser driver. If a future session wants
+    screenshot-based UI verification again, the chromium binary is still
+    cached locally (`~/.cache/ms-playwright`) so only `npm install -D
+    playwright` is needed, not a re-download.

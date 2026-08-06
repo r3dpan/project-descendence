@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
+import { Alert, Button, Container, Paper, PasswordInput, Stack, Text, TextInput } from '@mantine/core'
 import { useAuth } from '../auth'
 import { APIError } from '../api/client'
 
@@ -29,40 +30,39 @@ export default function Login() {
   }
 
   return (
-    <main style={{ maxWidth: 320, margin: '4rem auto' }}>
-      <h1>Descendence</h1>
-      <form onSubmit={handleSubmit}>
-        <div>
-          <label htmlFor="username">Username</label>
-          <br />
-          <input
-            id="username"
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
-            autoFocus
-            autoComplete="username"
-          />
-        </div>
-        <div style={{ marginTop: '0.5rem' }}>
-          <label htmlFor="password">Password</label>
-          <br />
-          <input
-            id="password"
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            autoComplete="current-password"
-          />
-        </div>
-        {error && (
-          <p role="alert" style={{ color: 'crimson' }}>
-            {error}
-          </p>
-        )}
-        <button type="submit" disabled={submitting} style={{ marginTop: '1rem' }}>
-          {submitting ? 'Signing in…' : 'Sign in'}
-        </button>
-      </form>
-    </main>
+    <Container size="xs" mt="10vh">
+      <Paper withBorder p="xl" radius="md">
+        <Text ta="center" fw={600} size="xl" mb="md">
+          Descendence
+        </Text>
+        <form onSubmit={handleSubmit}>
+          <Stack>
+            <TextInput
+              label="Username"
+              id="username"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              autoFocus
+              autoComplete="username"
+            />
+            <PasswordInput
+              label="Password"
+              id="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              autoComplete="current-password"
+            />
+            {error && (
+              <Alert color="red" role="alert">
+                {error}
+              </Alert>
+            )}
+            <Button type="submit" loading={submitting} fullWidth>
+              {submitting ? 'Signing in…' : 'Sign in'}
+            </Button>
+          </Stack>
+        </form>
+      </Paper>
+    </Container>
   )
 }

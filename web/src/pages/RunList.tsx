@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
+import { Alert, Badge, Button, LoadingOverlay, Table, Title } from '@mantine/core'
 import { listRuns, type Run } from '../api/runs'
 import { APIError } from '../api/client'
+import { statusColor } from '../statusColor'
 
 export default function RunList() {
   const [runs, setRuns] = useState<Run[]>([])
@@ -22,41 +24,47 @@ export default function RunList() {
   }, [cursor])
 
   return (
-    <main>
-      <h1>Runs</h1>
+    <>
+      <Title order={2} mb="md">
+        Runs
+      </Title>
       {error && (
-        <p role="alert" style={{ color: 'crimson' }}>
+        <Alert color="red" role="alert" mb="md">
           {error}
-        </p>
+        </Alert>
       )}
-      <table>
-        <thead>
-          <tr>
-            <th>ID</th>
-            <th>State</th>
-            <th>Image</th>
-            <th>Queued</th>
-          </tr>
-        </thead>
-        <tbody>
-          {runs.map((run) => (
-            <tr key={run.id}>
-              <td>
-                <Link to={`/runs/${run.id}`}>{run.id}</Link>
-              </td>
-              <td>{run.state}</td>
-              <td>{run.imageRef}</td>
-              <td>{new Date(run.queuedAt).toLocaleString()}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      {loading && <p>Loading…</p>}
+      <Table.ScrollContainer minWidth={600} pos="relative">
+        <LoadingOverlay visible={loading && runs.length === 0} />
+        <Table highlightOnHover>
+          <Table.Thead>
+            <Table.Tr>
+              <Table.Th>ID</Table.Th>
+              <Table.Th>State</Table.Th>
+              <Table.Th>Image</Table.Th>
+              <Table.Th>Queued</Table.Th>
+            </Table.Tr>
+          </Table.Thead>
+          <Table.Tbody>
+            {runs.map((run) => (
+              <Table.Tr key={run.id}>
+                <Table.Td>
+                  <Link to={`/runs/${run.id}`}>{run.id}</Link>
+                </Table.Td>
+                <Table.Td>
+                  <Badge color={statusColor(run.state)}>{run.state}</Badge>
+                </Table.Td>
+                <Table.Td>{run.imageRef}</Table.Td>
+                <Table.Td>{new Date(run.queuedAt).toLocaleString()}</Table.Td>
+              </Table.Tr>
+            ))}
+          </Table.Tbody>
+        </Table>
+      </Table.ScrollContainer>
       {!loading && nextCursor && (
-        <button type="button" onClick={() => setCursor(nextCursor)}>
+        <Button variant="light" mt="md" onClick={() => setCursor(nextCursor)}>
           Load more
-        </button>
+        </Button>
       )}
-    </main>
+    </>
   )
 }

@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
+import { Alert, Button, Fieldset, Group, Loader, Text, Title } from '@mantine/core'
 import { createJobRun, getJob, patchJob, type Job } from '../api/jobs'
 import { APIError } from '../api/client'
 import { ParamField } from '../paramField'
@@ -78,59 +79,64 @@ export default function JobDetail() {
     }
   }
 
-  if (loadError) return <p role="alert" style={{ color: 'crimson' }}>{loadError}</p>
-  if (!job) return <p>Loading…</p>
+  if (loadError) return <Alert color="red" role="alert">{loadError}</Alert>
+  if (!job) return <Loader />
 
   return (
-    <main>
-      <h1>{job.name}</h1>
-      {job.description && <p>{job.description}</p>}
+    <>
+      <Title order={2} mb="xs">
+        {job.name}
+      </Title>
+      {job.description && <Text mb="md">{job.description}</Text>}
       {job.deletedAt && (
-        <p role="alert" style={{ color: 'crimson' }}>
+        <Alert color="red" role="alert" mb="md">
           This job's manifest has been removed from the repository and can no longer be run.
-        </p>
+        </Alert>
       )}
       {!job.enabled && !job.deletedAt && (
-        <p role="alert" style={{ color: 'darkorange' }}>
+        <Alert color="orange" role="alert" mb="md">
           This job is disabled and cannot be run until it is re-enabled.
-        </p>
+        </Alert>
       )}
 
       {!job.deletedAt && (
-        <p>
-          <button type="button" onClick={handleToggle} disabled={toggling}>
+        <Group mb="md">
+          <Button size="xs" variant="light" onClick={handleToggle} disabled={toggling}>
             {toggling ? 'Updating…' : job.enabled ? 'Disable job' : 'Enable job'}
-          </button>
-          {' '}
-          <Link to={`/jobs/${job.id}/edit`}>Edit manifest</Link>
+          </Button>
+          <Text component={Link} to={`/jobs/${job.id}/edit`} size="sm">
+            Edit manifest
+          </Text>
           {toggleError && (
-            <span role="alert" style={{ color: 'crimson', marginLeft: '0.5rem' }}>
+            <Text role="alert" c="red" size="sm">
               {toggleError}
-            </span>
+            </Text>
           )}
-        </p>
+        </Group>
       )}
 
       <form onSubmit={handleSubmit}>
-        {job.params.map((param) => (
-          <ParamField
-            key={param.name}
-            param={param}
-            value={values[param.name] ?? ''}
-            onChange={(value) => setValues((prev) => ({ ...prev, [param.name]: value }))}
-          />
-        ))}
+        <Fieldset legend="Parameters" maw={480}>
+          {job.params.map((param) => (
+            <ParamField
+              key={param.name}
+              param={param}
+              value={values[param.name] ?? ''}
+              onChange={(value) => setValues((prev) => ({ ...prev, [param.name]: value }))}
+            />
+          ))}
+        </Fieldset>
 
         {error && (
-          <p role="alert" style={{ color: 'crimson' }}>
+          <Alert color="red" role="alert" mt="md">
             {error}
-          </p>
+          </Alert>
         )}
 
-        <button type="submit" disabled={submitting || !job.enabled || !!job.deletedAt} style={{ marginTop: '1rem' }}>
+        <Button type="submit" mt="md" loading={submitting} disabled={!job.enabled || !!job.deletedAt}>
           {submitting ? 'Triggering…' : 'Run'}
-        </button>
+        </Button>
       </form>
-    </main>
+    </>
   )
 }

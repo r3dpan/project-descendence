@@ -4,6 +4,22 @@ import { useAuth } from '../auth'
 import { createUser, listUsers, type User } from '../api/users'
 import { listRoles, type Role } from '../api/roles'
 import { APIError } from '../api/client'
+import {
+  Alert,
+  Badge,
+  Button,
+  Code,
+  CopyButton,
+  Group,
+  LoadingOverlay,
+  Modal,
+  Select,
+  Stack,
+  Table,
+  Text,
+  TextInput,
+  Title,
+} from '@mantine/core'
 
 export default function UserList() {
   const { principal } = useAuth()
@@ -37,7 +53,6 @@ export default function UserList() {
   async function handleCreate(e: FormEvent) {
     e.preventDefault()
     setCreateError(null)
-    setGeneratedPassword(null)
     setCreating(true)
     try {
       const created = await createUser({ name, role })
@@ -52,74 +67,88 @@ export default function UserList() {
   }
 
   return (
-    <main>
-      <h1>Users</h1>
+    <>
+      <Title order={2} mb="md">
+        Users
+      </Title>
       {error && (
-        <p role="alert" style={{ color: 'crimson' }}>
+        <Alert color="red" role="alert" mb="md">
           {error}
-        </p>
+        </Alert>
       )}
-      <table>
-        <thead>
-          <tr>
-            <th>Name</th>
-            <th>Role</th>
-            <th>Created</th>
-            <th>Status</th>
-          </tr>
-        </thead>
-        <tbody>
-          {users.map((u) => (
-            <tr key={u.id}>
-              <td>
-                <Link to={`/users/${u.id}`}>{u.name}</Link>
-              </td>
-              <td>{u.role}</td>
-              <td>{u.createdAt}</td>
-              <td>{u.revokedAt ? `revoked ${u.revokedAt}` : 'active'}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      {loading && <p>Loading…</p>}
-      {!loading && users.length === 0 && <p>No users yet.</p>}
+      <Table.ScrollContainer minWidth={500} pos="relative">
+        <LoadingOverlay visible={loading && users.length === 0} />
+        <Table highlightOnHover>
+          <Table.Thead>
+            <Table.Tr>
+              <Table.Th>Name</Table.Th>
+              <Table.Th>Role</Table.Th>
+              <Table.Th>Created</Table.Th>
+              <Table.Th>Status</Table.Th>
+            </Table.Tr>
+          </Table.Thead>
+          <Table.Tbody>
+            {users.map((u) => (
+              <Table.Tr key={u.id}>
+                <Table.Td>
+                  <Link to={`/users/${u.id}`}>{u.name}</Link>
+                </Table.Td>
+                <Table.Td>{u.role}</Table.Td>
+                <Table.Td>{u.createdAt}</Table.Td>
+                <Table.Td>
+                  <Badge color={u.revokedAt ? 'red' : 'green'}>{u.revokedAt ? `revoked ${u.revokedAt}` : 'active'}</Badge>
+                </Table.Td>
+              </Table.Tr>
+            ))}
+          </Table.Tbody>
+        </Table>
+      </Table.ScrollContainer>
+      {!loading && users.length === 0 && <Text c="dimmed">No users yet.</Text>}
 
       {canManage && (
         <>
-          <h2>New user</h2>
+          <Title order={3} mt="xl" mb="md">
+            New user
+          </Title>
           <form onSubmit={handleCreate}>
-            <div>
-              <label htmlFor="user-name">Name</label>
-              <br />
-              <input id="user-name" value={name} onChange={(e) => setName(e.target.value)} required />
-            </div>
-            <div style={{ marginTop: '0.5rem' }}>
-              <label htmlFor="user-role">Role</label>
-              <br />
-              <select id="user-role" value={role} onChange={(e) => setRole(e.target.value)}>
-                {roles.map((r) => (
-                  <option key={r.name} value={r.name}>
-                    {r.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-            {createError && (
-              <p role="alert" style={{ color: 'crimson' }}>
-                {createError}
-              </p>
-            )}
-            <button type="submit" disabled={creating} style={{ marginTop: '1rem' }}>
-              {creating ? 'Creating…' : 'Create user'}
-            </button>
+            <Stack maw={400}>
+              <TextInput label="Name" id="user-name" value={name} onChange={(e) => setName(e.target.value)} required />
+              <Select
+                label="Role"
+                id="user-role"
+                value={role}
+                onChange={(v) => setRole(v ?? '')}
+                data={roles.map((r) => r.name)}
+                allowDeselect={false}
+              />
+              {createError && (
+                <Alert color="red" role="alert">
+                  {createError}
+                </Alert>
+              )}
+              <Button type="submit" loading={creating}>
+                {creating ? 'Creating…' : 'Create user'}
+              </Button>
+            </Stack>
           </form>
-          {generatedPassword && (
-            <p style={{ background: '#333', padding: '0.75rem', marginTop: '0.5rem' }}>
-              Password (shown once - copy it now): <code>{generatedPassword}</code>
-            </p>
-          )}
+
+          <Modal opened={generatedPassword !== null} onClose={() => setGeneratedPassword(null)} title="User created" centered>
+            <Text size="sm" c="dimmed" mb="sm">
+              This is shown once and cannot be retrieved again - copy it now.
+            </Text>
+            <Group>
+              <Code style={{ flex: 1, wordBreak: 'break-all' }}>{generatedPassword}</Code>
+              <CopyButton value={generatedPassword ?? ''} timeout={2000}>
+                {({ copied, copy }) => (
+                  <Button size="xs" color={copied ? 'teal' : 'blue'} onClick={copy}>
+                    {copied ? 'Copied' : 'Copy'}
+                  </Button>
+                )}
+              </CopyButton>
+            </Group>
+          </Modal>
         </>
       )}
-    </main>
+    </>
   )
 }

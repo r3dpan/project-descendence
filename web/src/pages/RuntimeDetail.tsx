@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
+import { Alert, Badge, Button, Code, Group, Loader, Paper, Stack, Text, Title } from '@mantine/core'
 import { buildRuntime, getRuntime, TERMINAL_BUILD_STATUSES, type Runtime } from '../api/runtimes'
 import { APIError } from '../api/client'
+import { statusColor } from '../statusColor'
 
 export default function RuntimeDetail() {
   const { id } = useParams<{ id: string }>()
@@ -44,55 +46,83 @@ export default function RuntimeDetail() {
     }
   }
 
-  if (error) return <p role="alert" style={{ color: 'crimson' }}>{error}</p>
-  if (!runtime) return <p>Loading…</p>
+  if (error) return <Alert color="red" role="alert">{error}</Alert>
+  if (!runtime) return <Loader />
 
   const rebuildDisabled = rebuilding || runtime.buildStatus === 'pending' || runtime.buildStatus === 'building'
 
   return (
-    <main>
-      <h1>{runtime.name}</h1>
-      <dl>
-        <dt>Language</dt>
-        <dd>{runtime.lang}</dd>
-        <dt>Base image</dt>
-        <dd>{runtime.baseImage}</dd>
-        <dt>System packages</dt>
-        <dd>{runtime.sysPackages.length > 0 ? runtime.sysPackages.join(', ') : '(none)'}</dd>
-        <dt>Build status</dt>
-        <dd>{runtime.buildStatus}</dd>
-        {runtime.buildError && (
-          <>
-            <dt>Build error</dt>
-            <dd style={{ color: 'crimson' }}>{runtime.buildError}</dd>
-          </>
-        )}
-        <dt>Image digest</dt>
-        <dd>
-          <code>{runtime.imageDigest ?? '(not built)'}</code>
-        </dd>
-        {runtime.imagePruned && (
-          <>
-            <dt>Image pruned</dt>
-            <dd>Yes - a job naming this runtime cannot run until it is rebuilt.</dd>
-          </>
-        )}
-        <dt>Language manifest</dt>
-        <dd>
-          <pre>{runtime.langManifest ?? '(none)'}</pre>
-        </dd>
-      </dl>
+    <>
+      <Title order={2} mb="md">
+        {runtime.name}
+      </Title>
+      <Paper withBorder p="md" maw={640}>
+        <Stack gap="xs">
+          <Group>
+            <Text fw={500} w={160}>
+              Language
+            </Text>
+            <Text>{runtime.lang}</Text>
+          </Group>
+          <Group>
+            <Text fw={500} w={160}>
+              Base image
+            </Text>
+            <Text>{runtime.baseImage}</Text>
+          </Group>
+          <Group>
+            <Text fw={500} w={160}>
+              System packages
+            </Text>
+            <Text>{runtime.sysPackages.length > 0 ? runtime.sysPackages.join(', ') : '(none)'}</Text>
+          </Group>
+          <Group>
+            <Text fw={500} w={160}>
+              Build status
+            </Text>
+            <Badge color={statusColor(runtime.buildStatus)}>{runtime.buildStatus}</Badge>
+          </Group>
+          {runtime.buildError && (
+            <Group align="flex-start">
+              <Text fw={500} w={160}>
+                Build error
+              </Text>
+              <Text c="red">{runtime.buildError}</Text>
+            </Group>
+          )}
+          <Group>
+            <Text fw={500} w={160}>
+              Image digest
+            </Text>
+            <Code>{runtime.imageDigest ?? '(not built)'}</Code>
+          </Group>
+          {runtime.imagePruned && (
+            <Group>
+              <Text fw={500} w={160}>
+                Image pruned
+              </Text>
+              <Text>Yes - a job naming this runtime cannot run until it is rebuilt.</Text>
+            </Group>
+          )}
+          <Group align="flex-start">
+            <Text fw={500} w={160}>
+              Language manifest
+            </Text>
+            <Code block>{runtime.langManifest ?? '(none)'}</Code>
+          </Group>
+        </Stack>
+      </Paper>
 
-      <button type="button" onClick={handleRebuild} disabled={rebuildDisabled}>
+      <Button mt="md" onClick={handleRebuild} disabled={rebuildDisabled}>
         {rebuilding || runtime.buildStatus === 'building' || runtime.buildStatus === 'pending'
           ? 'Building…'
           : 'Rebuild'}
-      </button>
+      </Button>
       {rebuildError && (
-        <p role="alert" style={{ color: 'crimson' }}>
+        <Alert color="red" role="alert" mt="md">
           {rebuildError}
-        </p>
+        </Alert>
       )}
-    </main>
+    </>
   )
 }

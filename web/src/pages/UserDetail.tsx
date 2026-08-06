@@ -4,6 +4,7 @@ import { useAuth } from '../auth'
 import { getUser, revokeUser, updateUserRole, type User } from '../api/users'
 import { listRoles, type Role } from '../api/roles'
 import { APIError } from '../api/client'
+import { Alert, Button, Group, Loader, Select, Text, Title } from '@mantine/core'
 
 export default function UserDetail() {
   const { id } = useParams<{ id: string }>()
@@ -63,59 +64,62 @@ export default function UserDetail() {
     }
   }
 
-  if (loadError) return <p role="alert" style={{ color: 'crimson' }}>{loadError}</p>
-  if (!user) return <p>Loading…</p>
+  if (loadError) return <Alert color="red" role="alert">{loadError}</Alert>
+  if (!user) return <Loader />
 
   return (
-    <main>
-      <h1>{user.name}</h1>
-      <p>
-        {user.revokedAt ? (
-          <span role="alert" style={{ color: 'crimson' }}>
-            Revoked {user.revokedAt}
-          </span>
-        ) : (
-          'Active'
-        )}
-      </p>
-      <p>Created {user.createdAt}</p>
+    <>
+      <Title order={2} mb="xs">
+        {user.name}
+      </Title>
+      {user.revokedAt ? (
+        <Alert color="red" role="alert" mb="xs">
+          Revoked {user.revokedAt}
+        </Alert>
+      ) : (
+        <Text mb="xs">Active</Text>
+      )}
+      <Text c="dimmed" mb="md">
+        Created {user.createdAt}
+      </Text>
 
       {canManage && !user.revokedAt ? (
-        <div style={{ marginTop: '1rem' }}>
-          <label htmlFor="role-select">Role</label>
-          <br />
-          <select id="role-select" value={selectedRole} onChange={(e) => setSelectedRole(e.target.value)}>
-            {roles.map((r) => (
-              <option key={r.name} value={r.name}>
-                {r.name}
-              </option>
-            ))}
-          </select>{' '}
-          <button type="button" onClick={handleRoleChange} disabled={roleUpdating || selectedRole === user.role}>
-            {roleUpdating ? 'Saving…' : 'Save role'}
-          </button>
+        <div>
+          <Group align="flex-end">
+            <Select
+              label="Role"
+              id="role-select"
+              value={selectedRole}
+              onChange={(v) => setSelectedRole(v ?? '')}
+              data={roles.map((r) => r.name)}
+              allowDeselect={false}
+            />
+            <Button onClick={handleRoleChange} loading={roleUpdating} disabled={selectedRole === user.role}>
+              Save role
+            </Button>
+          </Group>
           {roleError && (
-            <p role="alert" style={{ color: 'crimson' }}>
+            <Alert color="red" role="alert" mt="sm">
               {roleError}
-            </p>
+            </Alert>
           )}
         </div>
       ) : (
-        <p>Role: {user.role}</p>
+        <Text>Role: {user.role}</Text>
       )}
 
       {canManage && !user.revokedAt && (
         <div style={{ marginTop: '1.5rem' }}>
-          <button type="button" onClick={handleRevoke} disabled={revoking} style={{ color: 'crimson' }}>
-            {revoking ? 'Revoking…' : 'Revoke access'}
-          </button>
+          <Button color="red" variant="light" onClick={handleRevoke} loading={revoking}>
+            Revoke access
+          </Button>
           {revokeError && (
-            <p role="alert" style={{ color: 'crimson' }}>
+            <Alert color="red" role="alert" mt="sm">
               {revokeError}
-            </p>
+            </Alert>
           )}
         </div>
       )}
-    </main>
+    </>
   )
 }

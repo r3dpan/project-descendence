@@ -1,7 +1,22 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { Link } from 'react-router-dom'
+import {
+  Alert,
+  Badge,
+  Button,
+  Code,
+  LoadingOverlay,
+  Select,
+  Stack,
+  Table,
+  Text,
+  Textarea,
+  TextInput,
+  Title,
+} from '@mantine/core'
 import { createRuntime, listRuntimes, type Runtime } from '../api/runtimes'
 import { APIError } from '../api/client'
+import { statusColor } from '../statusColor'
 
 export default function RuntimeList() {
   const [runtimes, setRuntimes] = useState<Runtime[]>([])
@@ -59,93 +74,98 @@ export default function RuntimeList() {
   }
 
   return (
-    <main>
-      <h1>Runtimes</h1>
+    <>
+      <Title order={2} mb="md">
+        Runtimes
+      </Title>
       {error && (
-        <p role="alert" style={{ color: 'crimson' }}>
+        <Alert color="red" role="alert" mb="md">
           {error}
-        </p>
+        </Alert>
       )}
-      <table>
-        <thead>
-          <tr>
-            <th>Name</th>
-            <th>Lang</th>
-            <th>Build status</th>
-            <th>Image digest</th>
-          </tr>
-        </thead>
-        <tbody>
-          {runtimes.map((runtime) => (
-            <tr key={runtime.id}>
-              <td>
-                <Link to={`/runtimes/${runtime.id}`}>{runtime.name}</Link>
-              </td>
-              <td>{runtime.lang}</td>
-              <td>{runtime.buildStatus}</td>
-              <td>
-                <code>{runtime.imageDigest ? runtime.imageDigest.slice(0, 24) + '…' : ''}</code>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      {loading && <p>Loading…</p>}
-      {!loading && runtimes.length === 0 && <p>No runtimes yet.</p>}
+      <Table.ScrollContainer minWidth={600} pos="relative">
+        <LoadingOverlay visible={loading && runtimes.length === 0} />
+        <Table highlightOnHover>
+          <Table.Thead>
+            <Table.Tr>
+              <Table.Th>Name</Table.Th>
+              <Table.Th>Lang</Table.Th>
+              <Table.Th>Build status</Table.Th>
+              <Table.Th>Image digest</Table.Th>
+            </Table.Tr>
+          </Table.Thead>
+          <Table.Tbody>
+            {runtimes.map((runtime) => (
+              <Table.Tr key={runtime.id}>
+                <Table.Td>
+                  <Link to={`/runtimes/${runtime.id}`}>{runtime.name}</Link>
+                </Table.Td>
+                <Table.Td>{runtime.lang}</Table.Td>
+                <Table.Td>
+                  <Badge color={statusColor(runtime.buildStatus)}>{runtime.buildStatus}</Badge>
+                </Table.Td>
+                <Table.Td>
+                  <Code>{runtime.imageDigest ? runtime.imageDigest.slice(0, 24) + '…' : ''}</Code>
+                </Table.Td>
+              </Table.Tr>
+            ))}
+          </Table.Tbody>
+        </Table>
+      </Table.ScrollContainer>
+      {!loading && runtimes.length === 0 && <Text c="dimmed">No runtimes yet.</Text>}
       {!loading && nextCursor && (
-        <button type="button" onClick={() => setCursor(nextCursor)}>
+        <Button variant="light" mt="md" onClick={() => setCursor(nextCursor)}>
           Load more
-        </button>
+        </Button>
       )}
 
-      <h2>New runtime</h2>
+      <Title order={3} mt="xl" mb="md">
+        New runtime
+      </Title>
       <form onSubmit={handleCreate}>
-        <div>
-          <label htmlFor="rt-name">Name</label>
-          <br />
-          <input id="rt-name" value={name} onChange={(e) => setName(e.target.value)} required />
-        </div>
-        <div style={{ marginTop: '0.5rem' }}>
-          <label htmlFor="rt-lang">Language</label>
-          <br />
-          <select id="rt-lang" value={lang} onChange={(e) => setLang(e.target.value as typeof lang)}>
-            <option value="python">python</option>
-            <option value="powershell">powershell</option>
-            <option value="node">node</option>
-          </select>
-        </div>
-        <div style={{ marginTop: '0.5rem' }}>
-          <label htmlFor="rt-base">Base image (optional - defaults to a curated image)</label>
-          <br />
-          <input id="rt-base" value={baseImage} onChange={(e) => setBaseImage(e.target.value)} />
-        </div>
-        <div style={{ marginTop: '0.5rem' }}>
-          <label htmlFor="rt-sys">System packages (comma-separated, optional)</label>
-          <br />
-          <input id="rt-sys" value={sysPackages} onChange={(e) => setSysPackages(e.target.value)} />
-        </div>
-        <div style={{ marginTop: '0.5rem' }}>
-          <label htmlFor="rt-manifest">
-            Language manifest (optional - requirements.txt / PSResourceGet file / package.json, verbatim)
-          </label>
-          <br />
-          <textarea
+        <Stack maw={480}>
+          <TextInput label="Name" id="rt-name" value={name} onChange={(e) => setName(e.target.value)} required />
+          <Select
+            label="Language"
+            id="rt-lang"
+            value={lang}
+            onChange={(v) => setLang((v as typeof lang) ?? 'python')}
+            data={['python', 'powershell', 'node']}
+            allowDeselect={false}
+          />
+          <TextInput
+            label="Base image"
+            description="Optional - defaults to a curated image"
+            id="rt-base"
+            value={baseImage}
+            onChange={(e) => setBaseImage(e.target.value)}
+          />
+          <TextInput
+            label="System packages"
+            description="Comma-separated, optional"
+            id="rt-sys"
+            value={sysPackages}
+            onChange={(e) => setSysPackages(e.target.value)}
+          />
+          <Textarea
+            label="Language manifest"
+            description="Optional - requirements.txt / PSResourceGet file / package.json, verbatim"
             id="rt-manifest"
             value={langManifest}
             onChange={(e) => setLangManifest(e.target.value)}
             rows={4}
-            style={{ width: '100%', maxWidth: 480 }}
+            styles={{ input: { fontFamily: 'var(--mantine-font-family-monospace)' } }}
           />
-        </div>
-        {createError && (
-          <p role="alert" style={{ color: 'crimson' }}>
-            {createError}
-          </p>
-        )}
-        <button type="submit" disabled={creating} style={{ marginTop: '1rem' }}>
-          {creating ? 'Creating…' : 'Create runtime'}
-        </button>
+          {createError && (
+            <Alert color="red" role="alert">
+              {createError}
+            </Alert>
+          )}
+          <Button type="submit" loading={creating}>
+            {creating ? 'Creating…' : 'Create runtime'}
+          </Button>
+        </Stack>
       </form>
-    </main>
+    </>
   )
 }
