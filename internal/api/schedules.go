@@ -315,17 +315,14 @@ func (s *APIServer) DeleteScheduleHandler(w http.ResponseWriter, r *http.Request
 
 // TriggerScheduleHandler is what a generated schedule's .service unit calls
 // (via `descendence schedule trigger <id>`) when its .timer fires (task
-// 5.3). Requires the "run" scope - the first endpoint in this codebase to
-// actually enforce one, a deliberate, narrow exception rather than a
-// general RBAC rollout (ARCHITECTURE.md §7 still defers that).
+// 5.3). Requires the "schedules:trigger" permission, enforced by
+// RequirePermission at the route table (Phase 8) - previously the first and
+// only inline scope check in this codebase (principalHasScope), now folded
+// into the general permission system.
 func (s *APIServer) TriggerScheduleHandler(w http.ResponseWriter, r *http.Request) {
 	principal, ok := principalFromContext(r.Context())
 	if !ok {
 		writeProblem(w, http.StatusInternalServerError, "no principal in request context")
-		return
-	}
-	if !principalHasScope(principal, "run") {
-		writeProblem(w, http.StatusForbidden, `principal is missing the "run" scope required to trigger a schedule`)
 		return
 	}
 
@@ -406,16 +403,4 @@ func (s *APIServer) lookupSchedule(w http.ResponseWriter, r *http.Request) (stor
 		return store.Schedule{}, false
 	}
 	return sched, true
-}
-
-// principalHasScope reports whether principal was minted with scope -
-// TriggerScheduleHandler's check, the first place in this codebase that
-// looks at principals.scopes rather than relying on token possession alone.
-func principalHasScope(principal store.Principal, scope string) bool {
-	for _, s := range principal.Scopes {
-		if s == scope {
-			return true
-		}
-	}
-	return false
 }

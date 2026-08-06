@@ -12,16 +12,16 @@ import (
 )
 
 const createTokenPrincipal = `-- name: CreateTokenPrincipal :one
-INSERT INTO principals (kind, name, token_hash, token_hint, scopes)
+INSERT INTO principals (kind, name, token_hash, token_hint, expires_at)
 VALUES ('token', $1, $2, $3, $4)
-RETURNING id, kind, name, token_hash, token_hint, scopes, password_hash, created_at, expires_at, revoked_at
+RETURNING id, kind, name, token_hash, token_hint, password_hash, created_at, expires_at, revoked_at
 `
 
 type CreateTokenPrincipalParams struct {
-	Name      string      `json:"name"`
-	TokenHash []byte      `json:"token_hash"`
-	TokenHint pgtype.Text `json:"token_hint"`
-	Scopes    []string    `json:"scopes"`
+	Name      string             `json:"name"`
+	TokenHash []byte             `json:"token_hash"`
+	TokenHint pgtype.Text        `json:"token_hint"`
+	ExpiresAt pgtype.Timestamptz `json:"expires_at"`
 }
 
 type CreateTokenPrincipalRow struct {
@@ -30,7 +30,6 @@ type CreateTokenPrincipalRow struct {
 	Name         string             `json:"name"`
 	TokenHash    []byte             `json:"token_hash"`
 	TokenHint    pgtype.Text        `json:"token_hint"`
-	Scopes       []string           `json:"scopes"`
 	PasswordHash []byte             `json:"password_hash"`
 	CreatedAt    pgtype.Timestamptz `json:"created_at"`
 	ExpiresAt    pgtype.Timestamptz `json:"expires_at"`
@@ -42,7 +41,7 @@ func (q *Queries) CreateTokenPrincipal(ctx context.Context, arg CreateTokenPrinc
 		arg.Name,
 		arg.TokenHash,
 		arg.TokenHint,
-		arg.Scopes,
+		arg.ExpiresAt,
 	)
 	var i CreateTokenPrincipalRow
 	err := row.Scan(
@@ -51,7 +50,6 @@ func (q *Queries) CreateTokenPrincipal(ctx context.Context, arg CreateTokenPrinc
 		&i.Name,
 		&i.TokenHash,
 		&i.TokenHint,
-		&i.Scopes,
 		&i.PasswordHash,
 		&i.CreatedAt,
 		&i.ExpiresAt,
@@ -61,15 +59,14 @@ func (q *Queries) CreateTokenPrincipal(ctx context.Context, arg CreateTokenPrinc
 }
 
 const createUserPrincipal = `-- name: CreateUserPrincipal :one
-INSERT INTO principals (kind, name, password_hash, scopes)
-VALUES ('user', $1, $2, $3)
-RETURNING id, kind, name, token_hash, token_hint, scopes, password_hash, created_at, expires_at, revoked_at
+INSERT INTO principals (kind, name, password_hash)
+VALUES ('user', $1, $2)
+RETURNING id, kind, name, token_hash, token_hint, password_hash, created_at, expires_at, revoked_at
 `
 
 type CreateUserPrincipalParams struct {
-	Name         string   `json:"name"`
-	PasswordHash []byte   `json:"password_hash"`
-	Scopes       []string `json:"scopes"`
+	Name         string `json:"name"`
+	PasswordHash []byte `json:"password_hash"`
 }
 
 type CreateUserPrincipalRow struct {
@@ -78,7 +75,6 @@ type CreateUserPrincipalRow struct {
 	Name         string             `json:"name"`
 	TokenHash    []byte             `json:"token_hash"`
 	TokenHint    pgtype.Text        `json:"token_hint"`
-	Scopes       []string           `json:"scopes"`
 	PasswordHash []byte             `json:"password_hash"`
 	CreatedAt    pgtype.Timestamptz `json:"created_at"`
 	ExpiresAt    pgtype.Timestamptz `json:"expires_at"`
@@ -86,7 +82,7 @@ type CreateUserPrincipalRow struct {
 }
 
 func (q *Queries) CreateUserPrincipal(ctx context.Context, arg CreateUserPrincipalParams) (CreateUserPrincipalRow, error) {
-	row := q.db.QueryRow(ctx, createUserPrincipal, arg.Name, arg.PasswordHash, arg.Scopes)
+	row := q.db.QueryRow(ctx, createUserPrincipal, arg.Name, arg.PasswordHash)
 	var i CreateUserPrincipalRow
 	err := row.Scan(
 		&i.ID,
@@ -94,7 +90,6 @@ func (q *Queries) CreateUserPrincipal(ctx context.Context, arg CreateUserPrincip
 		&i.Name,
 		&i.TokenHash,
 		&i.TokenHint,
-		&i.Scopes,
 		&i.PasswordHash,
 		&i.CreatedAt,
 		&i.ExpiresAt,
@@ -104,7 +99,7 @@ func (q *Queries) CreateUserPrincipal(ctx context.Context, arg CreateUserPrincip
 }
 
 const getPrincipalByID = `-- name: GetPrincipalByID :one
-SELECT id, kind, name, token_hash, token_hint, scopes, password_hash, created_at, expires_at, revoked_at
+SELECT id, kind, name, token_hash, token_hint, password_hash, created_at, expires_at, revoked_at
 FROM principals
 WHERE id = $1
   AND revoked_at IS NULL
@@ -117,7 +112,6 @@ type GetPrincipalByIDRow struct {
 	Name         string             `json:"name"`
 	TokenHash    []byte             `json:"token_hash"`
 	TokenHint    pgtype.Text        `json:"token_hint"`
-	Scopes       []string           `json:"scopes"`
 	PasswordHash []byte             `json:"password_hash"`
 	CreatedAt    pgtype.Timestamptz `json:"created_at"`
 	ExpiresAt    pgtype.Timestamptz `json:"expires_at"`
@@ -133,7 +127,6 @@ func (q *Queries) GetPrincipalByID(ctx context.Context, id int64) (GetPrincipalB
 		&i.Name,
 		&i.TokenHash,
 		&i.TokenHint,
-		&i.Scopes,
 		&i.PasswordHash,
 		&i.CreatedAt,
 		&i.ExpiresAt,
@@ -143,7 +136,7 @@ func (q *Queries) GetPrincipalByID(ctx context.Context, id int64) (GetPrincipalB
 }
 
 const getPrincipalByTokenHash = `-- name: GetPrincipalByTokenHash :one
-SELECT id, kind, name, token_hash, token_hint, scopes, password_hash, created_at, expires_at, revoked_at
+SELECT id, kind, name, token_hash, token_hint, password_hash, created_at, expires_at, revoked_at
 FROM principals
 WHERE token_hash = $1
   AND kind = 'token'
@@ -157,7 +150,6 @@ type GetPrincipalByTokenHashRow struct {
 	Name         string             `json:"name"`
 	TokenHash    []byte             `json:"token_hash"`
 	TokenHint    pgtype.Text        `json:"token_hint"`
-	Scopes       []string           `json:"scopes"`
 	PasswordHash []byte             `json:"password_hash"`
 	CreatedAt    pgtype.Timestamptz `json:"created_at"`
 	ExpiresAt    pgtype.Timestamptz `json:"expires_at"`
@@ -173,7 +165,6 @@ func (q *Queries) GetPrincipalByTokenHash(ctx context.Context, tokenHash []byte)
 		&i.Name,
 		&i.TokenHash,
 		&i.TokenHint,
-		&i.Scopes,
 		&i.PasswordHash,
 		&i.CreatedAt,
 		&i.ExpiresAt,
@@ -183,7 +174,7 @@ func (q *Queries) GetPrincipalByTokenHash(ctx context.Context, tokenHash []byte)
 }
 
 const getUserPrincipalByName = `-- name: GetUserPrincipalByName :one
-SELECT id, kind, name, token_hash, token_hint, scopes, password_hash, created_at, expires_at, revoked_at
+SELECT id, kind, name, token_hash, token_hint, password_hash, created_at, expires_at, revoked_at
 FROM principals
 WHERE name = $1
   AND kind = 'user'
@@ -197,7 +188,6 @@ type GetUserPrincipalByNameRow struct {
 	Name         string             `json:"name"`
 	TokenHash    []byte             `json:"token_hash"`
 	TokenHint    pgtype.Text        `json:"token_hint"`
-	Scopes       []string           `json:"scopes"`
 	PasswordHash []byte             `json:"password_hash"`
 	CreatedAt    pgtype.Timestamptz `json:"created_at"`
 	ExpiresAt    pgtype.Timestamptz `json:"expires_at"`
@@ -213,11 +203,100 @@ func (q *Queries) GetUserPrincipalByName(ctx context.Context, name string) (GetU
 		&i.Name,
 		&i.TokenHash,
 		&i.TokenHint,
-		&i.Scopes,
 		&i.PasswordHash,
 		&i.CreatedAt,
 		&i.ExpiresAt,
 		&i.RevokedAt,
 	)
 	return i, err
+}
+
+const listPrincipalsByKind = `-- name: ListPrincipalsByKind :many
+SELECT id, kind, name, token_hash, token_hint, password_hash, created_at, expires_at, revoked_at
+FROM principals
+WHERE kind = $1
+ORDER BY name
+`
+
+type ListPrincipalsByKindRow struct {
+	ID           int64              `json:"id"`
+	Kind         string             `json:"kind"`
+	Name         string             `json:"name"`
+	TokenHash    []byte             `json:"token_hash"`
+	TokenHint    pgtype.Text        `json:"token_hint"`
+	PasswordHash []byte             `json:"password_hash"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+	ExpiresAt    pgtype.Timestamptz `json:"expires_at"`
+	RevokedAt    pgtype.Timestamptz `json:"revoked_at"`
+}
+
+// Task 8.2/8.3: the users/tokens list endpoints. Unpaginated - a homelab has
+// a handful of principals, not thousands, matching ListSchedulesByJob's
+// reasoning for skipping cursor pagination.
+func (q *Queries) ListPrincipalsByKind(ctx context.Context, kind string) ([]ListPrincipalsByKindRow, error) {
+	rows, err := q.db.Query(ctx, listPrincipalsByKind, kind)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListPrincipalsByKindRow
+	for rows.Next() {
+		var i ListPrincipalsByKindRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Kind,
+			&i.Name,
+			&i.TokenHash,
+			&i.TokenHint,
+			&i.PasswordHash,
+			&i.CreatedAt,
+			&i.ExpiresAt,
+			&i.RevokedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const revokePrincipal = `-- name: RevokePrincipal :execrows
+UPDATE principals
+SET revoked_at = now()
+WHERE id = $1
+  AND revoked_at IS NULL
+`
+
+// Soft-revoke, never a hard delete: runs.principal_id is ON DELETE RESTRICT,
+// and revoked_at IS NULL is already the filter every lookup query above
+// applies, so a revoked principal simply stops authenticating - its run
+// history stays queryable and explainable.
+func (q *Queries) RevokePrincipal(ctx context.Context, id int64) (int64, error) {
+	result, err := q.db.Exec(ctx, revokePrincipal, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const updatePrincipalPasswordHash = `-- name: UpdatePrincipalPasswordHash :execrows
+UPDATE principals
+SET password_hash = $2
+WHERE id = $1
+`
+
+type UpdatePrincipalPasswordHashParams struct {
+	ID           int64  `json:"id"`
+	PasswordHash []byte `json:"password_hash"`
+}
+
+func (q *Queries) UpdatePrincipalPasswordHash(ctx context.Context, arg UpdatePrincipalPasswordHashParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updatePrincipalPasswordHash, arg.ID, arg.PasswordHash)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }

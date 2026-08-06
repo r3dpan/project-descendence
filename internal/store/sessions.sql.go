@@ -47,7 +47,7 @@ func (q *Queries) DeleteSessionByTokenHash(ctx context.Context, tokenHash []byte
 }
 
 const getPrincipalBySessionTokenHash = `-- name: GetPrincipalBySessionTokenHash :one
-SELECT p.id, p.kind, p.name, p.token_hash, p.token_hint, p.scopes, p.password_hash, p.created_at, p.expires_at, p.revoked_at
+SELECT p.id, p.kind, p.name, p.token_hash, p.token_hint, p.password_hash, p.created_at, p.expires_at, p.revoked_at
 FROM sessions s
 JOIN principals p ON p.id = s.principal_id
 WHERE s.token_hash = $1
@@ -61,7 +61,6 @@ type GetPrincipalBySessionTokenHashRow struct {
 	Name         string             `json:"name"`
 	TokenHash    []byte             `json:"token_hash"`
 	TokenHint    pgtype.Text        `json:"token_hint"`
-	Scopes       []string           `json:"scopes"`
 	PasswordHash []byte             `json:"password_hash"`
 	CreatedAt    pgtype.Timestamptz `json:"created_at"`
 	ExpiresAt    pgtype.Timestamptz `json:"expires_at"`
@@ -77,7 +76,6 @@ func (q *Queries) GetPrincipalBySessionTokenHash(ctx context.Context, tokenHash 
 		&i.Name,
 		&i.TokenHash,
 		&i.TokenHint,
-		&i.Scopes,
 		&i.PasswordHash,
 		&i.CreatedAt,
 		&i.ExpiresAt,

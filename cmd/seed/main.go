@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"strings"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -19,7 +18,7 @@ import (
 )
 
 // One-shot token minting, per PLAN.md task 1.5 (the unflagged default:
-// a "bootstrap" principal with every scope) and extended at task 5.3 for
+// a "bootstrap" principal with the admin role) and extended at task 5.3 for
 // minting other token principals against an already-seeded database - most
 // immediately, the scheduler principal a generated schedule's .service unit
 // authenticates as when it calls POST /api/v1/schedules/{id}/trigger.
@@ -30,9 +29,15 @@ import (
 // -kind=user (task 7.3) mints a browser-login principal instead: password
 // generated the same way the token is (crypto/rand, printed once), hashed
 // with bcrypt before it ever reaches Postgres.
+//
+// Phase 8: cmd/seed remains the chicken-and-egg breaker for RBAC - creating
+// a principal via the API requires the users:write permission, which the
+// very first admin can't have yet. cmd/seed assigns a role by a direct DB
+// write (assignRole below), bypassing RequirePermission by construction,
+// the same way it already bypasses the API entirely.
 func main() {
 	name := flag.String("name", "bootstrap", "principal name (must be unique)")
-	scopes := flag.String("scopes", "read,run,admin", "comma-separated scopes")
+	role := flag.String("role", "admin", "role name: admin, operator or viewer")
 	kind := flag.String("kind", "token", "principal kind: token or user")
 	flag.Parse()
 
@@ -43,11 +48,6 @@ func main() {
 	databaseURL := os.Getenv("DATABASE_URL")
 	if databaseURL == "" {
 		log.Fatal("DATABASE_URL is not set")
-	}
-
-	parsedScopes := strings.Split(*scopes, ",")
-	for i, s := range parsedScopes {
-		parsedScopes[i] = strings.TrimSpace(s)
 	}
 
 	ctx := context.Background()
@@ -61,7 +61,7 @@ func main() {
 	queries := store.New(pool)
 
 	if *kind == "user" {
-		seedUser(ctx, queries, *name, parsedScopes)
+		seedUser(ctx, queries, *name, *role)
 		return
 	}
 
@@ -75,17 +75,17 @@ func main() {
 		Name:      *name,
 		TokenHash: hash[:],
 		TokenHint: pgtype.Text{String: token[len(token)-8:], Valid: true},
-		Scopes:    parsedScopes,
 	})
 	if err != nil {
 		log.Fatalf("Failed creating principal %q: %v", *name, err)
 	}
+	assignRole(ctx, queries, principal.ID, *role)
 
-	fmt.Printf("Principal #%d %q created (scopes: %v).\n", principal.ID, principal.Name, principal.Scopes)
+	fmt.Printf("Principal #%d %q created (role: %s).\n", principal.ID, principal.Name, *role)
 	fmt.Printf("Token (shown once - store it now):\n\n  %s\n\n", token)
 }
 
-func seedUser(ctx context.Context, queries *store.Queries, name string, scopes []string) {
+func seedUser(ctx context.Context, queries *store.Queries, name, role string) {
 	password, err := generatePassword()
 	if err != nil {
 		log.Fatalf("Failed generating password: %v", err)
@@ -99,14 +99,30 @@ func seedUser(ctx context.Context, queries *store.Queries, name string, scopes [
 	principal, err := queries.CreateUserPrincipal(ctx, store.CreateUserPrincipalParams{
 		Name:         name,
 		PasswordHash: passwordHash,
-		Scopes:       scopes,
 	})
 	if err != nil {
 		log.Fatalf("Failed creating principal %q: %v", name, err)
 	}
+	assignRole(ctx, queries, principal.ID, role)
 
-	fmt.Printf("Principal #%d %q created (scopes: %v).\n", principal.ID, principal.Name, principal.Scopes)
+	fmt.Printf("Principal #%d %q created (role: %s).\n", principal.ID, principal.Name, role)
 	fmt.Printf("Password (shown once - store it now):\n\n  %s\n\n", password)
+}
+
+// assignRole is the direct-DB-write half of cmd/seed's role assignment,
+// shared by the token and user paths - both need the identical "look up the
+// role by name, upsert principal_roles" sequence.
+func assignRole(ctx context.Context, queries *store.Queries, principalID int64, roleName string) {
+	roleRow, err := queries.GetRoleByName(ctx, roleName)
+	if err != nil {
+		log.Fatalf("Failed looking up role %q: %v", roleName, err)
+	}
+	if err := queries.SetPrincipalRole(ctx, store.SetPrincipalRoleParams{
+		PrincipalID: principalID,
+		RoleID:      roleRow.ID,
+	}); err != nil {
+		log.Fatalf("Failed assigning role %q to principal #%d: %v", roleName, principalID, err)
+	}
 }
 
 // sra_live_<64 hex chars>, per ARCHITECTURE.md §4.10.

@@ -171,8 +171,11 @@ func cmdWhoAmI(ctx context.Context, c *client.Client) int {
 		styleBold.Render(principal.Name),
 		styleLabel.Render(fmt.Sprintf("(#%d, %s)", principal.ID, principal.Kind)))
 	fmt.Printf("  %s%s\n",
-		styleLabel.Render(fmt.Sprintf("%-9s", "scopes")),
-		styleValue.Render(fmt.Sprint(principal.Scopes)))
+		styleLabel.Render(fmt.Sprintf("%-9s", "role")),
+		styleValue.Render(principal.Role))
+	fmt.Printf("  %s%s\n",
+		styleLabel.Render(fmt.Sprintf("%-9s", "permissions")),
+		styleValue.Render(fmt.Sprint(principal.Permissions)))
 
 	return 0
 }

@@ -151,7 +151,7 @@ func main() {
 	descendenceMux.HandleFunc("GET /api/v1/schedules/{id}", descendenceAPI.RequireAuth(descendenceAPI.GetScheduleHandler))
 	descendenceMux.HandleFunc("PATCH /api/v1/schedules/{id}", descendenceAPI.RequireAuth(descendenceAPI.PatchScheduleHandler))
 	descendenceMux.HandleFunc("DELETE /api/v1/schedules/{id}", descendenceAPI.RequireAuth(descendenceAPI.DeleteScheduleHandler))
-	descendenceMux.HandleFunc("POST /api/v1/schedules/{id}/trigger", descendenceAPI.RequireAuth(descendenceAPI.TriggerScheduleHandler))
+	descendenceMux.HandleFunc("POST /api/v1/schedules/{id}/trigger", descendenceAPI.RequireAuth(descendenceAPI.RequirePermission("schedules:trigger", descendenceAPI.TriggerScheduleHandler)))
 
 	descendenceMux.HandleFunc("POST /api/v1/runtimes", descendenceAPI.RequireAuth(descendenceAPI.CreateRuntimeHandler))
 	descendenceMux.HandleFunc("GET /api/v1/runtimes", descendenceAPI.RequireAuth(descendenceAPI.ListRuntimesHandler))

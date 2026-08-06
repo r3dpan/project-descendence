@@ -95,12 +95,19 @@ func (s *APIServer) LoginHandler(w http.ResponseWriter, r *http.Request) {
 		SameSite: http.SameSiteLaxMode,
 	})
 
-	writeJSON(w, http.StatusOK, whoamiResponse{
-		ID:     principal.ID,
-		Name:   principal.Name,
-		Kind:   principal.Kind,
-		Scopes: principal.Scopes,
-	})
+	perms, err := s.resolvePermissions(r.Context(), principal.ID)
+	if err != nil {
+		log.Printf("login: permission resolution failed: %v", err)
+		writeProblem(w, http.StatusInternalServerError, "failed resolving principal's permissions")
+		return
+	}
+	resp, err := s.toWhoamiResponse(r.Context(), store.Principal{ID: principal.ID, Kind: principal.Kind, Name: principal.Name}, perms)
+	if err != nil {
+		log.Printf("login: role resolution failed: %v", err)
+		writeProblem(w, http.StatusInternalServerError, "failed resolving principal's role")
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // LogoutHandler deletes the session row outright (no soft-delete - a dead

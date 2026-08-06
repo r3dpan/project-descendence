@@ -1,9 +1,11 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"net/http"
+	"sort"
 
 	"github.com/r3dpan/project-descendence/internal/gitrepo"
 	"github.com/r3dpan/project-descendence/internal/logstream"
@@ -153,12 +155,40 @@ func (s *APIServer) HealthHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, status, serverHealthData)
 }
 
-// The authenticated principal, as resolved by RequireAuth.
+// The authenticated principal, as resolved by RequireAuth. Role and
+// Permissions replace the old flat Scopes field (Phase 8) - Permissions is
+// what the web UI and CLI use to decide what to render (e.g. hide "New
+// User") without a second round-trip.
 type whoamiResponse struct {
-	ID     int64    `json:"id"`
-	Name   string   `json:"name"`
-	Kind   string   `json:"kind"`
-	Scopes []string `json:"scopes"`
+	ID          int64    `json:"id"`
+	Name        string   `json:"name"`
+	Kind        string   `json:"kind"`
+	Role        string   `json:"role"`
+	Permissions []string `json:"permissions"`
+}
+
+// toWhoamiResponse assembles the identity response shared by WhoAmIHandler
+// and LoginHandler - both need "who is this, and what can they do" in the
+// same shape.
+func (s *APIServer) toWhoamiResponse(ctx context.Context, principal store.Principal, perms permissionSet) (whoamiResponse, error) {
+	role, err := s.queries.GetPrincipalRoleName(ctx, principal.ID)
+	if err != nil {
+		return whoamiResponse{}, err
+	}
+
+	keys := make([]string, 0, len(perms))
+	for k := range perms {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	return whoamiResponse{
+		ID:          principal.ID,
+		Name:        principal.Name,
+		Kind:        principal.Kind,
+		Role:        role,
+		Permissions: keys,
+	}, nil
 }
 
 // Handles identity calls. Registered behind RequireAuth - proves the auth
@@ -169,11 +199,16 @@ func (s *APIServer) WhoAmIHandler(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, http.StatusInternalServerError, "no principal in request context")
 		return
 	}
+	perms, ok := permissionsFromContext(r.Context())
+	if !ok {
+		writeProblem(w, http.StatusInternalServerError, "no permission set in request context")
+		return
+	}
 
-	writeJSON(w, http.StatusOK, whoamiResponse{
-		ID:     principal.ID,
-		Name:   principal.Name,
-		Kind:   principal.Kind,
-		Scopes: principal.Scopes,
-	})
+	resp, err := s.toWhoamiResponse(r.Context(), principal, perms)
+	if err != nil {
+		writeProblem(w, http.StatusInternalServerError, "failed resolving principal's role")
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
 }

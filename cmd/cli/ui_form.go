@@ -269,7 +269,8 @@ func (m whoAmIScreen) View() string {
 	b.WriteString("  " + styleBold.Render(m.principal.Name) + "\n")
 	field("id", fmt.Sprintf("#%d", m.principal.ID))
 	field("kind", m.principal.Kind)
-	field("scopes", strings.Join(m.principal.Scopes, ", "))
+	field("role", m.principal.Role)
+	field("permissions", strings.Join(m.principal.Permissions, ", "))
 
 	return b.String()
 }

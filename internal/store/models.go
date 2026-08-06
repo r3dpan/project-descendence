@@ -36,17 +36,27 @@ type Job struct {
 	ParamsJson      []byte             `json:"params_json"`
 }
 
+type Permission struct {
+	ID          int64  `json:"id"`
+	Key         string `json:"key"`
+	Description string `json:"description"`
+}
+
 type Principal struct {
 	ID           int64              `json:"id"`
 	Kind         string             `json:"kind"`
 	Name         string             `json:"name"`
 	TokenHash    []byte             `json:"token_hash"`
 	TokenHint    pgtype.Text        `json:"token_hint"`
-	Scopes       []string           `json:"scopes"`
 	CreatedAt    pgtype.Timestamptz `json:"created_at"`
 	ExpiresAt    pgtype.Timestamptz `json:"expires_at"`
 	RevokedAt    pgtype.Timestamptz `json:"revoked_at"`
 	PasswordHash []byte             `json:"password_hash"`
+}
+
+type PrincipalRole struct {
+	PrincipalID int64 `json:"principal_id"`
+	RoleID      int64 `json:"role_id"`
 }
 
 type Repo struct {
@@ -59,6 +69,18 @@ type Repo struct {
 	DefaultBranch       string             `json:"default_branch"`
 	LastSyncedAt        pgtype.Timestamptz `json:"last_synced_at"`
 	LastSyncedCommitSha pgtype.Text        `json:"last_synced_commit_sha"`
+}
+
+type Role struct {
+	ID          int64              `json:"id"`
+	Name        string             `json:"name"`
+	Description string             `json:"description"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
+type RolePermission struct {
+	RoleID       int64 `json:"role_id"`
+	PermissionID int64 `json:"permission_id"`
 }
 
 type Run struct {
