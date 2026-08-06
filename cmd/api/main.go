@@ -168,6 +168,9 @@ func main() {
 	descendenceMux.HandleFunc("GET /api/v1/tokens/{id}", descendenceAPI.RequireAuth(descendenceAPI.RequirePermission("users:read", descendenceAPI.GetTokenHandler)))
 	descendenceMux.HandleFunc("DELETE /api/v1/tokens/{id}", descendenceAPI.RequireAuth(descendenceAPI.RequirePermission("users:write", descendenceAPI.RevokeTokenHandler)))
 
+	descendenceMux.HandleFunc("GET /api/v1/roles", descendenceAPI.RequireAuth(descendenceAPI.RequirePermission("users:read", descendenceAPI.ListRolesHandler)))
+	descendenceMux.HandleFunc("GET /api/v1/roles/{name}", descendenceAPI.RequireAuth(descendenceAPI.RequirePermission("users:read", descendenceAPI.GetRoleHandler)))
+
 	descendenceMux.HandleFunc("POST /api/v1/runtimes", descendenceAPI.RequireAuth(descendenceAPI.CreateRuntimeHandler))
 	descendenceMux.HandleFunc("GET /api/v1/runtimes", descendenceAPI.RequireAuth(descendenceAPI.ListRuntimesHandler))
 	descendenceMux.HandleFunc("GET /api/v1/runtimes/{id}", descendenceAPI.RequireAuth(descendenceAPI.GetRuntimeHandler))
