@@ -35,6 +35,17 @@ type Config struct {
 	Provider *oidc.Provider
 	Verifier *oidc.IDTokenVerifier
 	OAuth2   oauth2.Config
+
+	// EndSessionURL is the IdP's RP-Initiated Logout endpoint
+	// (end_session_endpoint - not part of the OIDC discovery fields
+	// go-oidc's Provider exposes directly, so it's pulled out of the raw
+	// discovery document separately). Empty if the provider doesn't
+	// advertise one; LogoutHandler falls back to a purely local logout in
+	// that case. Found live during this phase's guided interactive test:
+	// without this, "sign out" only cleared this app's own session cookie,
+	// and the IdP's own browser SSO session silently re-authenticated the
+	// next "sign in" click with no prompt at all.
+	EndSessionURL string
 }
 
 // New performs discovery against IssuerURL. Discovery failure is fatal to
@@ -62,6 +73,14 @@ func New(ctx context.Context, opts Options) (*Config, error) {
 		return nil, fmt.Errorf("oidc: discovering issuer %q: %w", opts.IssuerURL, err)
 	}
 
+	var discovered struct {
+		EndSessionURL string `json:"end_session_endpoint"`
+	}
+	// Best-effort: a provider that omits end_session_endpoint just gets a
+	// purely local logout (LogoutHandler's fallback), not a startup failure
+	// - unlike issuer discovery itself, this is optional per the spec.
+	_ = provider.Claims(&discovered)
+
 	return &Config{
 		Provider: provider,
 		Verifier: provider.Verifier(&oidc.Config{ClientID: opts.ClientID}),
@@ -72,6 +91,7 @@ func New(ctx context.Context, opts Options) (*Config, error) {
 			Endpoint:     provider.Endpoint(),
 			Scopes:       scopes,
 		},
+		EndSessionURL: discovered.EndSessionURL,
 	}, nil
 }
 

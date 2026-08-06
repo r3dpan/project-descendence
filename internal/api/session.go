@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -193,7 +194,7 @@ func (s *APIServer) CallbackHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.mintSession(ctx, w, principal.ID); err != nil {
+	if err := s.mintSession(ctx, w, principal.ID, rawIDToken); err != nil {
 		log.Printf("callback: session creation failed: %v", err)
 		writeProblem(w, http.StatusInternalServerError, "failed creating session")
 		return
@@ -291,7 +292,7 @@ func (s *APIServer) createOIDCPrincipal(ctx context.Context, name string, oidcIs
 // mintSession creates the session row and sets the cookie - shared by
 // CallbackHandler now, exactly as LoginHandler's password flow did before
 // Phase 9 (decision #29: only issuance changes, not the session mechanism).
-func (s *APIServer) mintSession(ctx context.Context, w http.ResponseWriter, principalID int64) error {
+func (s *APIServer) mintSession(ctx context.Context, w http.ResponseWriter, principalID int64, rawIDToken string) error {
 	token, err := randomToken()
 	if err != nil {
 		return err
@@ -303,6 +304,7 @@ func (s *APIServer) mintSession(ctx context.Context, w http.ResponseWriter, prin
 		PrincipalID: principalID,
 		TokenHash:   hash[:],
 		ExpiresAt:   pgtype.Timestamptz{Time: expiresAt, Valid: true},
+		IDToken:     pgtype.Text{String: rawIDToken, Valid: rawIDToken != ""},
 	}); err != nil {
 		return err
 	}
@@ -320,12 +322,31 @@ func (s *APIServer) mintSession(ctx context.Context, w http.ResponseWriter, prin
 }
 
 // LogoutHandler deletes the session row outright (no soft-delete - a dead
-// session has no history worth keeping) and clears the cookie.
+// session has no history worth keeping), clears the cookie, and - when the
+// IdP advertises an end_session_endpoint - redirects through it so the
+// IdP's own browser SSO session ends too. Found live during this phase's
+// guided interactive test, in two parts: (1) without that redirect at all,
+// "sign out" only cleared this app's own session, and the IdP (still
+// logged in itself) silently re-authenticated the very next "sign in"
+// click with no prompt at all; (2) the redirect alone still left Authentik
+// showing its own "are you sure you want to sign out" confirmation page,
+// because RP-Initiated Logout needs id_token_hint to know which session is
+// being ended without asking - hence storing the id_token on the sessions
+// row at mint time (migration 00014) purely to hand it back here. A GET
+// navigation target, like login/callback, for the same reason login is
+// one: this needs to send the browser to a third-party origin, which an
+// XHR/fetch cannot do.
 func (s *APIServer) LogoutHandler(w http.ResponseWriter, r *http.Request) {
+	var idTokenHint string
 	if cookie, err := r.Cookie(sessionCookieName); err == nil && cookie.Value != "" {
 		hash := sha256.Sum256([]byte(cookie.Value))
-		if err := s.queries.DeleteSessionByTokenHash(r.Context(), hash[:]); err != nil {
-			log.Printf("logout: session delete failed: %v", err)
+		idToken, err := s.queries.DeleteSessionByTokenHash(r.Context(), hash[:])
+		if err != nil {
+			if !errors.Is(err, pgx.ErrNoRows) {
+				log.Printf("logout: session delete failed: %v", err)
+			}
+		} else {
+			idTokenHint = idToken.String
 		}
 	}
 
@@ -339,7 +360,21 @@ func (s *APIServer) LogoutHandler(w http.ResponseWriter, r *http.Request) {
 		SameSite: http.SameSiteLaxMode,
 	})
 
-	w.WriteHeader(http.StatusNoContent)
+	if s.oidc != nil && s.oidc.EndSessionURL != "" {
+		scheme := "http"
+		if r.TLS != nil {
+			scheme = "https"
+		}
+		postLogoutRedirect := fmt.Sprintf("%s://%s/", scheme, r.Host)
+		endSessionURL := s.oidc.EndSessionURL + "?post_logout_redirect_uri=" + url.QueryEscape(postLogoutRedirect)
+		if idTokenHint != "" {
+			endSessionURL += "&id_token_hint=" + url.QueryEscape(idTokenHint)
+		}
+		http.Redirect(w, r, endSessionURL, http.StatusFound)
+		return
+	}
+
+	http.Redirect(w, r, "/", http.StatusFound)
 }
 
 func randomToken() (string, error) {

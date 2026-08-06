@@ -153,6 +153,7 @@ type Session struct {
 	TokenHash   []byte             `json:"token_hash"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 	ExpiresAt   pgtype.Timestamptz `json:"expires_at"`
+	IDToken     pgtype.Text        `json:"id_token"`
 }
 
 type SupervisorHeartbeat struct {

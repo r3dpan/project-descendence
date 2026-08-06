@@ -12,19 +12,25 @@ import (
 )
 
 const createSession = `-- name: CreateSession :one
-INSERT INTO sessions (principal_id, token_hash, expires_at)
-VALUES ($1, $2, $3)
-RETURNING id, principal_id, token_hash, created_at, expires_at
+INSERT INTO sessions (principal_id, token_hash, expires_at, id_token)
+VALUES ($1, $2, $3, $4)
+RETURNING id, principal_id, token_hash, created_at, expires_at, id_token
 `
 
 type CreateSessionParams struct {
 	PrincipalID int64              `json:"principal_id"`
 	TokenHash   []byte             `json:"token_hash"`
 	ExpiresAt   pgtype.Timestamptz `json:"expires_at"`
+	IDToken     pgtype.Text        `json:"id_token"`
 }
 
 func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) (Session, error) {
-	row := q.db.QueryRow(ctx, createSession, arg.PrincipalID, arg.TokenHash, arg.ExpiresAt)
+	row := q.db.QueryRow(ctx, createSession,
+		arg.PrincipalID,
+		arg.TokenHash,
+		arg.ExpiresAt,
+		arg.IDToken,
+	)
 	var i Session
 	err := row.Scan(
 		&i.ID,
@@ -32,18 +38,26 @@ func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) (S
 		&i.TokenHash,
 		&i.CreatedAt,
 		&i.ExpiresAt,
+		&i.IDToken,
 	)
 	return i, err
 }
 
-const deleteSessionByTokenHash = `-- name: DeleteSessionByTokenHash :exec
+const deleteSessionByTokenHash = `-- name: DeleteSessionByTokenHash :one
 DELETE FROM sessions
 WHERE token_hash = $1
+RETURNING id_token
 `
 
-func (q *Queries) DeleteSessionByTokenHash(ctx context.Context, tokenHash []byte) error {
-	_, err := q.db.Exec(ctx, deleteSessionByTokenHash, tokenHash)
-	return err
+// Returns the deleted row's id_token so LogoutHandler can pass it as
+// id_token_hint to the IdP's end_session_endpoint (RP-Initiated Logout) in
+// the same request that ends the local session - no separate lookup query
+// needed first.
+func (q *Queries) DeleteSessionByTokenHash(ctx context.Context, tokenHash []byte) (pgtype.Text, error) {
+	row := q.db.QueryRow(ctx, deleteSessionByTokenHash, tokenHash)
+	var id_token pgtype.Text
+	err := row.Scan(&id_token)
+	return id_token, err
 }
 
 const getPrincipalBySessionTokenHash = `-- name: GetPrincipalBySessionTokenHash :one
