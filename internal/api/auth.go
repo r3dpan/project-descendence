@@ -29,13 +29,33 @@ func (s *APIServer) RequireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if token, ok := bearerToken(r); ok {
 			hash := sha256.Sum256([]byte(token))
-			principal, err := s.queries.GetPrincipalByTokenHash(r.Context(), hash[:])
+			row, err := s.queries.GetPrincipalByTokenHash(r.Context(), hash[:])
 			if err != nil {
 				if err != pgx.ErrNoRows {
 					log.Printf("auth: token lookup failed: %v", err)
 				}
 				writeProblem(w, http.StatusUnauthorized, "unknown, expired or revoked token")
 				return
+			}
+
+			// sqlc gives this query its own row type distinct from
+			// store.Principal, the same lesson as GetPrincipalBySessionTokenHash
+			// below - converting explicitly here keeps principalFromContext's
+			// single store.Principal type assertion honest instead of silently
+			// failing it (a 500 that looks like "no principal in context", not
+			// a 401 - this was live and unnoticed since Phase 7.1-7.5's sqlc
+			// regen gave this query the same distinct-row treatment).
+			principal := store.Principal{
+				ID:           row.ID,
+				Kind:         row.Kind,
+				Name:         row.Name,
+				TokenHash:    row.TokenHash,
+				TokenHint:    row.TokenHint,
+				Scopes:       row.Scopes,
+				PasswordHash: row.PasswordHash,
+				CreatedAt:    row.CreatedAt,
+				ExpiresAt:    row.ExpiresAt,
+				RevokedAt:    row.RevokedAt,
 			}
 
 			ctx := context.WithValue(r.Context(), principalContextKey{}, principal)
