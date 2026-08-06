@@ -138,38 +138,36 @@ function SchedulesPanel({ jobId }: { jobId: number }) {
       <Stack gap="xs" mb={canWrite ? 'md' : 0}>
         {schedules.map((s) => (
           <div key={s.id} style={{ borderBottom: '1px solid var(--mantine-color-dark-4)', paddingBottom: 8 }}>
-            <Group justify="space-between" gap="sm" wrap="nowrap">
-              <Group gap="xs" wrap="nowrap" style={{ minWidth: 0 }}>
-                <StatusTag status={s.enabled ? 'enabled' : 'disabled'} label={s.enabled ? 'On' : 'Off'} />
-                <Text size="13px" fw={500} truncate>
-                  {s.cronExpr}
-                </Text>
-                <Text size="11.5px" c="dimmed">
-                  {s.timezone}
-                </Text>
-              </Group>
-              <Group gap={4} wrap="nowrap">
-                {canTrigger && (
-                  <Button size="xs" variant="subtle" onClick={() => handleTrigger(s)} disabled={busyId === s.id}>
-                    Trigger
-                  </Button>
-                )}
-                {canWrite && (
-                  <>
-                    <Button size="xs" variant="subtle" onClick={() => handleToggle(s)} disabled={busyId === s.id}>
-                      {s.enabled ? 'Disable' : 'Enable'}
-                    </Button>
-                    <Button size="xs" variant="subtle" color="red" onClick={() => handleDelete(s)} disabled={busyId === s.id}>
-                      Delete
-                    </Button>
-                  </>
-                )}
-              </Group>
+            <Group gap="xs" wrap="wrap" mb={2}>
+              <StatusTag status={s.enabled ? 'enabled' : 'disabled'} label={s.enabled ? 'On' : 'Off'} />
+              <Text size="13px" fw={500}>
+                {s.cronExpr}
+              </Text>
+              <Text size="11.5px" c="dimmed">
+                {s.timezone}
+              </Text>
             </Group>
-            <Text size="11px" c="dimmed" mt={2}>
+            <Text size="11px" c="dimmed" mb={4}>
               catch-up: {s.catchUpPolicy} · overlap: {s.overlapPolicy}
               {s.nextDueAt && ` · next ${new Date(s.nextDueAt).toLocaleString()}`}
             </Text>
+            <Group gap={4} wrap="wrap">
+              {canTrigger && (
+                <Button size="xs" variant="subtle" onClick={() => handleTrigger(s)} disabled={busyId === s.id}>
+                  Trigger
+                </Button>
+              )}
+              {canWrite && (
+                <>
+                  <Button size="xs" variant="subtle" onClick={() => handleToggle(s)} disabled={busyId === s.id}>
+                    {s.enabled ? 'Disable' : 'Enable'}
+                  </Button>
+                  <Button size="xs" variant="subtle" color="red" onClick={() => handleDelete(s)} disabled={busyId === s.id}>
+                    Delete
+                  </Button>
+                </>
+              )}
+            </Group>
           </div>
         ))}
       </Stack>
